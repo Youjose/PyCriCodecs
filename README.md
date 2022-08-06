@@ -32,7 +32,7 @@ CpkObj = CPKBuilder("dirname", "outfile.cpk")
 # Output would be a cpk file as specified.
 ```
 
-Check the [Wiki](https://github.com/LittleChungi/PyCriCodecs/wiki) for my thoughts, plans, more options, and some details as well for documentation.
+Check the [Wiki](https://github.com/LittleChungi/PyCriCodecs/wiki/Docs-and-Thoughts) for my thoughts, plans, more options, and some details as well for documentation.
 
 ## TODO List
 - Complete the USM lib, shouldn't be hard.

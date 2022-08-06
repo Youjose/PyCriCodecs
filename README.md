@@ -27,7 +27,7 @@ CpkObj.extract() # Will extract files to a dir names "filename"
 CpkObj.extract_file() # Extract a file from a given filename (or an ID for CPKMode 1)
 
 # Building:
-CpkObj = CPKBuilder("dirname", "outfile.cpk") 
+CPKBuilder("dirname", "outfile.cpk", CpkMode=1) # CpkMode is important sometimes, get your target mode by extracting a sample table. 
 # Given a directory, it will take that directory as root, and builds a CPK for the directories and files inside.
 # Output would be a cpk file as specified.
 ```

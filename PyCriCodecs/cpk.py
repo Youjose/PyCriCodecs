@@ -204,7 +204,8 @@ class CPK:
 class CPKBuilder:
     """ Use this class to build semi-custom CPK archives. """
     __slots__ = ["CpkMode", "Tver", "dirname", "itoc_size", "encrypt", "encoding", "files", "fileslen",
-                "ITOCdata", "CPKdata", "ContentSize", "EnabledDataSize", "outfile", "TOCdata"]
+                "ITOCdata", "CPKdata", "ContentSize", "EnabledDataSize", "outfile", "TOCdata", "GTOCdata",
+                "ETOCdata"]
     CpkMode: int 
     # CPK mode dictates (at least from what I saw) the use of filenames in TOC or the use of
     # ITOC without any filenames (Use of indexes only, will be sorted).
@@ -236,6 +237,8 @@ class CPKBuilder:
                 self.Tver = 'CPKMC2.45.00, DLL3.15.00'
             elif self.CpkMode == 2:
                 self.Tver = 'CPKMC2.49.32, DLL3.24.00'
+            elif self.CpkMode == 3:
+                self.Tver = 'CPKFBSTD1.49.35, DLL3.24.00'
             else:
                 ValueError("Unknown CpkMode.")
         else:
@@ -251,14 +254,29 @@ class CPKBuilder:
         self.generate_payload()
     
     def generate_payload(self):
-        if self.CpkMode == 2:
-            # self.TOCdata = self.generate_TOC()
-            # self.ITOCdata = self.generate_ITOC()
-            # self.ETOCdata = self.generate_ETOC()
-            # self.CPKdata = self.generate_CPK()
-            raise NotImplementedError("CpkMode 2 support is still WIP.")
+        if self.CpkMode == 3:
+            self.TOCdata = self.generate_TOC()
+            self.TOCdata = bytearray(CPKChunkHeader.pack(b'TOC ', 0xFF, len(self.TOCdata), 0)) + self.TOCdata
+            self.GTOCdata = self.generate_GTOC()
+            self.GTOCdata = bytearray(CPKChunkHeader.pack(b'GTOC', 0xFF, len(self.GTOCdata), 0)) + self.GTOCdata
+            self.ETOCdata = self.generate_ETOC()
+            self.ETOCdata = bytearray(CPKChunkHeader.pack(b'ETOC', 0xFF, len(self.ETOCdata), 0)) + self.ETOCdata
+            self.CPKdata = self.generate_CPK()
+            self.CPKdata = bytearray(CPKChunkHeader.pack(b'CPK ', 0xFF, len(self.CPKdata), 0)) + self.CPKdata
+            data = self.CPKdata.ljust(len(self.CPKdata) + (0x800 - len(self.CPKdata) % 0x800) - 6, b'\x00') + bytearray(b"(c)CRI") + self.TOCdata.ljust(len(self.TOCdata) + (0x800 - len(self.TOCdata) % 0x800), b'\x00') + self.GTOCdata.ljust(len(self.GTOCdata) + (0x800 - len(self.GTOCdata) % 0x800), b'\x00')
+            self.writetofile(data)
+        elif self.CpkMode == 2:
+            self.TOCdata = self.generate_TOC()
+            self.TOCdata = bytearray(CPKChunkHeader.pack(b'TOC ', 0xFF, len(self.TOCdata), 0)) + self.TOCdata
+            self.ITOCdata = self.generate_ITOC()
+            self.ITOCdata = bytearray(CPKChunkHeader.pack(b'ITOC', 0xFF, len(self.ITOCdata), 0)) + self.ITOCdata
+            self.ETOCdata = self.generate_ETOC()
+            self.ETOCdata = bytearray(CPKChunkHeader.pack(b'ETOC', 0xFF, len(self.ETOCdata), 0)) + self.ETOCdata
+            self.CPKdata = self.generate_CPK()
+            self.CPKdata = bytearray(CPKChunkHeader.pack(b'CPK ', 0xFF, len(self.CPKdata), 0)) + self.CPKdata
+            data = self.CPKdata.ljust(len(self.CPKdata) + (0x800 - len(self.CPKdata) % 0x800) - 6, b'\x00') + bytearray(b"(c)CRI") + self.TOCdata.ljust(len(self.TOCdata) + (0x800 - len(self.TOCdata) % 0x800), b'\x00') + self.ITOCdata.ljust(len(self.ITOCdata) + (0x800 - len(self.ITOCdata) % 0x800), b'\x00')
+            self.writetofile(data)
         elif self.CpkMode == 1:
-            # What about ITOC?
             self.TOCdata = self.generate_TOC()
             self.TOCdata = bytearray(CPKChunkHeader.pack(b'TOC ', 0xFF, len(self.TOCdata), 0)) + self.TOCdata
             self.CPKdata = self.generate_CPK()
@@ -276,8 +294,26 @@ class CPKBuilder:
     
     def writetofile(self, data) -> None:
         # All versions seem to be written the same, but just in case I forgot something, I will leave this to help.
-        if self.CpkMode == 2:
-            pass
+        if self.CpkMode == 3:
+            out = open(self.outfile, "wb")
+            out.write(data)
+            for i in self.files:
+                d = open(i, "rb").read()
+                if len(d) % 800 != 0:
+                    d = d.ljust(len(d) + (0x800 - len(d) % 800), b"\x00")
+                out.write(d)
+            out.write(self.ETOCdata)
+            out.close()
+        elif self.CpkMode == 2:
+            out = open(self.outfile, "wb")
+            out.write(data)
+            for i in self.files:
+                d = open(i, "rb").read()
+                if len(d) % 800 != 0:
+                    d = d.ljust(len(d) + (0x800 - len(d) % 800), b"\x00")
+                out.write(d)
+            out.write(self.ETOCdata)
+            out.close()
         elif self.CpkMode == 1:
             out = open(self.outfile, "wb")
             out.write(data)
@@ -296,6 +332,69 @@ class CPKBuilder:
                     d = d.ljust(len(d) + (0x800 - len(d) % 800), b"\x00")
                 out.write(d)
             out.close()
+    
+    def generate_GTOC(self) -> bytearray:
+        # I have no idea why are those numbers here.
+        Gdata = [
+            {
+                "Gname": (UTFTypeValues.string, ""),
+                "Child": (UTFTypeValues.int, -1),
+                "Next": (UTFTypeValues.int, 0)
+            },
+            {
+                "Gname": (UTFTypeValues.string, "(none)"),
+                "Child": (UTFTypeValues.int, 0),
+                "Next": (UTFTypeValues.int, 0)
+            }
+        ]
+        Fdata = [
+            {
+             "Next": (UTFTypeValues.int, -1),
+             "Child": (UTFTypeValues.int, -1),
+             "SortFlink": (UTFTypeValues.int, 2),
+             "Aindex": (UTFTypeValues.ushort, 0)
+            },
+            {
+             "Next": (UTFTypeValues.int, 2),
+             "Child": (UTFTypeValues.int, 0),
+             "SortFlink": (UTFTypeValues.int, 1),
+             "Aindex": (UTFTypeValues.ushort, 0)
+            },
+            {
+             "Next": (UTFTypeValues.int, 0),
+             "Child": (UTFTypeValues.int, 1),
+             "SortFlink": (UTFTypeValues.int, 2),
+             "Aindex": (UTFTypeValues.ushort, 0)
+            }
+        ]
+        Attrdata = [
+            {
+                "Aname": (UTFTypeValues.string, ""),
+                "Align": (UTFTypeValues.ushort, 0x800),
+                "Files": (UTFTypeValues.uint, 0),
+                "FileSize": (UTFTypeValues.uint, 0)
+            }
+        ]
+        payload = [
+            {
+                "Glink": (UTFTypeValues.uint, 2),
+                "Flink": (UTFTypeValues.uint, 3),
+                "Attr" : (UTFTypeValues.uint, 1),
+                "Gdata": (UTFTypeValues.bytes, UTFBuilder(Gdata, encrypt=self.encrypt, encoding=self.encoding, table_name="CpkGtocGlink").parse()),
+                "Fdata": (UTFTypeValues.bytes, UTFBuilder(Fdata, encrypt=self.encrypt, encoding=self.encoding, table_name="CpkGtocFlink").parse()),
+                "Attrdata": (UTFTypeValues.bytes, UTFBuilder(Attrdata, encrypt=self.encrypt, encoding=self.encoding, table_name="CpkGtocAttr").parse()),
+            }
+        ]
+        return UTFBuilder(payload, encrypt=self.encrypt, encoding=self.encoding, table_name="CpkGtocInfo").parse()
+
+    def generate_ETOC(self) -> bytearray:
+        payload = [
+            {
+                "UpdateDateTime": (UTFTypeValues.ullong, 0),
+                "LocalDir": (UTFTypeValues.string, self.dirname)
+            }
+        ]
+        return UTFBuilder(payload, encrypt=self.encrypt, encoding=self.encoding, table_name="CpkEtocInfo").parse()
 
     def generate_TOC(self) -> bytearray:
         payload = []
@@ -343,21 +442,26 @@ class CPKBuilder:
         return UTFBuilder(payload, encrypt=self.encrypt, encoding=self.encoding, table_name="CpkTocInfo").parse()           
 
     def generate_CPK(self) -> bytearray:
-        if self.CpkMode == 2:
+        if self.CpkMode == 3:
+            ContentOffset = (0x800+len(self.TOCdata)+len(self.GTOCdata) + (0x800 - (0x800+len(self.TOCdata)+len(self.GTOCdata)) % 0x800))
             CpkHeader = [
                 {
-                    "UpdateDateTime": (UTFTypeValues.ullong, 0),
-                    "ContentOffset": (UTFTypeValues.ullong, (0x800+len(self.TOCdata) + (0x800 - (0x800+len(self.TOCdata)) % 0x800))),
+                    "UpdateDateTime": (UTFTypeValues.ullong, 1),
+                    "ContentOffset": (UTFTypeValues.ullong, ContentOffset),
                     "ContentSize": (UTFTypeValues.ullong, self.ContentSize),
                     "TocOffset": (UTFTypeValues.ullong, 0x800),
                     "TocSize": (UTFTypeValues.ullong, len(self.TOCdata)),
+                    "EtocOffset": (UTFTypeValues.ullong, self.ContentSize+ContentOffset),
+                    "EtocSize": (UTFTypeValues.ullong, len(self.ETOCdata)),
+                    "GtocOffset": (UTFTypeValues.ullong, (0x800+len(self.TOCdata) + (0x800 - (0x800+len(self.TOCdata)) % 0x800))),
+                    "GtocSize": (UTFTypeValues.ullong, len(self.GTOCdata)),                    
                     "EnabledPackedSize": (UTFTypeValues.ullong, self.EnabledDataSize),
                     "EnabledDataSize": (UTFTypeValues.ullong, self.EnabledDataSize),
                     "Files": (UTFTypeValues.uint, self.fileslen),
                     "Groups": (UTFTypeValues.uint, 0),
                     "Attrs": (UTFTypeValues.uint, 0),
                     "Version": (UTFTypeValues.ushort, 7),
-                    "Revision": (UTFTypeValues.ushort, 11),
+                    "Revision": (UTFTypeValues.ushort, 14),
                     "Align": (UTFTypeValues.ushort, 0x800),
                     "Sorted": (UTFTypeValues.ushort, 1),
                     "EnableFileName": (UTFTypeValues.ushort, 1),
@@ -367,16 +471,63 @@ class CPKBuilder:
                     "DpkItoc": (UTFTypeValues.uint, 0),
                     "EnableTocCrc": (UTFTypeValues.ushort, 0),
                     "EnableFileCrc": (UTFTypeValues.ushort, 0),
-                    "CrcMode": (UTFTypeValues.uint, "0"),
+                    "CrcMode": (UTFTypeValues.uint, 0),
                     "CrcTable": (UTFTypeValues.bytes, b''),
                     "FileSize": (UTFTypeValues.ullong, 0),
                     "TocCrc": (UTFTypeValues.uint, 0),
                     "HtocOffset": (UTFTypeValues.ullong, 0),
                     "HtocSize": (UTFTypeValues.ullong, 0),
-                    "EtocOffset": (UTFTypeValues.ullong, 0),
-                    "EtocSize": (UTFTypeValues.ullong, 0),
                     "ItocOffset": (UTFTypeValues.ullong, 0),
                     "ItocSize": (UTFTypeValues.ullong, 0),
+                    "ItocCrc": (UTFTypeValues.uint, 0),
+                    "GtocCrc": (UTFTypeValues.uint, 0),
+                    "HgtocOffset": (UTFTypeValues.ullong, 0),
+                    "HgtocSize": (UTFTypeValues.ullong, 0),
+                    "TotalDataSize": (UTFTypeValues.ullong, 0),
+                    "Tocs": (UTFTypeValues.uint, 0),
+                    "TotalFiles": (UTFTypeValues.uint, 0),
+                    "Directories": (UTFTypeValues.uint, 0),
+                    "Updates": (UTFTypeValues.uint, 0),
+                    "EID": (UTFTypeValues.ushort, 0),
+                    "Comment": (UTFTypeValues.string, '<NULL>'),
+                }
+            ]
+        elif self.CpkMode == 2:
+            ContentOffset = (0x800+len(self.TOCdata)+len(self.ITOCdata) + (0x800 - (0x800+len(self.TOCdata)+len(self.ITOCdata)) % 0x800))
+            CpkHeader = [
+                {
+                    "UpdateDateTime": (UTFTypeValues.ullong, 0),
+                    "ContentOffset": (UTFTypeValues.ullong, ContentOffset),
+                    "ContentSize": (UTFTypeValues.ullong, self.ContentSize),
+                    "TocOffset": (UTFTypeValues.ullong, 0x800),
+                    "TocSize": (UTFTypeValues.ullong, len(self.TOCdata)),
+                    "EtocOffset": (UTFTypeValues.ullong, self.ContentSize+ContentOffset),
+                    "EtocSize": (UTFTypeValues.ullong, len(self.ETOCdata)),
+                    "ItocOffset": (UTFTypeValues.ullong, (0x800+len(self.TOCdata) + (0x800 - (0x800+len(self.TOCdata)) % 0x800))),
+                    "ItocSize": (UTFTypeValues.ullong, len(self.ITOCdata)),
+                    "EnabledPackedSize": (UTFTypeValues.ullong, self.EnabledDataSize),
+                    "EnabledDataSize": (UTFTypeValues.ullong, self.EnabledDataSize),
+                    "Files": (UTFTypeValues.uint, self.fileslen),
+                    "Groups": (UTFTypeValues.uint, 0),
+                    "Attrs": (UTFTypeValues.uint, 0),
+                    "Version": (UTFTypeValues.ushort, 7),
+                    "Revision": (UTFTypeValues.ushort, 14),
+                    "Align": (UTFTypeValues.ushort, 0x800),
+                    "Sorted": (UTFTypeValues.ushort, 1),
+                    "EnableFileName": (UTFTypeValues.ushort, 1),
+                    "EID": (UTFTypeValues.ushort, 0),
+                    "CpkMode": (UTFTypeValues.ushort, self.CpkMode),
+                    "Tvers": (UTFTypeValues.string, self.Tver),
+                    "Codec": (UTFTypeValues.uint, 0),
+                    "DpkItoc": (UTFTypeValues.uint, 0),
+                    "EnableTocCrc": (UTFTypeValues.ushort, 0),
+                    "EnableFileCrc": (UTFTypeValues.ushort, 0),
+                    "CrcMode": (UTFTypeValues.uint, 0),
+                    "CrcTable": (UTFTypeValues.bytes, b''),
+                    "FileSize": (UTFTypeValues.ullong, 0),
+                    "TocCrc": (UTFTypeValues.uint, 0),
+                    "HtocOffset": (UTFTypeValues.ullong, 0),
+                    "HtocSize": (UTFTypeValues.ullong, 0),
                     "ItocCrc": (UTFTypeValues.uint, 0),
                     "GtocOffset": (UTFTypeValues.ullong, 0),
                     "GtocSize": (UTFTypeValues.ullong, 0),                    
@@ -387,7 +538,6 @@ class CPKBuilder:
                     "TotalFiles": (UTFTypeValues.uint, 0),
                     "Directories": (UTFTypeValues.uint, 0),
                     "Updates": (UTFTypeValues.uint, 0),
-                    "EID": (UTFTypeValues.ushort, 0),
                     "Comment": (UTFTypeValues.string, '<NULL>'),
                 }
             ]
@@ -482,8 +632,16 @@ class CPKBuilder:
         return UTFBuilder(CpkHeader, encrypt=self.encrypt, encoding=self.encoding, table_name="CpkHeader").parse()
     
     def generate_ITOC(self) -> bytearray:
-        if self.CpkMode == 1:
-            pass
+        if self.CpkMode == 2:
+            payload = []
+            for i in range(len(self.files)):
+                payload.append(
+                    {
+                        "ID": (UTFTypeValues.int, i),
+                        "TocIndex": (UTFTypeValues.int, i)
+                    }
+                )
+            return UTFBuilder(payload, encrypt=self.encrypt, encoding=self.encoding, table_name="CpkExtendId").parse()
         else:
             files = sorted(os.listdir(self.dirname), key=int)
             self.files = files

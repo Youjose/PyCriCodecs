@@ -1,5 +1,6 @@
-from io import FileIO
+from io import BytesIO, FileIO
 from struct import *
+from typing import BinaryIO
 import CriCodecs
 
 AdxHeaderStruct = Struct(">HHBBBBIIHBB")
@@ -39,27 +40,28 @@ class ADX:
     dataSize: int
     Flags: int
 
-    def __init__(self, filename=False, filetype=None) -> None:
-        if not filename:
-            raise ValueError("No filename given or the file doesn't exist.")
-        self.filename = filename
-        if filetype == "wav":
-            self.wavStream = open(filename, "rb")
-            self.filetype = "wav"
-            self.load_info()
-        elif filetype == "adx":
-            self.sfaStream = open(filename, "rb")
-            self.filetype = "adx"
-            self.load_info()
+    def __init__(self, filename) -> None:
+        if type(filename) == str:
+            stream = FileIO(filename)
+            self.filename == filename
         else:
-            raise ValueError("No filetype specified for given file. Either 'wav' or 'adx' format.")
+            stream = BytesIO(filename)
+        self.load_info(stream)
 
-    def load_info(self) -> None:
+    def load_info(self, stream: BinaryIO) -> None:
+        magic = stream.read(4)
+        stream.seek(0)
+        if magic[:2] == b"\x80\x00":
+            self.filetype = "adx"
+            self.sfaStream = stream
+        elif magic == b"RIFF":
+            self.filetype = "wav"
+            self.wavStream = stream
         if self.filetype == "wav":
             self.riffSignature, self.riffSize, self.wave, self.fmt, self.fmtSize, self.fmtType, self.fmtChannelCount, self.fmtSamplingRate, self.fmtSamplesPerSec, self.fmtSamplingSize, self.fmtBitCount, self.dataSig, self.dataSize = WavHeaderStruct.unpack(
             self.wavStream.read(WavHeaderStruct.size)
             )
-            self.wavStream.close()
+            self.wavStream.seek(0)
             if self.riffSignature == b"RIFF" and self.wave == b'WAVE' and self.fmt == b'fmt ' and self.dataSig == b'data':
                 return
             else:
@@ -68,7 +70,7 @@ class ADX:
             self.Adxsignature, self.dataOffset, self.Encoding, self.Blocksize, self.SampleBitdepth, self.channelCount, self.SamplingRate, self.SampleCount, self.HighpassFrequency, self.AdxVersion, self.Flags = AdxHeaderStruct.unpack(
             self.sfaStream.read(AdxHeaderStruct.size)
             )
-            self.sfaStream.close()
+            self.sfaStream.seek(0)
             if self.Adxsignature == 0x8000:
                 # TODO Add loading looping info per version.
                 # if self.AdxVersion == 3:
@@ -90,13 +92,17 @@ class ADX:
 
         if self.filetype != "adx":
             raise ValueError("Not an ADX file")
+        elif self.Encoding == 0x11 or self.Encoding == 0x10 or self.AdxVersion == 6 or self.Blocksize == 0 or self.SampleBitdepth == 0:
+            raise NotImplementedError("Unsupported AHX file.")
         elif self.Adxsignature != 0x8000:
             raise ValueError("Not an ADX file")
         elif not (self.Encoding == 3 or self.Encoding == 4 or self.Encoding == 2):
             raise NotImplementedError("Unsupported ADX Encoding.")
         elif self.SampleBitdepth != 4:
             raise NotImplementedError("Unsupported Bitdepth.")
-
+        elif self.Flags == 0x8 or self.Flags == 0x9:
+            raise NotImplementedError("Encrypted ADX/AHX detected, unsupported yet.")
+        
         fmtChannelCount = self.channelCount
         fmtSamplingRate = self.SamplingRate
         fmtSamplingSize = fmtChannelCount * 2
@@ -122,7 +128,8 @@ class ADX:
         
         outfile = bytearray()
         outfile.extend(WavHeader)
-        outfile.extend(CriCodecs.AdxDecode(self.filename))
+        outfile.extend(CriCodecs.AdxDecode(self.sfaStream.read()))
+        self.sfaStream.close()
         return outfile
             
     # Encodes WAV to ADX.
@@ -132,6 +139,8 @@ class ADX:
             raise ValueError("Not a WAV file or an unsupported file version.")
         elif self.riffSignature != b"RIFF" and self.wave != b'WAVE' and self.fmt != b'fmt ' and self.dataSig != b'data':
             raise ValueError("Not a WAV file or an unsupported file version.")
+        # elif AdxVersion == 0x10 or AdxVersion == 0x11:
+            # return self.ahx_encode()
         
         channelCount = self.fmtChannelCount
         SamplingRate = self.fmtSamplingRate
@@ -152,7 +161,7 @@ class ADX:
                                         )
         AdxFooter = pack(">HH",
                         0x8001, # EOF scale.
-                        Blocksize-4 # 0xE, Padding size? My conclusion here is that it's (blocksize - 4)
+                        Blocksize-4 # 0xE, Padding size, can be anything. My conclusion here is that it's (blocksize - 4)
                         ) + bytearray(Blocksize-4)
         
         outfile = bytearray()
@@ -162,7 +171,8 @@ class ADX:
         # It also helps adding support for looping information in the header. (How big?)
         outfile += bytearray(DataOffset-22)
         outfile.extend(b'(c)CRI')
-        outfile.extend(CriCodecs.AdxEncode(self.filename, Blocksize))
+        outfile.extend(CriCodecs.AdxEncode(self.wavStream.read(), Blocksize))
+        self.wavStream.close()
         outfile.extend(AdxFooter)
         return outfile
 

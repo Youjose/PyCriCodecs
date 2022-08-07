@@ -124,35 +124,35 @@ bool Decode(void *data,int size,int* _data, AdxHeader &header, char *&outdata){
 	return true;
 }
 
-void Decode(FILE* fp, AdxHeader header, char *outdata){
+void Decode(char* fp, AdxHeader header, char *outdata){
     unsigned int size=header.blocksize*header.channelcount;
 	unsigned char *data=new unsigned char [size];
     int *_data = new int [((header.blocksize-2)*header.channelcount)*header.channelcount];
 	memset(_data,0,sizeof(int)*((header.blocksize-2)*header.channelcount)*header.channelcount);
     while(header.samplecount){
-		fread(data,size,1,fp);
+        for(unsigned int i = 0; i<size; i++, fp++, data++){
+            *data = *fp;
+        }
+        data -= size;
 		if (!Decode(data,size,_data, header, outdata)){
             break;
         }
 	}
     delete[] data;
     delete[] _data;
-    fclose(fp);
 }
 
 
 static PyObject* AdxEncode(PyObject* self, PyObject* args){
-    const char* infilename;
+    char* infilename;
     Py_ssize_t infilename_size;
     unsigned int blocksize;
-    if(!PyArg_ParseTuple(args, "s#I", &infilename, &infilename_size, &blocksize)){
+    if(!PyArg_ParseTuple(args, "y#I", &infilename, &infilename_size, &blocksize)){
         return NULL;
     }
-    FILE *fpin = fopen(infilename, "rb");
-    WAVEHeader header;
-    fread(&header, sizeof(header), 1, fpin);
+    WAVEHeader header = *(WAVEHeader *)infilename;
     short *data = new short [header.dataSize/2];
-    fread(data, header.dataSize, 1, fpin);
+    memcpy(data, infilename, header.dataSize);
     int v, min=0, max=0, scale;
     short *d = data;
     unsigned int len = (blocksize*header.fmtChannelCount)*((header.dataSize/header.fmtSamplingSize)/((blocksize-2)*header.fmtChannelCount));
@@ -209,20 +209,14 @@ static PyObject* AdxEncode(PyObject* self, PyObject* args){
 }
 
 static PyObject* AdxDecode(PyObject* self, PyObject* args){
-    const char* infilename;
-    Py_ssize_t infilename_size;
-    if(!PyArg_ParseTuple(args, "s#", &infilename, &infilename_size)){
-        return NULL;
-    }
-    FILE *fpin = fopen(infilename, "rb");
-    AdxHeader header;
-    fread(&header, sizeof(header), 1, fpin);
-    fseek(fpin, _byteswap_ushort(header.dataoffset)+4, 0);
+    char* data = (char *)PyBytes_AsString(args);
+    AdxHeader header = *(AdxHeader *)data;
+    data += _byteswap_ushort((header.dataoffset))+4;
     header.samplecount = _byteswap_ulong(header.samplecount);
     unsigned int len = header.channelcount*2*header.samplecount;
     char *outdata = new char [len];
     memset(outdata,0,len);
     char *out = outdata;
-    Decode(fpin, header, outdata);
+    Decode(data, header, outdata);
     return Py_BuildValue("y#", out, len);
 }

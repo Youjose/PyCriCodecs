@@ -3,9 +3,9 @@
 #include <Python.h>
 #include "adx.cpp"
 #include "crilayla.cpp"
-
+//
 static struct PyMethodDef Codec_methods[] = {
-    { "AdxDecode", (PyCFunction)AdxDecode, METH_VARARGS, nullptr },
+    { "AdxDecode", (PyCFunction)AdxDecode, METH_O, nullptr },
     { "AdxEncode", (PyCFunction)AdxEncode, METH_VARARGS, nullptr },
     { "CriLaylaDecompress", (PyCFunction)CriLaylaDecompress, METH_O, nullptr },
     { nullptr, nullptr, 0, nullptr }

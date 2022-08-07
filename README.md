@@ -11,11 +11,11 @@ Usage:
 ```python
 from PyCriCodecs import *
 # Decoding:
-AdxObj = ADX("sample.adx", "adx") # Specify filename and filetype.
+AdxObj = ADX("sample.adx") # Specify filename or adx bytes.
 wavfilebytes = AdxObj.decode() # Decode will return a bytearray containing decoded ADX data as a wav file.
 
 # Encoding:
-WavObj = ADX("sample.wav", "wav")
+WavObj = ADX("sample.wav") # Wav file or wav file bytes, any works.
 adxbytes = WavObj.encode() # Returns an ADX file as bytes, check the wiki for more options.
 ```
 ##### For CPK extraction and building:
@@ -36,7 +36,6 @@ Check the [Wiki](https://github.com/LittleChungi/PyCriCodecs/wiki/Docs-and-Thoug
 
 ## TODO List
 - Complete the USM lib, shouldn't be hard.
-- Standardise BinaryIO so the code can take both bytes and files.
 - Add HCA decoding and encoding.
 - Add AWB/ACB extraction and building.
 - And many more.

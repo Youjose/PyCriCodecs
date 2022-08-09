@@ -31,6 +31,13 @@ CPKBuilder("dirname", "outfile.cpk", CpkMode=1) # CpkMode is important sometimes
 # Given a directory, it will take that directory as root, and builds a CPK for the directories and files inside.
 # Output would be a cpk file as specified.
 ```
+##### For USM extraction:
+```
+from PyCriCodecs import *
+# Extraction:
+usmObj = USM("filename.cpk") # or bytes.
+usmObj.extract() # extracts all USM contents in the current directory. You can add a directory with extract(dirname = "Example")
+```
 
 Check the [Wiki](https://github.com/LittleChungi/PyCriCodecs/wiki/Docs-and-Thoughts) for my thoughts, plans, more options, and some details as well for documentation.
 

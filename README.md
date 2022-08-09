@@ -24,7 +24,7 @@ from PyCriCodecs import *
 # Extraction:
 CpkObj = CPK("filename.cpk")
 CpkObj.extract() # Will extract files to a dir names "filename"
-CpkObj.extract_file() # Extract a file from a given filename (or an ID for CPKMode 1)
+CpkObj.extract_file() # Extract a file from a given filename (or an ID for CPKMode 0)
 
 # Building:
 CPKBuilder("dirname", "outfile.cpk", CpkMode=1) # CpkMode is important sometimes, get your target mode by extracting a sample table. 

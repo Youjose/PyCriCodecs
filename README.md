@@ -32,7 +32,7 @@ CPKBuilder("dirname", "outfile.cpk", CpkMode=1) # CpkMode is important sometimes
 # Output would be a cpk file as specified.
 ```
 ##### For USM extraction:
-```
+```python
 from PyCriCodecs import *
 # Extraction:
 usmObj = USM("filename.cpk") # or bytes.

@@ -1,5 +1,5 @@
 from struct import Struct
-from enum import Enum, IntFlag, auto
+from enum import Enum, IntFlag
 
 UTFChunkHeader = Struct(">4sIIIIIHHI")
 USMChunkHeader = Struct(">4sIBBHBBBBIIII")
@@ -24,7 +24,8 @@ class UTFType(Enum):
     UTF   = b"@UTF"
     EUTF  = b"\x1F\x9E\xF3\xF5" # Encrypted @UTF.
 
-
+# I saw some flip the unsigned/signed indexes.
+# So I am not sure what's correct or not.
 class UTFTypeValues(IntFlag):
     uchar  = 0
     char   = 1

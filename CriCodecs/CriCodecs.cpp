@@ -3,7 +3,7 @@
 #include <Python.h>
 #include "adx.cpp"
 #include "crilayla.cpp"
-//
+
 static struct PyMethodDef Codec_methods[] = {
     { "AdxDecode", (PyCFunction)AdxDecode, METH_O, nullptr },
     { "AdxEncode", (PyCFunction)AdxEncode, METH_VARARGS, nullptr },

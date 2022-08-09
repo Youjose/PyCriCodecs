@@ -1,3 +1,4 @@
+import os
 from typing import BinaryIO
 from .chunk import *
 from .utf import UTF
@@ -10,8 +11,10 @@ from io import FileIO, BytesIO
 # Extraction working only for now, although check https://github.com/donmai-me/WannaCRI/
 # code for a complete breakdown of the USM format.
 class USM:
+    """ USM class for extracting infromation and data from a USM file. """
     __slots__ = ["filename", "videomask1", "videomask2", "audiomask", "decrypt", 
-                "DecryptAudio", "Videodata", "Audiodata", "stream_id", "stream", "CRIDTable"]
+                "DecryptAudio", "Videodata", "Audiodata", "stream_id", "stream",
+                "__fileinfo", "CRIDObj", "Alphadata"]
     filename: BinaryIO
     videomask1: bytearray
     videomask2: bytearray
@@ -22,6 +25,9 @@ class USM:
     Audiodata: bytes
     stream_id: int
     stream: BinaryIO
+    __fileinfo: list[dict]
+    CRIDObj: UTF
+    Alphadata: bytes
 
     """
     Sets the decryption status, if the key is not given, it will return the plain SFV data.
@@ -41,11 +47,10 @@ class USM:
             self.decrypt = True
             self.init_key(key)
         if not key and DecryptAudio:
-            raise Exception("Cannot decrypt Audio without a key")
+            raise ValueError("Cannot decrypt Audio without a key")
         else:
             self.load_file()
     
-    # Initialized the key masks, can return the initial mask with (returnmask = true)
     def init_key(self, key: str):
         key1 = bytes.fromhex(key[8:])
         key2 = bytes.fromhex(key[:8])
@@ -125,8 +130,10 @@ class USM:
     
     # Demuxes the USM
     def demux(self, size: int):
-
+        self.__fileinfo = list()
         video_output = []
+        alpha_output = []
+        audio_output = []
         while self.stream.tell() < size:
             header, chuncksize, unk08, offset, padding, chno, unk0D, unk0E, type, frametime, framerate, unk18, unk1C = USMChunkHeader.unpack(
                 self.stream.read(USMChunkHeader.size)
@@ -136,7 +143,9 @@ class USM:
             if header == USMChunckHeaderType.CRID.value:
                 audio_output = [bytearray()] * int(chno+1)
                 self.stream_id = int(chno+1)
-                self.CRIDTable = UTF(self.stream.read(chuncksize)).table
+                CRIDObj = UTF(self.stream.read(chuncksize))
+                self.CRIDObj = CRIDObj
+                self.__fileinfo.append({CRIDObj.table_name: CRIDObj.get_payload()})
             elif header == USMChunckHeaderType.SFV.value:
                 # SFV chunk
                 if type == 0:
@@ -146,7 +155,8 @@ class USM:
                     else:
                         video_output.append((self.VideoMask(data)) if self.decrypt else data)
                 elif type == 1 or type == 3:
-                    SFVTable = UTF(self.stream.read(chuncksize)).table
+                    SFVObj = UTF(self.stream.read(chuncksize))
+                    self.__fileinfo.append({SFVObj.table_name: SFVObj.get_payload()})
                 else:
                     self.stream.seek(chuncksize, 1)
             elif header == USMChunckHeaderType.SFA.value:
@@ -158,17 +168,30 @@ class USM:
                     else:
                         (audio_output[int(chno)]).extend((self.AudioMask(data)) if self.DecryptAudio else data)
                 elif type == 1 or type == 3:
-                    SFATable = UTF(self.stream.read(chuncksize)).table
+                    SFAObj = UTF(self.stream.read(chuncksize))
+                    self.__fileinfo.append({SFAObj.table_name: SFAObj.get_payload()})
                 else:
                     self.stream.seek(chuncksize, 1)
             elif header == USMChunckHeaderType.ALP.value:
-                # ALP chunk, unsupported atm.
-                self.stream.seek(chuncksize, 1)
+                # ALP gets encrypted?
+                if type == 0:
+                    data = bytearray(self.stream.read(chuncksize)[offset:])
+                    if padding:
+                        alpha_output.append((self.VideoMask(data))[:-padding] if self.decrypt else data[:-padding])
+                    else:
+                        alpha_output.append((self.VideoMask(data)) if self.decrypt else data)
+                elif type == 1 or type == 3:
+                    ALPObj = UTF(self.stream.read(chuncksize))
+                    self.__fileinfo.append({ALPObj.table_name: ALPObj.get_payload()})
+                else:
+                    self.stream.seek(chuncksize, 1)
             else:
                 raise NotImplementedError(f"Unsupported chunk type: {header}")
+        
 
-        self.Videodata = b"".join(video_output)
+        self.Videodata = b''.join(video_output)
         self.Audiodata = audio_output
+        self.Alphadata = b''.join(alpha_output)
 
     # Decrypt SFV chunks, should only be used if the video data is encrypted.
     def VideoMask(self, memObj: bytearray) -> bytearray:
@@ -215,3 +238,37 @@ class USM:
         for i in range(size//8):
             data_view[i] ^= mask_view[i%4]
         return (head + memObj)
+    
+    def extract(self, dirname: str = ""):
+        """ Extracts all available data in a USM. """
+        table = self.CRIDObj.get_payload()
+        dirname = dirname # You can add a directory where all extracted data goes into.
+        for i in table[1:]: # Skips the CRID table since it has no actual file.
+            typeid = i['stmid'][1]
+            filename = i['filename'][1]
+
+            ### Adjust filenames and/or paths to extract them into the current directory.
+            if ":\\" in filename: # Absolute paths.
+                filename = filename.split(":\\", 1)[1]
+            elif ":/" in filename: # Absolute paths.
+                filename = filename.split(":/", 1)[1]
+            elif ":"+os.sep in filename: # Absolute paths.
+                filename = filename.split(":"+os.sep, 1)[1]
+            elif ".."+os.sep in filename: # Relative paths.
+                filename = filename.rsplit(".."+os.sep, 1)[1]
+            elif "../" in filename: # Relative paths.
+                filename = filename.rsplit("../", 1)[1]
+            elif "..\\" in filename: # Relative paths.
+                filename = filename.rsplit("../", 1)[1]
+            
+            filename = os.path.join(dirname, filename)
+            os.makedirs(os.path.dirname(filename), exist_ok=True)
+            if typeid == 0x40534656: # @SFV
+                open(filename, "wb").write(self.Videodata)
+            elif typeid == 0x40534641: # @SFA
+                open(filename, "wb").write(self.Audiodata[i["chno"][1]])
+            elif typeid == 0x40414C50: # @ALP
+                open(filename, "wb").write(self.Alphadata)
+
+    def get_metadata(self):
+        return self.__fileinfo

@@ -14,7 +14,7 @@
 #include <string.h>
 
 struct crilayla_header{
-    unsigned long long crilaya;
+    unsigned long long crilayla;
     unsigned int decompress_size;
     unsigned int compressed_size;
 };

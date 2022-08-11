@@ -247,7 +247,7 @@ class USM:
             typeid = i['stmid'][1]
             filename = i['filename'][1]
 
-            ### Adjust filenames and/or paths to extract them into the current directory.
+            # Adjust filenames and/or paths to extract them into the current directory.
             if ":\\" in filename: # Absolute paths.
                 filename = filename.split(":\\", 1)[1]
             elif ":/" in filename: # Absolute paths.

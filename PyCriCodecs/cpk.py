@@ -6,16 +6,16 @@ from .utf import UTF, UTFBuilder
 import CriCodecs
 
 class TOC():
-    __slots__ = ["magic", "unk04", "packet_size", "unk0C", "stream", "table"]
+    __slots__ = ["magic", "encflag", "packet_size", "unk0C", "stream", "table"]
     magic: bytes
-    unk04: int
+    encflag: int
     packet_size: int
     unk0C: int
     stream: BinaryIO
     table: dict
     def __init__(self, stream: bytes) -> None:
         self.stream = BytesIO(stream)
-        self.magic, self.unk04, self.packet_size, self.unk0C = CPKChunkHeader.unpack(
+        self.magic, self.encflag, self.packet_size, self.unk0C = CPKChunkHeader.unpack(
             self.stream.read(CPKChunkHeader.size)
         )
         if self.magic not in [header.value for header in CPKChunkHeaderType]:
@@ -23,9 +23,9 @@ class TOC():
         self.table = UTF(self.stream.read()).table
 
 class CPK:
-    __slots__ = ["magic", "unk04", "packet_size", "unk0C", "stream", "tables", "filename"]
+    __slots__ = ["magic", "encflag", "packet_size", "unk0C", "stream", "tables", "filename"]
     magic: bytes
-    unk04: int
+    encflag: int
     packet_size: int
     unk0C: int
     stream: BinaryIO
@@ -38,7 +38,7 @@ class CPK:
         else:
             self.stream = BytesIO(filename)
             self.filename = ''
-        self.magic, self.unk04, self.packet_size, self.unk0C = CPKChunkHeader.unpack(
+        self.magic, self.encflag, self.packet_size, self.unk0C = CPKChunkHeader.unpack(
             self.stream.read(CPKChunkHeader.size)
         )
         if self.magic != CPKChunkHeaderType.CPK.value:
@@ -68,6 +68,12 @@ class CPK:
                 if value[0]:
                     self.stream.seek(value[0], 0)
                     self.tables["GTOC"] = TOC(self.stream.read(self.tables['CPK']["GtocSize"][0])).table
+                    if "AttrData" in self.tables["GTOC"]:
+                        self.tables["GTOC"]['AttrData'][0] = UTF(self.tables["GTOC"]['AttrData'][0]).table
+                    if "Fdata" in self.tables["GTOC"]:
+                        self.tables["GTOC"]['Fdata'][0] = UTF(self.tables["GTOC"]['Fdata'][0]).table
+                    if "Gdata" in self.tables["GTOC"]:
+                        self.tables["GTOC"]['Gdata'][0] = UTF(self.tables["GTOC"]['Gdata'][0]).table
             elif key == "HgtocOffset":
                 if value[0]:
                     self.stream.seek(value[0], 0)
@@ -254,40 +260,44 @@ class CPKBuilder:
         self.generate_payload()
     
     def generate_payload(self):
+        if self.encrypt:
+            encflag = 0
+        else:
+            encflag = 0xFF
         if self.CpkMode == 3:
             self.TOCdata = self.generate_TOC()
-            self.TOCdata = bytearray(CPKChunkHeader.pack(b'TOC ', 0xFF, len(self.TOCdata), 0)) + self.TOCdata
+            self.TOCdata = bytearray(CPKChunkHeader.pack(b'TOC ', encflag, len(self.TOCdata), 0)) + self.TOCdata
             self.GTOCdata = self.generate_GTOC()
-            self.GTOCdata = bytearray(CPKChunkHeader.pack(b'GTOC', 0xFF, len(self.GTOCdata), 0)) + self.GTOCdata
+            self.GTOCdata = bytearray(CPKChunkHeader.pack(b'GTOC', encflag, len(self.GTOCdata), 0)) + self.GTOCdata
             self.ETOCdata = self.generate_ETOC()
-            self.ETOCdata = bytearray(CPKChunkHeader.pack(b'ETOC', 0xFF, len(self.ETOCdata), 0)) + self.ETOCdata
+            self.ETOCdata = bytearray(CPKChunkHeader.pack(b'ETOC', encflag, len(self.ETOCdata), 0)) + self.ETOCdata
             self.CPKdata = self.generate_CPK()
-            self.CPKdata = bytearray(CPKChunkHeader.pack(b'CPK ', 0xFF, len(self.CPKdata), 0)) + self.CPKdata
+            self.CPKdata = bytearray(CPKChunkHeader.pack(b'CPK ', encflag, len(self.CPKdata), 0)) + self.CPKdata
             data = self.CPKdata.ljust(len(self.CPKdata) + (0x800 - len(self.CPKdata) % 0x800) - 6, b'\x00') + bytearray(b"(c)CRI") + self.TOCdata.ljust(len(self.TOCdata) + (0x800 - len(self.TOCdata) % 0x800), b'\x00') + self.GTOCdata.ljust(len(self.GTOCdata) + (0x800 - len(self.GTOCdata) % 0x800), b'\x00')
             self.writetofile(data)
         elif self.CpkMode == 2:
             self.TOCdata = self.generate_TOC()
-            self.TOCdata = bytearray(CPKChunkHeader.pack(b'TOC ', 0xFF, len(self.TOCdata), 0)) + self.TOCdata
+            self.TOCdata = bytearray(CPKChunkHeader.pack(b'TOC ', encflag, len(self.TOCdata), 0)) + self.TOCdata
             self.ITOCdata = self.generate_ITOC()
-            self.ITOCdata = bytearray(CPKChunkHeader.pack(b'ITOC', 0xFF, len(self.ITOCdata), 0)) + self.ITOCdata
+            self.ITOCdata = bytearray(CPKChunkHeader.pack(b'ITOC', encflag, len(self.ITOCdata), 0)) + self.ITOCdata
             self.ETOCdata = self.generate_ETOC()
-            self.ETOCdata = bytearray(CPKChunkHeader.pack(b'ETOC', 0xFF, len(self.ETOCdata), 0)) + self.ETOCdata
+            self.ETOCdata = bytearray(CPKChunkHeader.pack(b'ETOC', encflag, len(self.ETOCdata), 0)) + self.ETOCdata
             self.CPKdata = self.generate_CPK()
-            self.CPKdata = bytearray(CPKChunkHeader.pack(b'CPK ', 0xFF, len(self.CPKdata), 0)) + self.CPKdata
+            self.CPKdata = bytearray(CPKChunkHeader.pack(b'CPK ', encflag, len(self.CPKdata), 0)) + self.CPKdata
             data = self.CPKdata.ljust(len(self.CPKdata) + (0x800 - len(self.CPKdata) % 0x800) - 6, b'\x00') + bytearray(b"(c)CRI") + self.TOCdata.ljust(len(self.TOCdata) + (0x800 - len(self.TOCdata) % 0x800), b'\x00') + self.ITOCdata.ljust(len(self.ITOCdata) + (0x800 - len(self.ITOCdata) % 0x800), b'\x00')
             self.writetofile(data)
         elif self.CpkMode == 1:
             self.TOCdata = self.generate_TOC()
-            self.TOCdata = bytearray(CPKChunkHeader.pack(b'TOC ', 0xFF, len(self.TOCdata), 0)) + self.TOCdata
+            self.TOCdata = bytearray(CPKChunkHeader.pack(b'TOC ', encflag, len(self.TOCdata), 0)) + self.TOCdata
             self.CPKdata = self.generate_CPK()
-            self.CPKdata = bytearray(CPKChunkHeader.pack(b'CPK ', 0xFF, len(self.CPKdata), 0)) + self.CPKdata
+            self.CPKdata = bytearray(CPKChunkHeader.pack(b'CPK ', encflag, len(self.CPKdata), 0)) + self.CPKdata
             data = self.CPKdata.ljust(len(self.CPKdata) + (0x800 - len(self.CPKdata) % 0x800) - 6, b'\x00') + bytearray(b"(c)CRI") + self.TOCdata.ljust(len(self.TOCdata) + (0x800 - len(self.TOCdata) % 0x800), b'\x00')
             self.writetofile(data)
         elif self.CpkMode == 0:
             self.ITOCdata = self.generate_ITOC()
-            self.ITOCdata = bytearray(CPKChunkHeader.pack(b'ITOC', 0, len(self.ITOCdata), 0)) + self.ITOCdata
+            self.ITOCdata = bytearray(CPKChunkHeader.pack(b'ITOC', encflag, len(self.ITOCdata), 0)) + self.ITOCdata
             self.CPKdata = self.generate_CPK()
-            self.CPKdata = bytearray(CPKChunkHeader.pack(b'CPK ', 0, len(self.CPKdata), 0)) + self.CPKdata
+            self.CPKdata = bytearray(CPKChunkHeader.pack(b'CPK ', encflag, len(self.CPKdata), 0)) + self.CPKdata
             data = self.CPKdata.ljust(len(self.CPKdata) + (0x800 - len(self.CPKdata) % 0x800) - 6, b'\x00') + bytearray(b"(c)CRI") + self.ITOCdata.ljust(len(self.ITOCdata) + (0x800 - len(self.ITOCdata) % 0x800), b'\x00')
             self.writetofile(data)
         
@@ -380,9 +390,9 @@ class CPKBuilder:
                 "Glink": (UTFTypeValues.uint, 2),
                 "Flink": (UTFTypeValues.uint, 3),
                 "Attr" : (UTFTypeValues.uint, 1),
-                "Gdata": (UTFTypeValues.bytes, UTFBuilder(Gdata, encrypt=self.encrypt, encoding=self.encoding, table_name="CpkGtocGlink").parse()),
-                "Fdata": (UTFTypeValues.bytes, UTFBuilder(Fdata, encrypt=self.encrypt, encoding=self.encoding, table_name="CpkGtocFlink").parse()),
-                "Attrdata": (UTFTypeValues.bytes, UTFBuilder(Attrdata, encrypt=self.encrypt, encoding=self.encoding, table_name="CpkGtocAttr").parse()),
+                "Gdata": (UTFTypeValues.bytes, UTFBuilder(Gdata, encrypt=False, encoding=self.encoding, table_name="CpkGtocGlink").parse()),
+                "Fdata": (UTFTypeValues.bytes, UTFBuilder(Fdata, encrypt=False, encoding=self.encoding, table_name="CpkGtocFlink").parse()),
+                "Attrdata": (UTFTypeValues.bytes, UTFBuilder(Attrdata, encrypt=False, encoding=self.encoding, table_name="CpkGtocAttr").parse()),
             }
         ]
         return UTFBuilder(payload, encrypt=self.encrypt, encoding=self.encoding, table_name="CpkGtocInfo").parse()
@@ -683,8 +693,8 @@ class CPKBuilder:
                 {
                    "FilesL" : (UTFTypeValues.uint, datallen),
                    "FilesH" : (UTFTypeValues.uint, datahlen),
-                   "DataL" : (UTFTypeValues.bytes, UTFBuilder(datal, table_name="CpkItocL", encrypt=self.encrypt, encoding=self.encoding).parse()),
-                   "DataH" : (UTFTypeValues.bytes, UTFBuilder(datah, table_name="CpkItocH", encrypt=self.encrypt, encoding=self.encoding).parse())
+                   "DataL" : (UTFTypeValues.bytes, UTFBuilder(datal, table_name="CpkItocL", encrypt=False, encoding=self.encoding).parse()),
+                   "DataH" : (UTFTypeValues.bytes, UTFBuilder(datah, table_name="CpkItocH", encrypt=False, encoding=self.encoding).parse())
                 }
             ]
             return UTFBuilder(payload, table_name="CpkItocInfo", encrypt=self.encrypt, encoding=self.encoding).parse()

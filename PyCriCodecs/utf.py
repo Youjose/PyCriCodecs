@@ -305,7 +305,7 @@ class UTFBuilder:
                     else:
                         self.stflag.append((0x30, UTFTypeValuesList.index(val[1][0]), val[0], val[1][1]))
             else:
-                # It seems that the when there is only one dictionary, there will be no element of type 0x30 flag
+                # It seems that when there is only one dictionary, there will be no element of type 0x30 flag
                 # Otherwise all of them would be either 0x30 or 0x10 flags with no length to the rows.
                 if val[1][1] == 0 or val[1][1] == "<NULL>":
                     self.stflag.append((0x10, UTFTypeValuesList.index(val[1][0]), val[0]))

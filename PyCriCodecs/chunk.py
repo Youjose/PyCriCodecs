@@ -4,7 +4,7 @@ from enum import Enum, IntFlag
 UTFChunkHeader = Struct(">4sIIIIIHHI")
 USMChunkHeader = Struct(">4sIBBHBBBBIIII")
 CPKChunkHeader = Struct("<4sIII")
-AWBChunkHeader = Struct("<4sBBHII")
+AWBChunkHeader = Struct("<4sBBHIH2s")
 
 class USMChunckHeaderType(Enum):
     CRID  = b"CRID" # Header.
@@ -30,6 +30,13 @@ class CPKChunkHeaderType(Enum):
 class UTFType(Enum):
     UTF   = b"@UTF" # Header.
     EUTF  = b"\x1F\x9E\xF3\xF5" # Encrypted @UTF Header. Very likely exclusive to CPK's @UTF only.
+
+class AWBType(Enum):
+    AFS2  = b"AFS2" # Header.
+
+class HCAType(Enum):
+    HCA   = b"HCA\x00" # Header.
+    EHCA  = b"\xC8\xC3\xC1\x00" # Encrypted HCA header.
 
 # I saw some devs swap the unsigned/signed indexes. So I am not sure what's correct or not.
 # In my own experience, swapping those results in an incorrect signed values (should be unsigned) in ACB's/CPK's.

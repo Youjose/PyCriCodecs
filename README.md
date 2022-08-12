@@ -7,6 +7,7 @@ python setup.py install
 ```
 
 Usage:
+Note: all libs here are standardized to take either a filename/path or bytes/bytearray, so you can swap both.
 ##### For ADX decoding and encoding:
 ```python
 from PyCriCodecs import *
@@ -38,11 +39,28 @@ from PyCriCodecs import *
 usmObj = USM("filename.cpk") # or bytes.
 usmObj.extract() # extracts all USM contents in the current directory. You can add a directory with extract(dirname = "Example")
 ```
+##### For ACB or AWB extraction (No support for subkey decryption yet.):
+```python
+from PyCriCodecs import *
+# ACB Extraction:
+acbObj = ACB("filename.acb") # It will attempt to open "filename.awb" as well if there are no sub-banks in the ACB.
+acbObj.extract() # You can add dirname for extraction with dirname="dirname".
+
+# AWB Extraction:
+awbObj = AWB("filename.awb")
+# You can either loop through the audios inside with:
+for file in awbObj.getfiles():
+    file # file bytes.
+    open("file.hca or anything", wb).write(file)
+
+# or you can call the extract function, not advised.
+awbObj.extract()
+```
 
 Check the [Wiki](https://github.com/LittleChungi/PyCriCodecs/wiki/Docs-and-Thoughts) for my thoughts, plans, more options, and some details as well for documentation.
 
 ## TODO List
 - Complete the USM lib, shouldn't be hard.
 - Add HCA decoding and encoding.
-- Add AWB/ACB extraction and building.
+- Add AWB/ACB full extraction for all versions and, building as well..
 - And many more.

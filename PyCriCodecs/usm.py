@@ -122,6 +122,7 @@ class USM:
     # Demuxes the USM
     def demux(self) -> None:
         """ Gets data from USM chunks and assignes them to output. """
+        self.stream.seek(0)
         self.__fileinfo = list() # Prototype, should be improved.
         header, chuncksize, unk08, offset, padding, chno, unk0D, unk0E, type, frametime, framerate, unk18, unk1C = USMChunkHeader.unpack(
             self.stream.read(USMChunkHeader.size)

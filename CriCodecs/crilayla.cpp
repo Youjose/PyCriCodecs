@@ -8,6 +8,7 @@
 	to rewrite this code. 
 */
 #define PY_SSIZE_T_CLEAN
+#pragma once
 #include <Python.h>
 #include <stdio.h>
 #include <stdlib.h>

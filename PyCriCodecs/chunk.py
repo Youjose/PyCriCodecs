@@ -5,18 +5,19 @@ UTFChunkHeader = Struct(">4sIIIIIHHI")
 USMChunkHeader = Struct(">4sIBBHBBBBIIII")
 CPKChunkHeader = Struct("<4sIII")
 AWBChunkHeader = Struct("<4sBBHIH2s")
+SBTChunkHeader = Struct("<IIIII")
 
 class USMChunckHeaderType(Enum):
     CRID  = b"CRID" # Header.
     SFSH  = b"SFSH" # SofDec1 Header?
     SFV   = b"@SFV" # Video (VP9/H264/MPEG).
     SFA   = b"@SFA" # Audio (HCA/ADX).
-    ALP   = b"@ALP" # Rare.
-    CUE   = b"@CUE" # Rare.
-    SBT   = b"@SBT" # Rare.
-    AHX   = b"@AHX" # Rare.
-    USR   = b"@USR" # Rare.
-    PST   = b"@PST" # Rare.
+    ALP   = b"@ALP" # Rare. (Alpha video information.)
+    CUE   = b"@CUE" # Rare. (Unknown.)
+    SBT   = b"@SBT" # Rare. (Subtitle information.)
+    AHX   = b"@AHX" # Rare. (Ahx audio file? Used for SofDec1 only?)
+    USR   = b"@USR" # Rare. (User data?)
+    PST   = b"@PST" # Rare. (Unknown.)
 
 class CPKChunkHeaderType(Enum):
     CPK   = b"CPK " # Header.
@@ -54,6 +55,3 @@ class UTFTypeValues(IntFlag):
     double = 9
     string = 10
     bytes  = 11
-
-class reader:
-    pass

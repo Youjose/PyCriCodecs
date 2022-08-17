@@ -36,8 +36,16 @@ CPKBuilder("dirname", "outfile.cpk", CpkMode=1) # CpkMode is important sometimes
 ```python
 from PyCriCodecs import *
 # Extraction:
-usmObj = USM("filename.cpk") # or bytes.
+usmObj = USM("filename.cpk") # or bytes, you can add a key by key="KEYINHEXGOESHERE" must be padded to 8 characters with 0's if not.
 usmObj.extract() # extracts all USM contents in the current directory. You can add a directory with extract(dirname = "Example")
+
+# You can also demux the USM internally and manage with the output bytes all you want.
+usmObj.demux() # Then you have access to output property.
+usmObj.output # This is a dict containing all chunks in the USM, each key has a value of a list with bytearrays.
+
+# Experimental: USM metadata, this is preparation for USM building, but it returns a dict of dicts, of list which has dicts...
+# Quite complicated but it has all metadata in the USM, it's a payload basically based off Donmai's WannaCri, same with UTF chunks, but that is made and done.
+usmObj.get_metadata() # Not for the user specifically, but if you want to look at the info inside, this is one way. 
 ```
 ##### For ACB or AWB extraction (No support for subkey decryption yet.):
 ```python
@@ -60,7 +68,7 @@ awbObj.extract()
 Check the [Wiki](https://github.com/LittleChungi/PyCriCodecs/wiki/Docs-and-Thoughts) for my thoughts, plans, more options, and some details as well for documentation.
 
 ## TODO List
-- Complete the USM lib, shouldn't be hard.
+- Add USM building.
 - Add HCA decoding and encoding.
-- Add AWB/ACB full extraction for all versions and, building as well..
+- Add AWB/ACB full extraction for all versions, and ACB building as well.
 - And many more.

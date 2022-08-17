@@ -1,5 +1,6 @@
 # PyCriCodecs
-Python frontend with a C++ backend for managing Criware formats.
+Python frontend with a C++ backend for managing Criware formats. 
+Although for some tasks, python is used purely.
 ## Installation and Usage
 To install run
 ```

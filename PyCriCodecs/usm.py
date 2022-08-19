@@ -13,8 +13,7 @@ from io import FileIO, BytesIO
 class USM:
     """ USM class for extracting infromation and data from a USM file. """
     __slots__ = ["filename", "videomask1", "videomask2", "audiomask", "decrypt", 
-                "DecryptAudio", "stream", "__fileinfo", "CRIDObj", "size", "output",
-                "codec"]
+                "stream", "__fileinfo", "CRIDObj", "size", "output", "codec"]
     filename: BinaryIO
     videomask1: bytearray
     videomask2: bytearray
@@ -31,8 +30,7 @@ class USM:
     def __init__(self, filename, key: str = False):
         """
         Sets the decryption status, if the key is not given, it will return the plain SFV data.
-        If the key is given you can set whether the Audio should be encrypted or not by (DecryptAudio = True),
-        it's False by default.
+        If the key is given the code will decrypt SFA data if it was ADX, otherwise return plain SFA data.
         """
         self.filename = filename
         self.decrypt = False
@@ -201,7 +199,7 @@ class USM:
             elif "../" in filename: # Relative paths.
                 filename = filename.rsplit("../", 1)[1]
             elif "..\\" in filename: # Relative paths.
-                filename = filename.rsplit("../", 1)[1]
+                filename = filename.rsplit("..\\", 1)[1]
             filename = ''.join(x for x in filename if x not in ':?*<>|"') # removes illegal characters.
             
             filename = os.path.join(dirname, filename) # Preserves the path structure if there's one.
@@ -219,7 +217,7 @@ class USM:
         point = 0
         for chunk in self.output:
             for data in self.output[chunk]:
-                if dirname:
+                if dirname or "\\" in filenames[point] or "/" in filenames[point] or os.sep in filenames[point]:
                     os.makedirs(os.path.dirname(filenames[point]), exist_ok=True)
                 if chunk == "@SBT":
                     texts = self.sbt_to_srt(data)
@@ -299,9 +297,9 @@ class USM:
         """ Convert SBT chunks info to SRT. """
         # Since I got no idea what's the origin of the SBT format, I am just going to convert it to SRT.
         size = len(stream)
-        stream = BytesIO(stream)
+        stream: BytesIO = BytesIO(stream)
+        out: dict[int, list[str]]
         out = dict()
-        count = 1
         while stream.tell() < size:
             langid, framerate, frametime, duration, data_size = SBTChunkHeader.unpack(
                 stream.read(SBTChunkHeader.size)
@@ -327,11 +325,10 @@ class USM:
             else:
                 text = text.decode("utf-8", errors="ignore")
             if langid in out:
-                out[langid] += (str(count) + "\n" + start + " --> " + end + "\n" + text)
+                out[langid].append(str(int(out[langid][-1].split("\n", 1)[0]) + 1) + "\n" + start + " --> " + end + "\n" + text)
             else:
-                out[langid] = (str(count) + "\n" + start + " --> " + end + "\n" + text)
-            count += 1
-        out = [v for k, v in out.items()]
+                out[langid] = [(str(1) + "\n" + start + " --> " + end + "\n" + text)]
+        out = ["".join(v) for k, v in out.items()]
         return out
     
     def get_metadata(self):

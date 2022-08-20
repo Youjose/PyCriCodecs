@@ -4,7 +4,7 @@ from enum import Enum, IntFlag
 UTFChunkHeader = Struct(">4sIIIIIHHI")
 USMChunkHeader = Struct(">4sIBBHBBBBIIII")
 CPKChunkHeader = Struct("<4sIII")
-AWBChunkHeader = Struct("<4sBBHIH2s")
+AWBChunkHeader = Struct("<4sBBHIHH")
 SBTChunkHeader = Struct("<IIIII")
 
 class USMChunckHeaderType(Enum):
@@ -12,12 +12,12 @@ class USMChunckHeaderType(Enum):
     SFSH  = b"SFSH" # SofDec1 Header?
     SFV   = b"@SFV" # Video (VP9/H264/MPEG).
     SFA   = b"@SFA" # Audio (HCA/ADX).
-    ALP   = b"@ALP" # Rare. (Alpha video information.)
-    CUE   = b"@CUE" # Rare. (Unknown.)
-    SBT   = b"@SBT" # Rare. (Subtitle information.)
+    ALP   = b"@ALP" # Rare. (Alpha video information).
+    CUE   = b"@CUE" # Rare. (Cue points).
+    SBT   = b"@SBT" # Rare. (Subtitle information).
     AHX   = b"@AHX" # Rare. (Ahx audio file? Used for SofDec1 only?)
     USR   = b"@USR" # Rare. (User data?)
-    PST   = b"@PST" # Rare. (Unknown.)
+    PST   = b"@PST" # Rare. (Unknown).
 
 class CPKChunkHeaderType(Enum):
     CPK   = b"CPK " # Header.

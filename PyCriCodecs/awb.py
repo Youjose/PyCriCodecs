@@ -40,6 +40,8 @@ class AWB:
         # Reads data in the header.
         self.ids = list()
         self.ofs = list()
+        if self.numfiles == 1:
+            self.numfiles += 1
         for i in iter_unpack("<H", self.stream.read(2*self.numfiles)):
             self.ids.append(i[0])
         for i in iter_unpack("<"+self.stringtypes(intsize), self.stream.read(intsize*self.numfiles)):

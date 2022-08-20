@@ -19,7 +19,6 @@ class USM:
     videomask2: bytearray
     audiomask: bytearray
     decrypt: bool
-    DecryptAudio: bool
     stream: BinaryIO
     __fileinfo: list[dict]
     CRIDObj: UTF
@@ -219,7 +218,8 @@ class USM:
             for data in self.output[chunk]:
                 if dirname or "\\" in filenames[point] or "/" in filenames[point] or os.sep in filenames[point]:
                     os.makedirs(os.path.dirname(filenames[point]), exist_ok=True)
-                if chunk == "@SBT":
+                if chunk == USMChunckHeaderType.SBT.value.decode():
+                    # Subtitle information.
                     texts = self.sbt_to_srt(data)
                     for i in range(len(texts)):
                         filename = filenames[point]
@@ -232,6 +232,18 @@ class USM:
                     else:
                         open(filenames[point], "wb").write(data)
                         point += 1
+                elif chunk == USMChunckHeaderType.CUE.value.decode():
+                    # CUE chunks is actually just metadata.
+                    # and can be accessed by get_metadata() function after demuxing or extracting.
+                    point += 1
+                elif data == bytearray():
+                    # This means it has no data, and just like the CUE, it might be just metadata. 
+                    point += 1
+                elif filenames[point] == "":
+                    # Rare case and might never happen unless the USM is artificially edited. 
+                    fl = table[0]["filename"][1].rsplit(".", 1)[0] + "_" + str(point) + ".bin"
+                    open(filenames[point], "wb").write(data)
+                    point += 1
                 else:
                     open(filenames[point], "wb").write(data)
                     point += 1
@@ -295,7 +307,9 @@ class USM:
     
     def sbt_to_srt(self, stream: bytearray) -> list:
         """ Convert SBT chunks info to SRT. """
-        # Since I got no idea what's the origin of the SBT format, I am just going to convert it to SRT.
+        # After searching, I found how the SBT format is actually made.
+        # But the use case for them is not ideal as they are proprietary.
+        # So I will just convert them to SRT.
         size = len(stream)
         stream: BytesIO = BytesIO(stream)
         out: dict[int, list[str]]

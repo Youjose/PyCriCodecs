@@ -31,7 +31,10 @@ class ACB(UTF):
         # There are two types of ACB's, one that has an AWB file inside it,
         # and one with an AWB pair.
         if self.payload[0]['AwbFile'][1] == b'':
-            awbObj = AWB(os.path.join(os.path.dirname(self.filename), self.payload[0]['Name'][1]+".awb"))
+            if type(self.filename) == str:
+                awbObj = AWB(os.path.join(os.path.dirname(self.filename), self.payload[0]['Name'][1]+".awb"))
+            else:
+                awbObj = AWB(self.payload[0]['Name'][1]+".awb")
         else:
             awbObj = AWB(self.payload[0]['AwbFile'][1])
         

@@ -20,6 +20,12 @@ wavfilebytes = AdxObj.decode() # Decode will return a bytearray containing decod
 WavObj = ADX("sample.wav") # Wav file or wav file bytes, any works.
 adxbytes = WavObj.encode() # Returns an ADX file as bytes, check the wiki for more options.
 ```
+##### For HCA decoding:
+```python
+from PyCriCodecs import *
+hcaObj = HCA("filename.hca", key=0xCF222F1FE0748978) # You can change the key, or remove it if the HCA is not encrypted.
+wavfile = hcaObj.decode() # Gets you the wav file after decoding.
+```
 ##### For CPK extraction and building:
 ```python
 from PyCriCodecs import *
@@ -44,8 +50,6 @@ usmObj.extract() # extracts all USM contents in the current directory. You can a
 usmObj.demux() # Then you have access to output property.
 usmObj.output # This is a dict containing all chunks in the USM, each key has a value of a list with bytearrays.
 
-# Experimental: USM metadata, this is preparation for USM building, but it returns a dict of dicts, of list which has dicts...
-# Quite complicated but it has all metadata in the USM, it's a payload basically based off Donmai's WannaCri, same with UTF chunks, but that is made and done.
 usmObj.get_metadata() # Not for the user specifically, but if you want to look at the info inside, this is one way. 
 ```
 ##### For ACB or AWB extraction (No support for subkey decryption yet.):
@@ -70,6 +74,15 @@ Check the [Wiki](https://github.com/LittleChungi/PyCriCodecs/wiki/Docs-and-Thoug
 
 ## TODO List
 - Add USM building.
-- Add HCA decoding and encoding.
+- Add HCA encoding.
 - Add AWB/ACB full extraction for all versions, and ACB building as well.
 - And many more.
+
+# Credits
+- [vgmstream](https://github.com/vgmstream/vgmstream) for HCA and ADX decoding codes.
+- [K0lb3](https://github.com/K0lb3) for helping a lot with python and Cpython, as well as helping me writing some of the code.
+- [bnnm](https://github.com/bnnm) for his various contributions on audio formats, helped me a lot with adding ADX and HCA support.
+- [Isaac Lozano](https://github.com/Isaac-Lozano) and his [radx](https://github.com/Isaac-Lozano/radx) (WAV -> ADX) library of which I ported into C++.
+- [Nyagamon](https://github.com/Nyagamon) for a lot of what he did for criware formats.
+- [donmai](https://github.com/donmai-me) and his [writeup](https://listed.to/@donmai/24921/criware-s-usm-format-part-1) of CriWare's UTF format.
+- 9th for also helping me with some python knowledge.

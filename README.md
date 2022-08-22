@@ -57,8 +57,7 @@ usmObj.get_metadata() # Not for the user specifically, but if you want to look a
 from PyCriCodecs import *
 # ACB Extraction:
 acbObj = ACB("filename.acb") # It will attempt to open "filename.awb" as well if there are no sub-banks in the ACB.
-acbObj.extract() # You can add dirname for extraction with dirname="dirname".
-
+acbObj.extract(dirname="dirname", decode=True, key=key) # You can turn off decoding by decode=False.
 # AWB Extraction:
 awbObj = AWB("filename.awb")
 # You can either loop through the audios inside with:
@@ -75,7 +74,7 @@ Check the [Wiki](https://github.com/LittleChungi/PyCriCodecs/wiki/Docs-and-Thoug
 ## TODO List
 - Add USM building.
 - Add HCA encoding.
-- Add AWB/ACB full extraction for all versions, and ACB building as well.
+- Add ACB building.
 - And many more.
 
 # Credits

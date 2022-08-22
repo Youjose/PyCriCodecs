@@ -79,7 +79,7 @@ Check the [Wiki](https://github.com/LittleChungi/PyCriCodecs/wiki/Docs-and-Thoug
 - And many more.
 
 # Credits
-- [vgmstream](https://github.com/vgmstream/vgmstream) for HCA and ADX decoding codes.
+- [vgmstream](https://github.com/vgmstream/vgmstream) for HCA code and some of ADX decoding code.
 - [K0lb3](https://github.com/K0lb3) for helping a lot with python and Cpython, as well as helping me writing some of the code.
 - [bnnm](https://github.com/bnnm) for his various contributions on audio formats, helped me a lot with adding ADX and HCA support.
 - [Isaac Lozano](https://github.com/Isaac-Lozano) and his [radx](https://github.com/Isaac-Lozano/radx) (WAV -> ADX) library of which I ported into C++.

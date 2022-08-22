@@ -2120,8 +2120,6 @@ static PyObject* HcaDecode(PyObject* self, PyObject* args){
     if(subkey){
         keycode = keycode * ( ((uint64_t)subkey << 16u) | ((uint16_t)~subkey + 2u) );
     }
-    std::cout << keycode << std::endl;
-    std::cout << subkey << std::endl;
     clHCA_SetKey(hca, keycode);
     unsigned char *buf = new unsigned char [hca->frame_size];
     signed short *outbuf = new signed short [wavRiff.riffSize]; // wav bytes.

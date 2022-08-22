@@ -3,6 +3,7 @@ import os
 from typing import BinaryIO
 from struct import iter_unpack, pack
 from .chunk import *
+from .hca import HCA
 
 # for AFS2 only.
 class AWB:
@@ -34,40 +35,46 @@ class AWB:
         )
         if magic != b'AFS2':
             raise ValueError("Invalid AWB header.")
-        elif self.subkey != b'\x00\x00':
-            raise NotImplementedError("AWB Subkey decryption is not supported yet.")
         
         # Reads data in the header.
         self.ids = list()
         self.ofs = list()
-        if self.numfiles == 1:
-            self.numfiles += 1
         for i in iter_unpack("<H", self.stream.read(2*self.numfiles)):
             self.ids.append(i[0])
-        for i in iter_unpack("<"+self.stringtypes(intsize), self.stream.read(intsize*self.numfiles)):
-            self.ofs.append(i[0])
+        for i in iter_unpack("<"+self.stringtypes(intsize), self.stream.read(intsize*(self.numfiles+1))):
+            self.ofs.append(i[0] if i[0] % self.align == 0 else (i[0] + (self.align - (i[0] % self.align))))
         
         # Seeks to files offset.
-        headersize = 16 + (intsize*self.numfiles) + (2*self.numfiles)
+        headersize = 16 + (intsize*(self.numfiles+1)) + (2*self.numfiles)
         if headersize % self.align != 0:
             self.headersize = headersize + (self.align - (headersize % self.align))
         self.stream.seek(self.headersize, 0)
 
-    def extract(self):
+    def extract(self, decode=False, key=0):
         """ Extracts the files. """
         count = 0
         for i in self.getfiles():
             # Apparently AWB's can have many types of files, focusing on HCA's here though. So TODO.
             if self.filename:
                 if i.startswith(HCAType.HCA.value) or i.startswith(HCAType.EHCA.value):
-                    filename = self.filename.rsplit(".", 1)[0] + "_" + str(count) + ".hca"
+                    if decode:
+                        filename = self.filename.rsplit(".", 1)[0] + "_" + str(count) + ".wav"
+                    else:
+                        filename = self.filename.rsplit(".", 1)[0] + "_" + str(count) + ".hca"
                 else:
+                    # Probably ADX.
                     filename = self.filename.rsplit(".", 1)[0] + "_" + str(count) + ".dat"
-                open(filename, "wb").write(i)
+                    open(filename, "wb").write(i)
+                    count += 1
+                    continue
+                open(filename, "wb").write(i if not decode else HCA(i, key=key, subkey=self.subkey).decode())
                 count += 1
             else:
                 if i.startswith(HCAType.HCA.value) or i.startswith(HCAType.EHCA.value):
-                    open(str(count)+".hca", "wb").write(i)
+                    if decode:
+                        open(str(count)+".wav", "wb").write(HCA(i, key=key, subkey=self.subkey).decode())
+                    else:
+                        open(str(count)+".hca", "wb").write(i)
                 else:
                     open(str(count)+".dat", "wb").write(i)
                 count += 1
@@ -96,15 +103,15 @@ class AWBBuilder:
     __slots__ = []
 
     # Didn't think I would manage this in one function.
-    def __init__(self, dirname: str, outfile: str, version: int = 2, align: int = 0x20, subkey: bytes = b"\x00\x00") -> None:
+    def __init__(self, dirname: str, outfile: str, version: int = 2, align: int = 0x20, subkey: int = 0) -> None:
         size = 0
         if dirname == "":
             raise ValueError("Invalid directory.")
         elif outfile == "":
             raise ValueError("Invalid output file name.")
-        elif version == 1 and subkey != b"\x00\x00":
+        elif version == 1 and subkey != 0:
             raise ValueError("Cannot have a subkey with AWB version of 1.")
-        elif subkey != b"\x00\x00":
+        elif subkey != 0:
             raise NotImplementedError("Subkey encryption is not supported yet.")
 
         ofs = []
@@ -112,7 +119,7 @@ class AWBBuilder:
         for r, d, f in os.walk(dirname):
             for file in f:
                 sz = os.stat(os.path.join(r, file)).st_size
-                if sz % align != 0:
+                if sz % align != 0: # Doesn't always needs to be this way?
                     sz = sz + (align - sz % align)
                 ofs.append(size+sz)
                 size += sz

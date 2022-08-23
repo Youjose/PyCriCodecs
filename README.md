@@ -52,7 +52,7 @@ usmObj.output # This is a dict containing all chunks in the USM, each key has a 
 
 usmObj.get_metadata() # Not for the user specifically, but if you want to look at the info inside, this is one way. 
 ```
-##### For ACB or AWB extraction (No support for subkey decryption yet.):
+##### For ACB or AWB extraction:
 ```python
 from PyCriCodecs import *
 # ACB Extraction:

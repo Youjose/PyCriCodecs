@@ -2033,50 +2033,56 @@ PyObject *py_decode_err(int code)
     return NULL;
 }
 
+// Taken from Nyagamon's clHCA code.
+struct stWAVEHeader {
+    char riff[4];
+    unsigned int riffSize;
+    char wave[4];
+    char fmt[4];
+    unsigned int fmtSize;
+    unsigned short fmtType;
+    unsigned short fmtChannelCount;
+    unsigned int fmtSamplingRate;
+    unsigned int fmtSamplesPerSec;
+    unsigned short fmtSamplingSize;
+    unsigned short fmtBitCount;
+};
+struct stWAVEsmpl {
+    char smpl[4];
+    unsigned int smplSize;
+    unsigned int manufacturer;
+    unsigned int product;
+    unsigned int samplePeriod;
+    unsigned int MIDIUnityNote;
+    unsigned int MIDIPitchFraction;
+    unsigned int SMPTEFormat;
+    unsigned int SMPTEOffset;
+    unsigned int sampleLoops;
+    unsigned int samplerData;
+    unsigned int loop_Identifier;
+    unsigned int loop_Type;
+    unsigned int loop_Start;
+    unsigned int loop_End;
+    unsigned int loop_Fraction;
+    unsigned int loop_PlayCount;
+};
+struct stWAVEnote {
+    char note[4];
+    unsigned int noteSize;
+    unsigned int dwName;
+};
+struct stWAVEdata {
+    char data[4];
+    unsigned int dataSize;
+};
+
 // code here is a mess.
 static PyObject* HcaDecode(PyObject* self, PyObject* args){
     // Taken from Nyagamon's clHCA code.
-    struct stWAVEHeader {
-        char riff[4];
-        unsigned int riffSize;
-        char wave[4];
-        char fmt[4];
-        unsigned int fmtSize;
-        unsigned short fmtType;
-        unsigned short fmtChannelCount;
-        unsigned int fmtSamplingRate;
-        unsigned int fmtSamplesPerSec;
-        unsigned short fmtSamplingSize;
-        unsigned short fmtBitCount;
-    }wavRiff = { 'R','I','F','F',0,'W','A','V','E','f','m','t',' ',0x10,0,0,0,0,0,0 }; // Riff header.
-    struct stWAVEsmpl {
-        char smpl[4];
-        unsigned int smplSize;
-        unsigned int manufacturer;
-        unsigned int product;
-        unsigned int samplePeriod;
-        unsigned int MIDIUnityNote;
-        unsigned int MIDIPitchFraction;
-        unsigned int SMPTEFormat;
-        unsigned int SMPTEOffset;
-        unsigned int sampleLoops;
-        unsigned int samplerData;
-        unsigned int loop_Identifier;
-        unsigned int loop_Type;
-        unsigned int loop_Start;
-        unsigned int loop_End;
-        unsigned int loop_Fraction;
-        unsigned int loop_PlayCount;
-    }wavSmpl = { 's','m','p','l',0x3C,0,0,0,0x3C,0,0,0,1,0x18,0,0,0,0,0,0 }; // VGMStream uses mostly 0's here.
-    struct stWAVEnote {
-        char note[4];
-        unsigned int noteSize;
-        unsigned int dwName;
-    }wavNote = { 'n','o','t','e',0,0 }; // HCA Comment.
-    struct stWAVEdata {
-        char data[4];
-        unsigned int dataSize;
-    }wavData = { 'd','a','t','a',0 }; // Sample out buffer.
+    stWAVEHeader wavRiff = { 'R','I','F','F',0,'W','A','V','E','f','m','t',' ',0x10,0,0,0,0,0,0 }; // Riff header.
+    stWAVEsmpl wavSmpl = { 's','m','p','l',0x3C,0,0,0,0x3C,0,0,0,1,0x18,0,0,0,0,0,0 }; // VGMStream uses mostly 0's here.
+    stWAVEnote wavNote = { 'n','o','t','e',0,0 }; // HCA Comment.
+    stWAVEdata wavData = { 'd','a','t','a',0 }; // Sample out buffer.
 
     unsigned char *data;
     unsigned int data_size;

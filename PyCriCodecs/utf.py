@@ -300,7 +300,7 @@ class UTFBuilder:
                         self.stflag.append((0x50, UTFTypeValuesList.index(val[1][0]), val[0]))
                         break
                 else:
-                    if val[1][1] == 0:
+                    if val[1][1] == 0 or val[1][1] == "<NULL>":
                         self.stflag.append((0x10, UTFTypeValuesList.index(val[1][0]), val[0]))
                     else:
                         self.stflag.append((0x30, UTFTypeValuesList.index(val[1][0]), val[0], val[1][1]))

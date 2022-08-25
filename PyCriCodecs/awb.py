@@ -85,6 +85,14 @@ class AWB:
             data = self.stream.read((self.ofs[i]-self.ofs[i-1]))
             self.stream.seek(self.ofs[i], 0)
             yield data
+    
+    def getfile_atindex(self, index):
+        """ Gets you a file at specific index. """
+        index += 1
+        self.stream.seek(self.ofs[index], 0)
+        data = self.stream.read(self.ofs[index]-self.ofs[index-1])
+        self.stream.seek(self.headersize, 0) # Seeks back to headersize for getfiles.
+        return data
 
     def stringtypes(self, intsize: int) -> str:
         if intsize == 1:

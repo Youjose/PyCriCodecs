@@ -2080,7 +2080,7 @@ struct stWAVEdata {
 static PyObject* HcaDecode(PyObject* self, PyObject* args){
     // Taken from Nyagamon's clHCA code.
     stWAVEHeader wavRiff = { 'R','I','F','F',0,'W','A','V','E','f','m','t',' ',0x10,0,0,0,0,0,0 }; // Riff header.
-    stWAVEsmpl wavSmpl = { 's','m','p','l',0x3C,0,0,0,0x3C,0,0,0,1,0x18,0,0,0,0,0,0 }; // VGMStream uses mostly 0's here.
+    stWAVEsmpl wavSmpl = { 's','m','p','l',0x3C,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0 }; // Smpl chunk.
     stWAVEnote wavNote = { 'n','o','t','e',0,0 }; // HCA Comment.
     stWAVEdata wavData = { 'd','a','t','a',0 }; // Sample out buffer.
 
@@ -2108,7 +2108,7 @@ static PyObject* HcaDecode(PyObject* self, PyObject* args){
 
     // set smpl chunk looping info.
     if(hca->loop_flag){
-        wavSmpl.samplePeriod = (unsigned int)(1 / (double)wavRiff.fmtSamplingRate * 1000000000);
+        // wavSmpl.samplePeriod = (unsigned int)(1 / (double)wavRiff.fmtSamplingRate * 1000000000); // Nyagamon used this, seems to have no use tho.
         wavSmpl.loop_Start = hca->loop_start_frame * 0x80 * 8 + hca->encoder_padding;
         wavSmpl.loop_End = (hca->loop_end_frame + 1) * 0x80 * 8 - 1;
         wavSmpl.loop_PlayCount = (hca->loop_start_delay == 0x80) ? 0 : hca->loop_start_delay;
@@ -2137,6 +2137,8 @@ static PyObject* HcaDecode(PyObject* self, PyObject* args){
     if(hca->comment_len){
         memcpy(outbuf, &wavNote, sizeof(stWAVEnote));
         outbuf+=(sizeof(stWAVEnote)/2);
+        memcpy(outbuf, hca->comment, hca->comment_len);
+        outbuf+=(hca->comment_len/2);
     }
     memcpy(outbuf, &wavData, sizeof(stWAVEdata));outbuf+=(sizeof(stWAVEdata)/2);
     int res = 0;

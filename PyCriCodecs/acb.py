@@ -46,6 +46,9 @@ class ACB(UTF):
 
         pl = self.payload[0]
         names = [] # Where all filenames will end up in.
+        # cuename > cue > block > sequence > track > track_event > command > synth > waveform
+        # seems to be the general way to do it, some may repeat, and some may go back to other tables.
+        # I will try to make this code go through all of them in advance. 
 
         """ Load Cue names and indexes. """
         cue_names_and_indexes: list[tuple] = []
@@ -91,8 +94,37 @@ class ACB(UTF):
                 raise NotImplementedError("Unsupported ReferenceType.")
 
             else:
-                raise NotImplementedError("Unknown ReferenceType inside ACB")
+                raise NotImplementedError("Unknown ReferenceType inside ACB.")
+        
+    def parse_type1(self):
+        pass
 
+    def parse_type2(self):
+        pass
+
+    def parse_type3(self):
+        pass
+
+    def parse_type8(self):
+        pass
+
+    def parse_cues(self):
+        pass
+
+    def parse_synth(self):
+        pass
+
+    def parse_wavform(self):
+        pass
+
+    def parse_tracktable(self):
+        pass
+
+    def parse_commands(self):
+        pass
+
+    def parse_sequence(self):
+        pass
 
     def extract(self, decode=False, key=0):
         # There are two types of ACB's, one that has an AWB file inside it,

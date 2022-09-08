@@ -323,7 +323,7 @@ class UTFBuilder:
                     strings.append(key)
                 if type(value[1]) == str and value[1] not in strings:
                     strings.append(value[1])
-                if type(value[1]) == bytearray and value[1] not in binary:
+                if (type(value[1]) == bytearray or type(value[1]) == bytes) and value[1] not in binary:
                     binary += value[1]
         self.binary = binary
 

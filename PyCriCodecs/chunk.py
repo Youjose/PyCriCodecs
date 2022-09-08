@@ -1,3 +1,4 @@
+from ast import Str
 from struct import Struct
 from enum import Enum, IntFlag
 
@@ -6,6 +7,10 @@ USMChunkHeader = Struct(">4sIBBHBBBBIIII")
 CPKChunkHeader = Struct("<4sIII")
 AWBChunkHeader = Struct("<4sBBHIHH")
 SBTChunkHeader = Struct("<IIIII")
+WavHeaderStruct = Struct("<4sI4s4sIHHIIHH")
+WavSmplHeaderStruct = Struct("<4sIIIIIIIIIIIIIIII") # Supports only 1 looping point.
+WavNoteHeaderStruct = Struct("<4sII")
+WavDataHeaderStruct = Struct("<4sI")
 
 class USMChunckHeaderType(Enum):
     CRID  = b"CRID" # Header.

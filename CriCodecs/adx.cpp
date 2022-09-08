@@ -35,7 +35,17 @@ struct AdxHeader{
     unsigned short highpassfrequency;
     unsigned char adxversion;
     unsigned char flags;
-    // No looping support yet.
+};
+
+struct Loop{
+    unsigned short AlignmentSamples;
+    unsigned short LoopCount; // Should be 1, otherwise this is unsupported.
+    unsigned short LoopNum;
+    unsigned short LoopType;
+    unsigned int LoopStartSample;
+    unsigned int LoopStartByte;
+    unsigned int LoopEndSample;
+    unsigned int LoopEndByte;
 };
 
 struct WAVEHeader{
@@ -50,6 +60,15 @@ struct WAVEHeader{
     unsigned int fmtSamplesPerSec;
     unsigned short fmtSamplingSize;
     unsigned short fmtBitCount;
+};
+
+struct stWAVEnoteAdx {
+    char note[4];
+    unsigned int noteSize;
+    unsigned int dwName;
+};
+
+struct stWAVEdataAdx {
     char data[4];
     unsigned int dataSize;
 };
@@ -151,11 +170,27 @@ static PyObject* AdxEncode(PyObject* self, PyObject* args){
         return NULL;
     }
     WAVEHeader header = *(WAVEHeader *)infilename;
-    short *data = new short [header.dataSize/2];
-    memcpy(data, infilename, header.dataSize);
+    infilename+=sizeof(WAVEHeader);
+
+    // smpl
+    if(*infilename == 0x73 && *(infilename + 1) == 0x6D && *(infilename + 2) == 0x70 && *(infilename + 3) == 0x6C){
+        infilename += 0x3C + 8; // Initial check is done via python side.
+    }
+    // 6E 6F 74 65 = note
+    if(*infilename == 0x6E && *(infilename + 1) == 0x6F && *(infilename + 2) == 0x74 && *(infilename + 3) == 0x65){
+        stWAVEnoteAdx notechk = *(stWAVEnoteAdx*)infilename;infilename+=sizeof(stWAVEnoteAdx);
+        infilename += notechk.noteSize; // +1? also +padding_size?
+    }
+    // 64 61 74 61 = data
+    stWAVEdataAdx datachk;
+    if(*infilename == 0x64 && *(infilename + 1) == 0x61 && *(infilename + 2) == 0x74 && *(infilename + 3) == 0x61){
+        datachk = *(stWAVEdataAdx*)infilename;infilename+=sizeof(stWAVEdataAdx);
+    }
+    short *data = new short [datachk.dataSize/2];
+    memcpy(data, infilename, datachk.dataSize);
     int v, min=0, max=0, scale;
     short *d = data;
-    unsigned int len = (blocksize*header.fmtChannelCount)*((header.dataSize/header.fmtSamplingSize)/((blocksize-2)*header.fmtChannelCount));
+    unsigned int len = (blocksize*header.fmtChannelCount)*((datachk.dataSize/header.fmtSamplingSize)/((blocksize-2)*header.fmtChannelCount));
     char *outbuf = new char [len];
     memset(outbuf,0,len);
     char *out = outbuf;
@@ -169,11 +204,11 @@ static PyObject* AdxEncode(PyObject* self, PyObject* args){
     memset(hist,0,sizeof(int)*4*header.fmtChannelCount);
     short *samples = new short [((blocksize-2)*header.fmtChannelCount)];
     memset(samples,0,sizeof(short)*((blocksize-2)*header.fmtChannelCount));
-    while (header.dataSize > 0){
+    while (datachk.dataSize > 0){
         for(unsigned int i = 0; i < header.fmtChannelCount; i++){
             min=0;max=0;
             d=data+i;
-            for(unsigned int j=0; j<((blocksize-2)*header.fmtChannelCount)&&header.dataSize>0;j++,d+=header.fmtChannelCount,header.dataSize-=2){
+            for(unsigned int j=0; j<((blocksize-2)*header.fmtChannelCount)&&datachk.dataSize>0;j++,d+=header.fmtChannelCount,datachk.dataSize-=2){
                 v = ((*d << 12) - hist[i*4] * 7400 - hist[i*4+1] * -3342) >> 12;
                 if(v < min)min=v;
                 else if(v > max)max=v;

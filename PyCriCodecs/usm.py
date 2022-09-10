@@ -35,14 +35,24 @@ class USM:
         self.decrypt = False
 
         
-        if key:
+        if key and type(key) != bool:
             self.decrypt = True
             self.init_key(key)
         self.load_file()
     
     def init_key(self, key: str):
-        key1 = bytes.fromhex(key[8:])
-        key2 = bytes.fromhex(key[:8])
+        if type(key) == str:
+            if len(key) < 16:
+                key = key.rjust(16, "0")
+                key1 = bytes.fromhex(key[8:])
+                key2 = bytes.fromhex(key[:8])
+            else:
+                raise ValueError("Inavild input key.")
+        elif type(key) == int:
+            key1 = (key & 0xFFFFFFFF)
+            key2 = (key >> 32)
+        else:
+            raise ValueError("Invalid key format, must be either a string or an integer.")
         t = bytearray(0x20)
         t[0x00:0x09] = [
             key1[3],

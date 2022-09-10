@@ -3,24 +3,24 @@
 #include <Python.h>
 #include <iostream>
 #include <cstring>
+#include <cmath>
+#define M_PI 3.141592653589793
 
 /**
  * ### DECODING ###
  * Shamaless ripoff from Nyagamon/bnnm CRID code, and also improvised from VGMStream decoding method.
  * Although still only works for Encoding version 2, 3 and 4. Encoding 11 and 10 is for AHX.
  * Although I do have to note these codes do not work for any bitdepths other than 4.
+ * @todo Add support for encrypted decoding.
  * @todo Support for AINF or CINF information decoding.
  * @todo Adapt for any bitdepths.
- * @todo Decoding looping information.
  * 
  * ### ENCODING ###
- * An uncomplete and modified port of https://github.com/Isaac-Lozano/radx code, 
- * although changed drastically to two functions only. However, the port is uncomplete
- * as I want to add looping information encoding as well.
+ * A drastically modified port of https://github.com/Isaac-Lozano/radx code,
  * Only works for Encoding version 3.
+ * @todo Add support for encrypted encoding.
  * @todo Adapt for any bitdepths.
- * @todo Add encoding for looping information.
- * @todo Add support for Encoding versions 2 and 4.
+ * @todo Add support for Encoding versions 2.
  */
 
 struct AdxHeader{
@@ -73,15 +73,45 @@ struct stWAVEdataAdx {
     unsigned int dataSize;
 };
 
-char getbits(int sample, int scale, int *hist, int i){
-    int delta = ((sample << 12) - 7400 * hist[i*4] - hist[i*4+1] * -3342) >> 12;
+int MultiplyDeBruijnBitPosition[] = {
+    0, 9, 1, 10, 13, 21, 2, 29, 11, 14, 16, 18, 22, 25, 3, 30,
+    8, 12, 20, 28, 15, 17, 24, 7, 19, 27, 23, 6, 26, 5, 4, 31
+};
+
+int log2_mod_from_VGAudio(int value){
+    value |= value >> 1;
+    value |= value >> 2;
+    value |= value >> 4;
+    value |= value >> 8;
+    value |= value >> 16;
+
+    return MultiplyDeBruijnBitPosition[(unsigned int)(value * 0x07C4ACDDU) >> 27];
+}
+
+int *CalculateCoefficients(int* coefs, unsigned int highpassFreq, int sampleRate)
+{
+    double sqrt2 = sqrt(2);
+    double a = sqrt2 - cos(2.0 * M_PI * highpassFreq / sampleRate);
+    double b = sqrt2 - 1;
+    double c = (a - sqrt((a + b) * (a - b))) / b;
+
+    coefs[0] = (int)(c * 8192);
+    coefs[1] = (int)(c * c * -4096);
+
+    return coefs;
+}
+
+char getbits(int sample, int scale, int *hist, int i, int* coeffs){
+    int delta = ((sample << 12) - coeffs[0] * hist[i*4] - hist[i*4+1] * coeffs[1]) >> 12;
+    // int delta = (sample) - (hist[i*4] * 7400 >> 12) - (hist[i*4+1] * -3342 >> 12);
     int unclip;
     if(scale==0)scale=1;
     unclip = (delta>0) ? delta + (scale >> 1) : delta - (scale >> 1);unclip /= scale;
     if(unclip > 7)unclip=7;
     else if(unclip < -8)unclip=-8;
     int bits = unclip;
-    int sim_unclip = ((bits << 12) * scale + 7400 * hist[i*4] + hist[i*4+1] * -3342) >> 12;
+    int sim_unclip = ((bits << 12) * scale + coeffs[0] * hist[i*4] + hist[i*4+1] * coeffs[1]) >> 12;
+    // int sim_unclip = (bits * scale) + (hist[i*4] * 7400 >> 12) + (hist[i*4+1] * -3342 >> 12);
     if(sim_unclip > 0x7FFF)sim_unclip=0x7FFF;
     else if(sim_unclip < -0x8000)sim_unclip=-0x8000;
     int sim_clip = sim_unclip;
@@ -90,24 +120,19 @@ char getbits(int sample, int scale, int *hist, int i){
     return (char)bits;
 }
 
-bool Decode(int *d,unsigned char *s, AdxHeader header){
+bool Decode(int *d,unsigned char *s, AdxHeader header, int* coeffs){
     if (s[0] == 0x80 && s[1] == 0x01){return false;} // 0x8001 EoF scale.
     char predictor = s[0] >> 5;
-	int scale=_byteswap_ushort(*(unsigned short *)s);s+=2;  
-    int coeffs[2];
+	int scale=_byteswap_ushort(*(unsigned short *)s);s+=2;
     if(header.encoding == 4){
         scale = 1 << (12 - scale);
-        coeffs[0] = 7400;
-        coeffs[1] = -3342;
     }else if(header.encoding == 2){
         scale = (scale & 0x1fff) + 1;
-        static const int static_coeffs[8] = {0x0000,0x0000,0x0F00,0x0000,0x1CC0,0xF300,0x1880,0xF240};
+        static const signed short static_coeffs[8] = {0x0000,0x0000,0x0F00,0x0000,0x1CC0,0xF300,0x1880,0xF240};
         coeffs[0] = static_coeffs[predictor*2 + 0];
         coeffs[1] = static_coeffs[predictor*2 + 1];
     }else{
-        scale += 1; // Not sure why, but present in VGMStream code.
-        coeffs[0] = 7400;
-        coeffs[1] = -3342;
+        scale += 1;
     }
 	int v,p=d[((header.blocksize-2)*header.channelcount)-1],pp=d[((header.blocksize-2)*header.channelcount)-2];
 	for(int i=(header.blocksize-2);i>0;i--,s++){
@@ -121,11 +146,11 @@ bool Decode(int *d,unsigned char *s, AdxHeader header){
     return true;
 }
 
-bool Decode(void *data,int size,int* _data, AdxHeader &header, char *&outdata){
+bool Decode(void *data,int size,int* _data, AdxHeader &header, char *&outdata, int* coeffs){
     for(unsigned char *s=(unsigned char *)data,*e=s+size-header.blocksize*header.channelcount;s<=e;){
         int *d=_data;
         for(unsigned int i=header.channelcount;i>0;i--,d+=((header.blocksize-2)*header.channelcount),s+=header.blocksize){
-            if(!Decode(d,s, header)){
+            if(!Decode(d,s, header, coeffs)){
                 return false;
             }
         }
@@ -148,12 +173,14 @@ void Decode(char* fp, AdxHeader header, char *outdata){
 	unsigned char *data=new unsigned char [size];
     int *_data = new int [((header.blocksize-2)*header.channelcount)*header.channelcount];
 	memset(_data,0,sizeof(int)*((header.blocksize-2)*header.channelcount)*header.channelcount);
+    int *coeffs = new int[2];
+    coeffs = CalculateCoefficients(coeffs, header.highpassfrequency, header.samplerate);
     while(header.samplecount){
         for(unsigned int i = 0; i<size; i++, fp++, data++){
             *data = *fp;
         }
         data -= size;
-		if (!Decode(data,size,_data, header, outdata)){
+		if (!Decode(data,size,_data, header, outdata, coeffs)){
             break;
         }
 	}
@@ -166,7 +193,9 @@ static PyObject* AdxEncode(PyObject* self, PyObject* args){
     char* infilename;
     Py_ssize_t infilename_size;
     unsigned int blocksize;
-    if(!PyArg_ParseTuple(args, "y#I", &infilename, &infilename_size, &blocksize)){
+    unsigned int encoding_ver;
+    unsigned int highpass_freq;
+    if(!PyArg_ParseTuple(args, "y#III", &infilename, &infilename_size, &blocksize, &encoding_ver, &highpass_freq)){
         return NULL;
     }
     WAVEHeader header = *(WAVEHeader *)infilename;
@@ -188,7 +217,7 @@ static PyObject* AdxEncode(PyObject* self, PyObject* args){
     }
     short *data = new short [datachk.dataSize/2];
     memcpy(data, infilename, datachk.dataSize);
-    int v, min=0, max=0, scale;
+    int v, min=0, max=0, scale, power;
     short *d = data;
     unsigned int len = (blocksize*header.fmtChannelCount)*((datachk.dataSize/header.fmtSamplingSize)/((blocksize-2)*header.fmtChannelCount));
     char *outbuf = new char [len];
@@ -204,12 +233,17 @@ static PyObject* AdxEncode(PyObject* self, PyObject* args){
     memset(hist,0,sizeof(int)*4*header.fmtChannelCount);
     short *samples = new short [((blocksize-2)*header.fmtChannelCount)];
     memset(samples,0,sizeof(short)*((blocksize-2)*header.fmtChannelCount));
+    int* coeffs = new int [2];
+    coeffs = CalculateCoefficients(coeffs, highpass_freq, header.fmtSamplingRate);
     while (datachk.dataSize > 0){
         for(unsigned int i = 0; i < header.fmtChannelCount; i++){
             min=0;max=0;
+            int md = 0;
+            int y=0;
             d=data+i;
             for(unsigned int j=0; j<((blocksize-2)*header.fmtChannelCount)&&datachk.dataSize>0;j++,d+=header.fmtChannelCount,datachk.dataSize-=2){
-                v = ((*d << 12) - hist[i*4] * 7400 - hist[i*4+1] * -3342) >> 12;
+                v = (((int)(*d) << 12) - hist[i*4] * coeffs[0] - hist[i*4+1] * coeffs[1]) >> 12;
+                // v = *d - (hist[i*4] * 7400 >> 12) - (hist[i*4+1] * -3342 >> 12);
                 if(v < min)min=v;
                 else if(v > max)max=v;
                 samples[j] = *d;
@@ -222,16 +256,30 @@ static PyObject* AdxEncode(PyObject* self, PyObject* args){
                 }
                 continue;
             }
-            scale = (max/7 > min/8) ? max/7 : min/-8;
+            unsigned short bscale;
+            switch (encoding_ver)
+            {
+            case 4:
+                scale = (max/7 > min/-8) ? max/7 : min/-8;
+                power = scale == 0 ? 0 : log2_mod_from_VGAudio(scale) + 1;
+                scale = 1 << power;
+                bscale = _byteswap_ushort(12 - power);
+                break;
+            
+            default:
+                scale = (max/7 > min/-8) ? max/7 : min/-8;
+                bscale = _byteswap_ushort(scale);
+                break;
+            }
+
             hist[i*4]=hist[i*4+2];hist[i*4+1]=hist[i*4+3];
-            unsigned short bscale = _byteswap_ushort(scale);
             *(unsigned short*)outbuf = bscale;
             outbuf+=2;
             for(unsigned int j=0;j<((blocksize-2)*header.fmtChannelCount)/2;j++){
                 int sample = (int)samples[j*2];
                 int sample_= (int)samples[j*2 + 1];
-                char upbits = getbits(sample, scale, hist, i);
-                char dnbits = getbits(sample_, scale, hist, i);
+                char upbits = getbits(sample, scale, hist, i, coeffs);
+                char dnbits = getbits(sample_, scale, hist, i, coeffs);
                 char byte = (upbits << 4) | (dnbits & 0xF);
                 *(outbuf++) = byte;
             }
@@ -248,6 +296,8 @@ static PyObject* AdxDecode(PyObject* self, PyObject* args){
     AdxHeader header = *(AdxHeader *)data;
     data += _byteswap_ushort((header.dataoffset))+4;
     header.samplecount = _byteswap_ulong(header.samplecount);
+    header.samplerate = _byteswap_ulong(header.samplerate);
+    header.highpassfrequency = _byteswap_ushort(header.highpassfrequency);
     unsigned int len = header.channelcount*2*header.samplecount;
     char *outdata = new char [len];
     memset(outdata,0,len);

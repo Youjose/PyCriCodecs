@@ -112,7 +112,7 @@ class ADX:
                 if self.AdxVersion == 4 or self.AdxVersion == 3:
                     if self.AdxVersion == 4:
                         self.sfaStream.seek(4 + 4 * self.channelCount, 1)
-                    if self.sfaStream.tell() + 24 <= self.dataOffset:
+                    if self.sfaStream.tell() + 24 <= self.dataOffset - 2:
                         self.AlignmentSamples, self.LoopCount, self.LoopNum, self.LoopType, self.LoopStartSample, self.LoopStartByte, self.LoopEndSample, self.LoopEndByte = AdxLoopHeaderStruct.unpack(
                             self.sfaStream.read(AdxLoopHeaderStruct.size)
                         )
@@ -202,43 +202,50 @@ class ADX:
         return outfile
             
     # Encodes WAV to ADX.
-    def encode(self, Blocksize = 0x12, AdxVersion = 0x4, DataOffset = 0x011C) -> bytearray:
+    def encode(self, Blocksize = 0x12, AdxVersion = 0x4, DataOffset = 0x011C, Encoding = 3, Highpass_Frequency = 0x1F4) -> bytearray:
 
         if self.filetype != "wav":
             raise ValueError("Not a WAV file or an unsupported file version.")
         elif self.riffSignature != b"RIFF" and self.wave != b'WAVE' and self.fmt != b'fmt ' and self.dataSig != b'data':
-            raise ValueError("Not a WAV file or an unsupported file version.")
+            raise ValueError("Not a WAV file or an unsupported WAV file version.")
+        elif Encoding == 0x10 or Encoding == 0x11 or AdxVersion == 6:
+            raise NotImplementedError("Unsupported AHX encoding.")
+        elif Highpass_Frequency > 0xFFFF or Highpass_Frequency <= 0:
+            raise ValueError(f"Highpass Cut-off Frequency must not exceed {0xFFFF} nor equal to 0 or below it.")
+        elif Blocksize < 3 or Blocksize > 0xFF:
+            raise ValueError("Blocksize cannot be smaller than 3, nor bigger than 255.")
         elif not (AdxVersion == 3 or AdxVersion == 4 or AdxVersion == 5):
-            raise NotImplementedError("Unsupported ADX version, Supported versions are: 3, 4 and 5.")
-        # elif AdxVersion == 0x10 or AdxVersion == 0x11:
-        #     raise NotImplementedError("Unsupported AHX encoding.")
+            raise ValueError("Unknown or non-existing ADX version, Supported versions are: 3, 4 and 5.")
+        elif not (Encoding == 3 or Encoding == 4):
+            raise NotImplementedError(f"Unsupported {Encoding} encoding, only Encoding version 3 and 4 are supported.")
         if AdxVersion == 5: # 5 is supposedly like 4 but without looping support.
             self.looping = False
         
         if self.looping:
             if AdxVersion != 3:
-                assert DataOffset > (0x38 - 0xC)
+                assert DataOffset >= (0x14 + 0x18 + (4 + 4 * self.fmtChannelCount) + 2)
             else:
-                assert DataOffset > 0x38
+                assert DataOffset >= 0x2C + 2
         else:
             if AdxVersion == 4 or AdxVersion == 5:
-                assert DataOffset > 0x20
+                assert DataOffset >= (0x14 + 4 + 4 * self.fmtChannelCount) + 2
+            else:
+                assert DataOffset >= 0x14 + 2
         
         channelCount = self.fmtChannelCount
         SamplingRate = self.fmtSamplingRate
         sampleCount = self.dataSize // self.fmtSamplingSize
-        Encoding = 0x3 # Only supported encoding version.
         AdxHeader = AdxHeaderStruct.pack(
                                         0x8000, # Signature.
-                                        DataOffset, # DataOffset, seems static.
-                                        Encoding, # Encoding.
-                                        Blocksize, # Blocksize, set at 0x12.
+                                        DataOffset,
+                                        Encoding,
+                                        Blocksize,
                                         0x4, # Sample Bitdepth.
                                         channelCount,
                                         SamplingRate,
                                         sampleCount,
-                                        0x1F4, # Highpass Frequency, always 0x1F4.(?)
-                                        AdxVersion, # Version, 4 and 3 seems the same? Version 5 same as 4, does not support looping.
+                                        Highpass_Frequency, # Highpass Frequency, always 0x1F4.(?)
+                                        AdxVersion, # Version, 4 and 3 seems the same? Version 5 is the same as 4, does not support looping.
                                         0x0 # Flags.
                                         )
         AdxFooter = pack(">HH",
@@ -278,7 +285,7 @@ class ADX:
         else:
             outfile += bytearray(DataOffset-22)
         outfile.extend(b'(c)CRI')
-        outfile.extend(CriCodecs.AdxEncode(self.wavStream.read(), Blocksize))
+        outfile.extend(CriCodecs.AdxEncode(self.wavStream.read(), Blocksize, Encoding, Highpass_Frequency))
         self.wavStream.close()
         outfile.extend(AdxFooter)
         return outfile

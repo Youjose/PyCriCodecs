@@ -1,4 +1,3 @@
-from ast import Str
 from struct import Struct
 from enum import Enum, IntFlag
 
@@ -7,7 +6,7 @@ USMChunkHeader = Struct(">4sIBBHBBBBIIII")
 CPKChunkHeader = Struct("<4sIII")
 AWBChunkHeader = Struct("<4sBBHIHH")
 SBTChunkHeader = Struct("<IIIII")
-WavHeaderStruct = Struct("<4sI4s4sIHHIIHH")
+WavHeaderStruct = Struct("<4sI4s4sIHHIIHH") # This is wrong, FMT Struct should be on it's own away from RIFF.
 WavSmplHeaderStruct = Struct("<4sIIIIIIIIIIIIIIII") # Supports only 1 looping point.
 WavNoteHeaderStruct = Struct("<4sII")
 WavDataHeaderStruct = Struct("<4sI")
@@ -30,8 +29,8 @@ class CPKChunkHeaderType(Enum):
     ITOC  = b"ITOC" # Cpkmode 0, 2.
     ETOC  = b"ETOC" # Cpkmode 2, 3.
     GTOC  = b"GTOC" # Cpkmode 3.
-    HTOC  = b"HTOC" # Unkown.
-    HGTOC = b"HGTOC"# Unkown.
+    HTOC  = b"HTOC" # Unknown.
+    HGTOC = b"HGTOC"# Unknown.
 
 class UTFType(Enum):
     UTF   = b"@UTF" # Header.
@@ -57,6 +56,6 @@ class UTFTypeValues(IntFlag):
     ullong = 6
     llong  = 7
     float  = 8
-    double = 9
+    double = 9 # Doesn't seem to exist.
     string = 10
     bytes  = 11

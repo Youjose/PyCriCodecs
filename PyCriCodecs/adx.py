@@ -73,6 +73,8 @@ class ADX:
             self.wavStream.read(WavHeaderStruct.size)
             )
             if self.riffSignature == b"RIFF" and self.wave == b'WAVE' and self.fmt == b'fmt ':
+                if self.fmtBitCount != 16:
+                    raise ValueError(f"WAV bitdepth of {self.fmtBitCount} is not supported, only 16 bit WAV files are supported.")
                 if self.wavStream.read(4) == b"smpl":
                     self.wavStream.seek(-4, 1)
                     self.looping = True
@@ -228,7 +230,7 @@ class ADX:
                 assert DataOffset >= 0x2C + 2
         else:
             if AdxVersion == 4 or AdxVersion == 5:
-                assert DataOffset >= (0x14 + 4 + 4 * self.fmtChannelCount) + 2
+                assert DataOffset >= (0x14 + (4 + 4 * self.fmtChannelCount)) + 2
             else:
                 assert DataOffset >= 0x14 + 2
         
@@ -239,14 +241,14 @@ class ADX:
                                         0x8000, # Signature.
                                         DataOffset,
                                         Encoding,
-                                        Blocksize,
+                                        Blocksize, # Apparently, the OG codec only supports multiple of 0x12.
                                         0x4, # Sample Bitdepth.
                                         channelCount,
                                         SamplingRate,
                                         sampleCount,
                                         Highpass_Frequency, # Highpass Frequency, always 0x1F4.(?)
                                         AdxVersion, # Version, 4 and 3 seems the same? Version 5 is the same as 4, does not support looping.
-                                        0x0 # Flags.
+                                        0x0 # Flags. 8 or 9 for Encryption. Ahx can also be encrypted.
                                         )
         AdxFooter = pack(">HH",
                         0x8001, # EOF scale.

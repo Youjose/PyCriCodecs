@@ -6,9 +6,10 @@ To install run
 ```
 python setup.py install
 ```
-
-Usage:
 Note: all libs here are standardized to take either a filename/path or bytes/bytearray, so you can swap both.
+Also, for audio related codecs, the looping input and output is defined in the metadata, the WAV file will not loop, but it will have a "smpl" chunk in the header, same if you want to encode a looping HCA or an ADX, the WAV must have a smpl chunk.
+Otherwise it will loop normally.
+### Usage:
 ##### For ADX decoding and encoding:
 ```python
 from PyCriCodecs import *
@@ -20,11 +21,15 @@ wavfilebytes = AdxObj.decode() # Decode will return a bytearray containing decod
 WavObj = ADX("sample.wav") # Wav file or wav file bytes, any works.
 adxbytes = WavObj.encode() # Returns an ADX file as bytes, check the wiki for more options.
 ```
-##### For HCA decoding:
+##### For HCA decoding and encoding:
 ```python
 from PyCriCodecs import *
 hcaObj = HCA("filename.hca", key=0xCF222F1FE0748978) # You can change the key, or remove it if the HCA is not encrypted.
 wavfile = hcaObj.decode() # Gets you the wav file after decoding.
+
+wavObj = HCA("filename.wav") # No support for encryption yet.
+hcabytes = wavObj.encode() # and you will get an HCA file.
+# You can alsoo force disable looping on HCA output by force_not_looping = True.
 ```
 ##### For CPK extraction and building:
 ```python
@@ -73,12 +78,12 @@ Check the [Wiki](https://github.com/LittleChungi/PyCriCodecs/wiki/Docs-and-Thoug
 
 ## TODO List
 - Add USM building.
-- Add HCA encoding.
 - Add ACB building.
-- And many more.
+- And, not a lot else. Check the wiki for my future plans.
 
 # Credits
 - [vgmstream](https://github.com/vgmstream/vgmstream) for HCA code and some of ADX decoding code.
+- [VGAudio](https://github.com/Thealexbarney/VGAudio) for some help about ADX Encoding version 4, and HCA encoding.
 - [K0lb3](https://github.com/K0lb3) for helping a lot with python and Cpython, as well as helping me writing some of the code.
 - [bnnm](https://github.com/bnnm) for his various contributions on audio formats, helped me a lot with adding ADX and HCA support.
 - [Isaac Lozano](https://github.com/Isaac-Lozano) and his [radx](https://github.com/Isaac-Lozano/radx) (WAV -> ADX) library of which I ported into C++.

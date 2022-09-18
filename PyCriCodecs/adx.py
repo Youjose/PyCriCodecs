@@ -75,11 +75,13 @@ class ADX:
             if self.riffSignature == b"RIFF" and self.wave == b'WAVE' and self.fmt == b'fmt ':
                 if self.fmtBitCount != 16:
                     raise ValueError(f"WAV bitdepth of {self.fmtBitCount} is not supported, only 16 bit WAV files are supported.")
+                elif self.fmtSize != 16:
+                    raise ValueError(f"WAV file has an FMT chunk of an unsupported size: {self.fmtSize}, the only supported size is 16.")
                 if self.wavStream.read(4) == b"smpl":
                     self.wavStream.seek(-4, 1)
                     self.looping = True
                     # Will just be naming the important things here.
-                    smplsig, smplesize, r1, r2, r3, r4, r5, r6, r7, self.LoopCount, r8, r9, r10, self.LoopStartSample, self.LoopEndSample, r11, r12 = WavSmplHeaderStruct.unpack(
+                    smplsig, smplesize, _, _, _, _, _, _, _, self.LoopCount, _, _, _, self.LoopStartSample, self.LoopEndSample, _, _ = WavSmplHeaderStruct.unpack(
                         self.wavStream.read(WavSmplHeaderStruct.size)
                     )
                     if self.LoopCount != 1:
@@ -113,7 +115,7 @@ class ADX:
             if self.Adxsignature == 0x8000:
                 if self.AdxVersion == 4 or self.AdxVersion == 3:
                     if self.AdxVersion == 4:
-                        self.sfaStream.seek(4 + 4 * self.channelCount, 1)
+                        self.sfaStream.seek(4 + 4 * self.channelCount, 1) # Padding + Hist values, they always seem to be 0.
                     if self.sfaStream.tell() + 24 <= self.dataOffset - 2:
                         self.AlignmentSamples, self.LoopCount, self.LoopNum, self.LoopType, self.LoopStartSample, self.LoopStartByte, self.LoopEndSample, self.LoopEndByte = AdxLoopHeaderStruct.unpack(
                             self.sfaStream.read(AdxLoopHeaderStruct.size)
@@ -213,7 +215,8 @@ class ADX:
         elif Encoding == 0x10 or Encoding == 0x11 or AdxVersion == 6:
             raise NotImplementedError("Unsupported AHX encoding.")
         elif Highpass_Frequency > 0xFFFF or Highpass_Frequency <= 0:
-            raise ValueError(f"Highpass Cut-off Frequency must not exceed {0xFFFF} nor equal to 0 or below it.")
+            # For the record, I am allowing this to reach 0xFFFF since the header allows it, I am not sure if the Audio is effected.
+            raise ValueError(f"Highpass Cut-off Frequency must not exceed {0xFFFF} nor equal to 0 or below it.") 
         elif Blocksize < 3 or Blocksize > 0xFF:
             raise ValueError("Blocksize cannot be smaller than 3, nor bigger than 255.")
         elif not (AdxVersion == 3 or AdxVersion == 4 or AdxVersion == 5):
@@ -283,7 +286,7 @@ class ADX:
             if AdxVersion == 3:
                 outfile += bytearray(DataOffset-22-0x18)
             else:
-                outfile += bytearray(DataOffset-22-0x24)
+                outfile += bytearray(DataOffset-22-(0x18 + (4 + 4 * self.fmtChannelCount)))
         else:
             outfile += bytearray(DataOffset-22)
         outfile.extend(b'(c)CRI')

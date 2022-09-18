@@ -70,7 +70,7 @@ class UTF:
             elif stflag == 0x5:
                 target_data.append(int.from_bytes(stream.read(4), "big"))
                 types[0].append((">"+self.stringtypes(typeflag), typeflag))
-            elif stflag == 0x7:
+            elif stflag == 0x7: # I've seen one article referencing this, but I never saw it personally.
                 # target_tuple.append((int.from_bytes(stream.read(4), "big"), int.from_bytes(stream.read(calcsize(self.stringtypes(typeflag))), "big")))
                 # types[3].append((">"+self.stringtypes(typeflag), typeflag))
                 raise NotImplementedError("Unsupported 0x70 storage flag.")

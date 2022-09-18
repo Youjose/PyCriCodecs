@@ -10,6 +10,7 @@ static struct PyMethodDef Codec_methods[] = {
     { "AdxEncode", (PyCFunction)AdxEncode, METH_VARARGS, nullptr },
     { "CriLaylaDecompress", (PyCFunction)CriLaylaDecompress, METH_O, nullptr },
     { "HcaDecode", (PyCFunction)HcaDecode, METH_VARARGS, nullptr },
+    { "HcaEncode", (PyCFunction)HcaEncode, METH_VARARGS, nullptr },
     { nullptr, nullptr, 0, nullptr }
 };
 

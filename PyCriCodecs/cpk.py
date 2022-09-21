@@ -29,7 +29,7 @@ class CPK:
     packet_size: int
     unk0C: int
     stream: BinaryIO
-    tables: dict[dict[list]]
+    tables: dict
     filename: str
     def __init__(self, filename) -> None:
         if type(filename) == str:

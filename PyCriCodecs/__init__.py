@@ -6,3 +6,4 @@ from .usm import USM, USMBuilder
 from .utf import UTF, UTFBuilder
 from .acb import ACB, ACBBuilder
 from .awb import AWB, AWBBuilder
+import CriCodecs

@@ -206,7 +206,7 @@ class ADX:
         return outfile
             
     # Encodes WAV to ADX.
-    def encode(self, Blocksize = 0x12, AdxVersion = 0x4, DataOffset = 0x011C, Encoding = 3, Highpass_Frequency = 0x1F4) -> bytearray:
+    def encode(self, Blocksize = 0x12, AdxVersion = 0x4, DataOffset = 0x011C, Encoding = 3, Highpass_Frequency = 0x1F4, force_not_looping = False) -> bytearray:
 
         if self.filetype != "wav":
             raise ValueError("Not a WAV file or an unsupported file version.")
@@ -223,7 +223,7 @@ class ADX:
             raise ValueError("Unknown or non-existing ADX version, Supported versions are: 3, 4 and 5.")
         elif not (Encoding == 3 or Encoding == 4):
             raise NotImplementedError(f"Unsupported {Encoding} encoding, only Encoding version 3 and 4 are supported.")
-        if AdxVersion == 5: # 5 is supposedly like 4 but without looping support.
+        if AdxVersion == 5 or force_not_looping: # 5 is supposedly like 4 but without looping support.
             self.looping = False
         
         if self.looping:
@@ -288,7 +288,10 @@ class ADX:
             else:
                 outfile += bytearray(DataOffset-22-(0x18 + (4 + 4 * self.fmtChannelCount)))
         else:
-            outfile += bytearray(DataOffset-22)
+            if AdxVersion == 3:
+                outfile += bytearray(DataOffset-22)
+            else:
+                outfile += bytearray(DataOffset-22-(4 + 4 * self.fmtChannelCount))
         outfile.extend(b'(c)CRI')
         outfile.extend(CriCodecs.AdxEncode(self.wavStream.read(), Blocksize, Encoding, Highpass_Frequency))
         self.wavStream.close()

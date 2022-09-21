@@ -14,8 +14,8 @@ class AWB:
     align: int
     subkey: bytes
     version: int
-    ids: list[int]
-    ofs: list[int]
+    ids: list
+    ofs: list
     filename: str
     headersize: int
 

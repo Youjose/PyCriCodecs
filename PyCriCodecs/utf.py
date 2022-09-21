@@ -20,7 +20,7 @@ class UTF:
     num_rows: int
     stream: BinaryIO
     table: dict
-    __payload: list[dict]
+    __payload: list
     encoding: str
     def __init__(self, stream):
         if type(stream) == str:
@@ -174,7 +174,7 @@ class UTF:
         else:
             raise Exception("Failed string lookup.")
     
-    def get_payload(self) -> list[dict]:
+    def get_payload(self) -> list:
         # I am a noob, but I want to standardize the table output to Donmai WannaCri's payload type.
         # Since my table parser has a different approach (an awful one at that),
         # (And it's integrated with the other tools in this lib specifically),
@@ -192,17 +192,17 @@ class UTFBuilder:
                 "table_name", "binary", "table", "rows_data", "stflag", "column_data",
                 "data_offset"]
     encoding: str
-    dictarray: list[dict[UTFTypeValues,]]
+    dictarray: list
     strings: bytes
     table_name: str
     binary: bytes
     table: bytearray
-    stflag: list[tuple[int, UTFTypeValues]]
+    stflag: list
     rows_data: bytearray
     column_data: bytearray
     data_offset: int
     
-    def __init__(self, dictarray: list[dict], encrypt: bool = False, encoding: str = "utf-8", table_name: str = "PyCriCodecs_table") -> None:
+    def __init__(self, dictarray: list, encrypt: bool = False, encoding: str = "utf-8", table_name: str = "PyCriCodecs_table") -> None:
         l = set([len(x) for x in dictarray])
         if len(l) != 1:
             raise ValueError("All dictionaries must be equal in length.")

@@ -59,11 +59,11 @@ class HCA:
             self.stream.read(HcaHeaderStruct.size)
         )
         self.stream.seek(0)
-        if self.HcaSig in [HCAType.HCA.value, HCAType.EHCA]:
+        if self.HcaSig in [HCAType.HCA.value, HCAType.EHCA.value]:
             self.filetype = "hca"
             if self.HcaSig != HCAType.HCA.value and self.HcaSig != HCAType.EHCA.value:
                 raise ValueError("Invalid HCA file.")
-            elif self.HcaSig == HCAType.EHCA and not self.key:
+            elif self.HcaSig == HCAType.EHCA.value and not self.key:
                 self.key = 0xCF222F1FE0748978 # Default HCA key.
             elif self.key < 0:
                 raise ValueError("HCA key cannot be a negative.")
@@ -110,6 +110,8 @@ class HCA:
                 else:
                     raise ValueError("Invalid or an unsupported wav file.")
                 self.stream.seek(0)
+        else:
+            raise ValueError("Invalid HCA or WAV file.")
         
         # TODO Redo header parsing here as well, instead of it being only on C++.
         self.hca = dict(Header=self.HcaSig, version=hex(self.version), HeaderSize=self.header_size)

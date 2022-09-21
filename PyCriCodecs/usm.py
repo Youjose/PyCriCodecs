@@ -20,9 +20,9 @@ class USM:
     audiomask: bytearray
     decrypt: bool
     stream: BinaryIO
-    __fileinfo: list[dict]
+    __fileinfo: list
     CRIDObj: UTF
-    output: dict[str, list[bytearray]]
+    output: dict
     size: int
     codec: int
 

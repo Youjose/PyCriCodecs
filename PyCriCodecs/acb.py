@@ -9,7 +9,7 @@ import os
 class ACB(UTF):
     """ An ACB is basically a giant @UTF table. Use this class to extract any ACB. """
     __slots__ = ["filename", "payload", "dirname", "filename"]
-    payload: list[dict]
+    payload: list
     dirname: str
     filename: str
 
@@ -20,7 +20,7 @@ class ACB(UTF):
         self.dirname = dirname
         # TODO check on ACB version.
     
-    def acbparse(self, payload: list[dict]) -> None:
+    def acbparse(self, payload: list) -> None:
         """ Recursively parse the payload. """
         for dict in range(len(payload)):
             for k, v in payload[dict].items():

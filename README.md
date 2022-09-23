@@ -1,6 +1,25 @@
 # PyCriCodecs
 Python frontend with a C++ backend for managing Criware formats. 
 Although for some tasks, python is used purely.
+
+## Supporting
+I am running this on Python 3.9, although other earlier versions might work
+So far this lib supports in terms of:
+    Extracting:
+        ACB/AWB
+        USM
+        CPK
+    Decoding:
+        ADX
+        HCA
+    Building:
+        CPK
+        AWB
+    Encoding:
+        HCA
+        ADX
+With more planned coming soon.
+
 ## Installation and Usage
 To install run
 ```
@@ -24,11 +43,12 @@ adxbytes = WavObj.encode() # Returns an ADX file as bytes, check the wiki for mo
 ##### For HCA decoding and encoding:
 ```python
 from PyCriCodecs import *
-hcaObj = HCA("filename.hca", key=0xCF222F1FE0748978) # You can change the key, or remove it if the HCA is not encrypted.
+hcaObj = HCA("filename.hca", key=0xCF222F1FE0748978) # You can change the key, or remove it if the HCA is not encrypted. Key can be a hex string.
 wavfile = hcaObj.decode() # Gets you the wav file after decoding.
 
-wavObj = HCA("filename.wav") # No support for encryption yet.
-hcabytes = wavObj.encode() # and you will get an HCA file.
+wavObj = HCA("filename.wav")
+hcabytes = wavObj.encode(encrypt=True) # and you will get an HCA file.
+# You can provide a key from when initializing, otherwise it will default to the default key, you can also encrypt keyless with keyless=true.
 # You can alsoo force disable looping on HCA output by force_not_looping = True.
 ```
 ##### For CPK extraction and building:
@@ -48,7 +68,7 @@ CPKBuilder("dirname", "outfile.cpk", CpkMode=1) # CpkMode is important sometimes
 ```python
 from PyCriCodecs import *
 # Extraction:
-usmObj = USM("filename.cpk") # or bytes, you can add a key by key="KEYINHEXGOESHERE" must be padded to 8 characters with 0's if not.
+usmObj = USM("filename.cpk") # or bytes, you can add a key by key="KEYINHEXGOESHERE"
 usmObj.extract() # extracts all USM contents in the current directory. You can add a directory with extract(dirname = "Example")
 
 # You can also demux the USM internally and manage with the output bytes all you want.

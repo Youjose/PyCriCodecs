@@ -76,6 +76,7 @@ class HCA:
     encrypted: bool
     enc_table: array
     table: array
+    looping: bool
 
     def __init__(self, stream: BinaryIO, key: int = 0, subkey: int = 0) -> None:
         if type(stream) == str:
@@ -173,6 +174,7 @@ class HCA:
                         self.encrypted = True
                     self.hca.update(dict(CiphSig = ciphsig, CipherType = ciphertype))
                 elif sig == b"loop":
+                    self.looping = True
                     loopsig, loopstart, loopend, loopstartdelay, loopendpadding = HcaLoopHeaderStruct.unpack(
                         self.hcastream.read(HcaLoopHeaderStruct.size)
                     )
@@ -374,7 +376,7 @@ class HCA:
             )
         
         """ LOOP """
-        if "LoopSig" in self.hca:
+        if "LoopSig" in self.hca and self.looping:
             header += HcaLoopHeaderStruct.pack(
                 int.to_bytes(obfloop & mask, 4, "big"),
                 self.hca["LoopStart"],
@@ -549,7 +551,14 @@ class HCA:
         self.hcastream.seek(0)
 
     def get_hca(self) -> bytes:
+        """ Use this function to get the HCA file bytes after encrypting or decrypting. """
         self.hcastream.seek(0)
         fl: bytes = self.hcastream.read()
         self.hcastream.seek(0)
         return fl
+    
+    def get_frames(self):
+        """ Generator function to yield Frame number, and Frame data. """
+        self.stream.seek(self.header_size, 0)
+        for i in range(self.hca['FrameCount']):
+            yield (i, self.hcastream.read(self.hca['FrameSize']))

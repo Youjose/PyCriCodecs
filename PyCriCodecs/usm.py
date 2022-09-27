@@ -3,7 +3,6 @@ from typing import BinaryIO
 from .chunk import *
 from .utf import UTF
 from io import FileIO, BytesIO
-
 # Big thanks and credit for k0lb3 and 9th helping me write this specific code.
 # Also credit for the original C++ code from Nyagamon/bnnm.
 
@@ -123,7 +122,7 @@ class USM:
         self.stream.seek(0)
         header = self.stream.read(4)
         if header != USMChunckHeaderType.CRID.value:
-            raise NotImplementedError(f"Unsupported file type: {self.header}")
+            raise NotImplementedError(f"Unsupported file type: {header}")
         self.stream.seek(0)
     
     # Demuxes the USM
@@ -252,7 +251,7 @@ class USM:
                 elif filenames[point] == "":
                     # Rare case and might never happen unless the USM is artificially edited. 
                     fl = table[0]["filename"][1].rsplit(".", 1)[0] + "_" + str(point) + ".bin"
-                    open(filenames[point], "wb").write(data)
+                    open(fl, "wb").write(data)
                     point += 1
                 else:
                     open(filenames[point], "wb").write(data)
@@ -358,7 +357,7 @@ class USM:
     def get_metadata(self):
         return self.__fileinfo
 
-# TODO Before touching on this, there are a lot of unknowns, minbuf(minimum buffer of what?) and avbps(average bitrate per second)
+# There are a lot of unknowns, minbuf(minimum buffer of what?) and avbps(average bitrate per second)
 # are still unknown how to derive them, at least video wise it is possible, no idea how it's calculated audio wise nor anything else
 # seems like it could be random values and the USM would still work.
 class USMBuilder:

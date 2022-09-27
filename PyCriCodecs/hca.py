@@ -257,6 +257,7 @@ class HCA:
         else:
             raise ValueError("Invalid HCA or WAV file.")
         self.stream.seek(0)
+        self.hcastream.seek(0)
     
     def info(self) -> dict:
         """ Returns info related to the input file. """
@@ -269,8 +270,10 @@ class HCA:
     def decode(self) -> bytes:
         if self.filetype == "wav":
             raise ValueError("Input type for decoding must be an HCA file.")
+        self.hcastream.seek(0)
         self.wavbytes = CriCodecs.HcaDecode(self.hcastream.read(), self.header_size, self.key, self.subkey)
         self.stream = BytesIO(self.wavbytes)
+        self.hcastream.seek(0)
         return bytes(self.wavbytes)
     
     def encode(self, force_not_looping: bool = False, encrypt: bool = False, keyless: bool = False) -> bytes:
@@ -282,6 +285,7 @@ class HCA:
             force_not_looping = 1
         else:
             raise ValueError("Forcing the encoder to not loop is by either False or True.")
+        self.stream.seek(0)
         self.hcabytes = CriCodecs.HcaEncode(self.stream.read(), force_not_looping)
         self.hcastream = BytesIO(self.hcabytes)
         self.Pyparse_header()

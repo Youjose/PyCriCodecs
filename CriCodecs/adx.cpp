@@ -134,7 +134,7 @@ bool Decode(int *d,unsigned char *s, AdxHeader header, int* coeffs){
     }else{
         scale += 1;
     }
-	int v,p=d[((header.blocksize-2)*header.channelcount)-1],pp=d[((header.blocksize-2)*header.channelcount)-2];
+	int v,p=d[((header.blocksize-2)*2)-1],pp=d[((header.blocksize-2)*2)-2];
 	for(int i=(header.blocksize-2);i>0;i--,s++){
 		v=*s>>4;if(v&8)v-=16;
 		v=(v*scale+(coeffs[0] * p >> 12)+(coeffs[1] * pp >> 12));
@@ -149,15 +149,15 @@ bool Decode(int *d,unsigned char *s, AdxHeader header, int* coeffs){
 bool Decode(void *data,int size,int* _data, AdxHeader &header, char *&outdata, int* coeffs){
     for(unsigned char *s=(unsigned char *)data,*e=s+size-header.blocksize*header.channelcount;s<=e;){
         int *d=_data;
-        for(unsigned int i=header.channelcount;i>0;i--,d+=((header.blocksize-2)*header.channelcount),s+=header.blocksize){
+        for(unsigned int i=header.channelcount;i>0;i--,d+=((header.blocksize-2)*2),s+=header.blocksize){
             if(!Decode(d,s, header, coeffs)){
                 return false;
             }
         }
         d=_data;
-        for(int i=((header.blocksize-2)*header.channelcount);i>0&&header.samplecount;i--,d++,header.samplecount--){
+        for(int i=((header.blocksize-2)*2);i>0&&header.samplecount;i--,d++,header.samplecount--){
             for(unsigned int j=0;j<header.channelcount;j++){
-                int v=d[j*((header.blocksize-2)*header.channelcount)];
+                int v=d[j*((header.blocksize-2)*2)]; // 2 samples per byte. This will be the case if the bitdepth is only 4.
                 if(v>0x7FFF)v=0x7FFF;
                 else if(v<-0x8000)v=-0x8000;
                 *(unsigned short*)outdata = v;
@@ -171,8 +171,8 @@ bool Decode(void *data,int size,int* _data, AdxHeader &header, char *&outdata, i
 void Decode(char* fp, AdxHeader header, char *outdata){
     unsigned int size=header.blocksize*header.channelcount;
 	unsigned char *data=new unsigned char [size];
-    int *_data = new int [((header.blocksize-2)*header.channelcount)*header.channelcount];
-	memset(_data,0,sizeof(int)*((header.blocksize-2)*header.channelcount)*header.channelcount);
+    int *_data = new int [((header.blocksize-2)*2)*header.channelcount];
+	memset(_data,0,sizeof(int)*((header.blocksize-2)*2)*header.channelcount);
     int *coeffs = new int[2];
     coeffs = CalculateCoefficients(coeffs, header.highpassfrequency, header.samplerate);
     while(header.samplecount){

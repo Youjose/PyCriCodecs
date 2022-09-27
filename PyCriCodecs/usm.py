@@ -1,3 +1,4 @@
+from collections import defaultdict
 import os
 from typing import BinaryIO
 from .chunk import *
@@ -140,10 +141,9 @@ class USM:
         self.__fileinfo.append({self.CRIDObj.table_name: CRID_payload})
         headers = [(int.to_bytes(x['stmid'][1], 4, "big")).decode() for x in CRID_payload[1:]]
         chnos = [x['chno'][1] for x in CRID_payload[1:]]
-        output: dict[str, list[bytearray]]
         output = dict()
         for i in range(len(headers)):
-            output[headers[i]] = [bytearray()] * (chnos[i]+1)
+            output[headers[i]+"_"+str(chnos[i])] = bytearray()
         while self.stream.tell() < self.size:
             header: bytes
             header, chuncksize, unk08, offset, padding, chno, unk0D, unk0E, type, frametime, framerate, unk18, unk1C = USMChunkHeader.unpack(
@@ -154,7 +154,7 @@ class USM:
             if header.decode() in headers:
                 if type == 0:
                     data = self.reader(chuncksize, offset, padding, header)
-                    output[header.decode()][chno].extend(data)
+                    output[header.decode()+"_"+str(chno)].extend(data)
                 elif type == 1 or type == 3:
                     ChunkObj = UTF(self.stream.read(chuncksize))
                     self.__fileinfo.append({ChunkObj.table_name: ChunkObj.get_payload()})
@@ -169,9 +169,9 @@ class USM:
                 # But just incase somehow there's an extra chunk, this code might handle it.
                 if header in [chunk.value for chunk in USMChunckHeaderType]:
                     if type == 0:
-                        output[header.decode()] = [bytearray()]
+                        output[header.decode()+"_0"] = bytearray()
                         data = self.reader(chuncksize, offset, padding, header)
-                        output[header.decode()][0].extend(data) # No channel number info, code here assumes it's a one channel data type.
+                        output[header.decode()+"_0"].extend(data) # No channel number info, code here assumes it's a one channel data type.
                     elif type == 1 or type == 3:
                         ChunkObj = UTF(self.stream.read(chuncksize))
                         self.__fileinfo.append({ChunkObj.table_name: ChunkObj.get_payload()})
@@ -223,39 +223,39 @@ class USM:
                     point += 1
         
         point = 0
-        for chunk in self.output:
-            for data in self.output[chunk]:
-                if dirname or "\\" in filenames[point] or "/" in filenames[point] or os.sep in filenames[point]:
-                    os.makedirs(os.path.dirname(filenames[point]), exist_ok=True)
-                if chunk == USMChunckHeaderType.SBT.value.decode():
-                    # Subtitle information.
-                    texts = self.sbt_to_srt(data)
-                    for i in range(len(texts)):
-                        filename = filenames[point]
-                        if "." in filename:
-                            fl = filename.rsplit(".", 1)
-                            filename = fl[0] + "_" + str(i) + ".srt"
-                        else:
-                            filename = filename + "_" + str(i)
-                        open(filename, "w", encoding="utf-8").write(texts[i])
+        for chunk, data in self.output.items():
+            chunk = chunk.rsplit("_", 1)[0]
+            if dirname or "\\" in filenames[point] or "/" in filenames[point] or os.sep in filenames[point]:
+                os.makedirs(os.path.dirname(filenames[point]), exist_ok=True)
+            if chunk == USMChunckHeaderType.SBT.value.decode():
+                # Subtitle information.
+                texts = self.sbt_to_srt(data)
+                for i in range(len(texts)):
+                    filename = filenames[point]
+                    if "." in filename:
+                        fl = filename.rsplit(".", 1)
+                        filename = fl[0] + "_" + str(i) + ".srt"
                     else:
-                        open(filenames[point], "wb").write(data)
-                        point += 1
-                elif chunk == USMChunckHeaderType.CUE.value.decode():
-                    # CUE chunks is actually just metadata.
-                    # and can be accessed by get_metadata() function after demuxing or extracting.
-                    point += 1
-                elif data == bytearray():
-                    # This means it has no data, and just like the CUE, it might be just metadata. 
-                    point += 1
-                elif filenames[point] == "":
-                    # Rare case and might never happen unless the USM is artificially edited. 
-                    fl = table[0]["filename"][1].rsplit(".", 1)[0] + "_" + str(point) + ".bin"
-                    open(fl, "wb").write(data)
-                    point += 1
+                        filename = filename + "_" + str(i)
+                    open(filename, "w", encoding="utf-8").write(texts[i])
                 else:
                     open(filenames[point], "wb").write(data)
                     point += 1
+            elif chunk == USMChunckHeaderType.CUE.value.decode():
+                # CUE chunks is actually just metadata.
+                # and can be accessed by get_metadata() function after demuxing or extracting.
+                point += 1
+            elif data == bytearray():
+                # This means it has no data, and just like the CUE, it might be just metadata. 
+                point += 1
+            elif filenames[point] == "":
+                # Rare case and might never happen unless the USM is artificially edited. 
+                fl = table[0]["filename"][1].rsplit(".", 1)[0] + "_" + str(point) + ".bin"
+                open(fl, "wb").write(data)
+                point += 1
+            else:
+                open(filenames[point], "wb").write(data)
+                point += 1
 
     def reader(self, chuncksize, offset, padding, header) -> bytearray:
         """ Chunks reader function, reads all data in a chunk and returns a bytearray. """

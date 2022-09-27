@@ -2038,7 +2038,7 @@ PyObject *py_decode_err(int code)
     switch (code)
     {
     case -1:
-        PyErr_SetString(PyExc_ValueError, "Header decoding error, the header is not a valic HCA header.");
+        PyErr_SetString(PyExc_ValueError, "Header decoding error, the header is not a valid HCA header.");
         break;
     case -2:
         PyErr_SetString(PyExc_ValueError, "Decoding error, either an incorrect key or an unknown exception.");

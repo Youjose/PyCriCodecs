@@ -206,7 +206,7 @@ class ADX:
         return outfile
             
     # Encodes WAV to ADX.
-    def encode(self, Blocksize = 0x12, AdxVersion = 0x4, DataOffset = 0x011C, Encoding = 3, Highpass_Frequency = 0x1F4, force_not_looping = False) -> bytearray:
+    def encode(self, Blocksize = 0x12, AdxVersion = 0x4, DataOffset = 0x011C, Encoding = 3, Highpass_Frequency = 0x1F4, Filter = 2, force_not_looping = False) -> bytearray:
 
         if self.filetype != "wav":
             raise ValueError("Not a WAV file or an unsupported file version.")
@@ -221,10 +221,14 @@ class ADX:
             raise ValueError("Blocksize cannot be smaller than 3, nor bigger than 255.")
         elif not (AdxVersion == 3 or AdxVersion == 4 or AdxVersion == 5):
             raise ValueError("Unknown or non-existing ADX version, Supported versions are: 3, 4 and 5.")
-        elif not (Encoding == 3 or Encoding == 4):
-            raise NotImplementedError(f"Unsupported {Encoding} encoding, only Encoding version 3 and 4 are supported.")
+        elif not (Encoding == 2, Encoding == 3 or Encoding == 4):
+            raise NotImplementedError(f"Unsupported encoding of {Encoding}, only Encoding version 2, 3 and 4 are supported.")
         if AdxVersion == 5 or force_not_looping: # 5 is supposedly like 4 but without looping support.
             self.looping = False
+        if Encoding == 2:
+            if Filter not in [0, 1, 2, 3]:
+                raise ValueError("Encoding version 2 must have a filter in range of 0 to 3")
+            Highpass_Frequency = 0
         
         if self.looping:
             if AdxVersion != 3:
@@ -249,8 +253,8 @@ class ADX:
                                         channelCount,
                                         SamplingRate,
                                         sampleCount,
-                                        Highpass_Frequency, # Highpass Frequency, always 0x1F4.(?)
-                                        AdxVersion, # Version, 4 and 3 seems the same? Version 5 is the same as 4, does not support looping.
+                                        Highpass_Frequency,
+                                        AdxVersion,
                                         0x0 # Flags. 8 or 9 for Encryption. Ahx can also be encrypted.
                                         )
         AdxFooter = pack(">HH",
@@ -293,7 +297,7 @@ class ADX:
             else:
                 outfile += bytearray(DataOffset-22-(4 + 4 * self.fmtChannelCount))
         outfile.extend(b'(c)CRI')
-        outfile.extend(CriCodecs.AdxEncode(self.wavStream.read(), Blocksize, Encoding, Highpass_Frequency))
+        outfile.extend(CriCodecs.AdxEncode(self.wavStream.read(), Blocksize, Encoding, Highpass_Frequency, Filter))
         self.wavStream.close()
         outfile.extend(AdxFooter)
         return outfile

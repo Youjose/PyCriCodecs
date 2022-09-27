@@ -195,7 +195,8 @@ static PyObject* AdxEncode(PyObject* self, PyObject* args){
     unsigned int blocksize;
     unsigned int encoding_ver;
     unsigned int highpass_freq;
-    if(!PyArg_ParseTuple(args, "y#III", &infilename, &infilename_size, &blocksize, &encoding_ver, &highpass_freq)){
+    unsigned int filter;
+    if(!PyArg_ParseTuple(args, "y#IIII", &infilename, &infilename_size, &blocksize, &encoding_ver, &highpass_freq, &filter)){
         return NULL;
     }
     WAVEHeader header = *(WAVEHeader *)infilename;
@@ -219,11 +220,13 @@ static PyObject* AdxEncode(PyObject* self, PyObject* args){
     memcpy(data, infilename, datachk.dataSize);
     int v, min=0, max=0, scale, power;
     short *d = data;
-    unsigned int len = (blocksize*header.fmtChannelCount)*((datachk.dataSize/header.fmtSamplingSize)/((blocksize-2)*header.fmtChannelCount));
+    unsigned int len = (blocksize*header.fmtChannelCount)*((datachk.dataSize/header.fmtSamplingSize)/((blocksize-2)*header.fmtChannelCount)) + (blocksize*header.fmtChannelCount);
     char *outbuf = new char [len];
+    unsigned int count_forout = 0;
     memset(outbuf,0,len);
     char *out = outbuf;
     int *hist = new int [4*header.fmtChannelCount];
+    short Filter = (short)filter;
     /**
      * p=i*4, pp=i*4+1, op=i*4+2, opp=i*4+3
      * i: channelcount
@@ -235,6 +238,12 @@ static PyObject* AdxEncode(PyObject* self, PyObject* args){
     memset(samples,0,sizeof(short)*((blocksize-2)*header.fmtChannelCount));
     int* coeffs = new int [2];
     coeffs = CalculateCoefficients(coeffs, highpass_freq, header.fmtSamplingRate);
+    if((Filter == 0 || Filter == 1 || Filter == 2 || Filter == 3) && highpass_freq == 0 && encoding_ver == 2){
+        static const signed short static_coeffs[8] = {0x0000,0x0000,0x0F00,0x0000,0x1CC0,0xF300,0x1880,0xF240};
+        coeffs[0] = static_coeffs[Filter*2 + 0];
+        coeffs[1] = static_coeffs[Filter*2 + 1];
+    }
+    Filter = Filter << 13;
     while (datachk.dataSize > 0){
         for(unsigned int i = 0; i < header.fmtChannelCount; i++){
             min=0;max=0;
@@ -261,13 +270,19 @@ static PyObject* AdxEncode(PyObject* self, PyObject* args){
             {
             case 4:
                 scale = (max/7 > min/-8) ? max/7 : min/-8;
+                if(scale > 0x1000)scale=0x1000;
                 power = scale == 0 ? 0 : log2_mod_from_VGAudio(scale) + 1;
                 scale = 1 << power;
                 bscale = _byteswap_ushort(12 - power);
                 break;
-            
+            case 2:
+                scale = (max/7 > min/-8) ? max/7 : min/-8;
+                if(scale > 0x1000)scale=0x1000;
+                bscale = _byteswap_ushort(Filter | (scale & 0x1FFF));
+                break;
             default:
                 scale = (max/7 > min/-8) ? max/7 : min/-8;
+                if(scale > 0x1000)scale=0x1000;
                 bscale = _byteswap_ushort(scale);
                 break;
             }

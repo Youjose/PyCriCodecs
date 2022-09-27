@@ -4,20 +4,27 @@ Although for some tasks, python is used purely.
 
 ## Supporting
 I am running this on Python 3.9, although other earlier versions might work
+
+
 So far this lib supports in terms of:
-    Extracting:
-        ACB/AWB
-        USM
-        CPK
-    Decoding:
-        ADX
-        HCA
-    Building:
-        CPK
-        AWB
-    Encoding:
-        HCA
-        ADX
+
+Extracting:
+- ACB/AWB (Incorrect filenames in extraction.)
+- USM (Any USM there is)
+- CPK (Most CPK's)
+
+Decoding:
+- ADX (All versions)
+- HCA (All versions)
+
+Building:
+- CPK (All CPK modes)
+- AWB (Anything)
+
+Encoding:
+- HCA (HCA Version 2.0)
+- ADX (All versions, any blocksize, any HighPass Frequence, All encoding versions)
+
 With more planned coming soon.
 
 ## Installation and Usage
@@ -25,10 +32,15 @@ To install run
 ```
 python setup.py install
 ```
+
 Note: all libs here are standardized to take either a filename/path or bytes/bytearray, so you can swap both.
+
 Also, for audio related codecs, the looping input and output is defined in the metadata, the WAV file will not loop, but it will have a "smpl" chunk in the header, same if you want to encode a looping HCA or an ADX, the WAV must have a smpl chunk.
+
 Otherwise it will loop normally.
+
 ### Usage:
+
 ##### For ADX decoding and encoding:
 ```python
 from PyCriCodecs import *
@@ -50,6 +62,11 @@ wavObj = HCA("filename.wav")
 hcabytes = wavObj.encode(encrypt=True) # and you will get an HCA file.
 # You can provide a key from when initializing, otherwise it will default to the default key, you can also encrypt keyless with keyless=true.
 # You can alsoo force disable looping on HCA output by force_not_looping = True.
+
+wavObj.encrypt()
+# or
+hcaObj.decrypt() 
+# Any works, given it can be decrypted or encrypted as an HCA. Would do it. You can also pass a key to ".encrypt()", ".decrypt()" uses the init key. 
 ```
 ##### For CPK extraction and building:
 ```python
@@ -99,7 +116,7 @@ Check the [Wiki](https://github.com/LittleChungi/PyCriCodecs/wiki/Docs-and-Thoug
 ## TODO List
 - Add USM building.
 - Add ACB building.
-- And, not a lot else. Check the wiki for my future plans.
+- Add correct ACB extraction.
 
 # Credits
 - [vgmstream](https://github.com/vgmstream/vgmstream) for HCA code and some of ADX decoding code.

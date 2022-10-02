@@ -20,6 +20,7 @@ Decoding:
 Building:
 - CPK (All CPK modes)
 - AWB (Anything)
+- USM (VP9 support only, ADX or HCA Audio support, multiple audio streams support as well, VP9/ADX only tested and for sure working!)
 
 Encoding:
 - HCA (HCA Version 2.0)
@@ -61,7 +62,7 @@ wavfile = hcaObj.decode() # Gets you the wav file after decoding.
 wavObj = HCA("filename.wav")
 hcabytes = wavObj.encode(encrypt=True) # and you will get an HCA file.
 # You can provide a key from when initializing, otherwise it will default to the default key, you can also encrypt keyless with keyless=true.
-# You can alsoo force disable looping on HCA output by force_not_looping = True.
+# You can also force disable looping on HCA output by force_not_looping = True.
 
 wavObj.encrypt()
 # or
@@ -81,7 +82,8 @@ CPKBuilder("dirname", "outfile.cpk", CpkMode=1) # CpkMode is important sometimes
 # Given a directory, it will take that directory as root, and builds a CPK for the directories and files inside.
 # Output would be a cpk file as specified.
 ```
-##### For USM extraction:
+##### For USM extraction and Building:
+-Note that USM building might be a little bit unstable due to bad code, feel free to open any issues if something did went wrong.
 ```python
 from PyCriCodecs import *
 # Extraction:
@@ -92,7 +94,14 @@ usmObj.extract() # extracts all USM contents in the current directory. You can a
 usmObj.demux() # Then you have access to output property.
 usmObj.output # This is a dict containing all chunks in the USM, each key has a value of a list with bytearrays.
 
-usmObj.get_metadata() # Not for the user specifically, but if you want to look at the info inside, this is one way. 
+usmObj.get_metadata() # Not for the user specifically, but if you want to look at the info inside, this is one way.
+
+# Building:
+# Needs at least a video to be able to build one USM file, you can add audio pretty easily too.
+usmObj = USMBuilder("filename.ivf", "filename.wav", key=0xKEYGOESINHERE, audio_codec="adx", encryptAudio=True) # Basic USM
+# You can add a list of audio paths/filenames as well instead of filenames, and that will be added into audio streams in order.
+usmObj.parse() # Due to bad code, this is heavy on performance and will take some seconds based of the input files.
+usmbytes = usmObj.get_usm() # Will return the USM file as bytes. 
 ```
 ##### For ACB or AWB extraction:
 ```python

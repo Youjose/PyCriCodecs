@@ -295,8 +295,8 @@ class HCA:
             self.encrypt(self.key, keyless)
         return self.get_hca()
     
-    def write_header(self, keyless: bool = False) -> bytearray:
-        if self.encrypted:
+    def write_header(self, keyless: bool = False, get_decrypted: bool = False) -> bytearray:
+        if self.encrypted or get_decrypted:
             mask = 0x7F7F7F7F
             self.hca["CipherType"] = 0
         else:
@@ -563,6 +563,6 @@ class HCA:
     
     def get_frames(self):
         """ Generator function to yield Frame number, and Frame data. """
-        self.stream.seek(self.header_size, 0)
+        self.hcastream.seek(self.header_size, 0)
         for i in range(self.hca['FrameCount']):
             yield (i, self.hcastream.read(self.hca['FrameSize']))

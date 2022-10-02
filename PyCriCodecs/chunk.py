@@ -43,6 +43,11 @@ class HCAType(Enum):
     HCA   = b"HCA\x00" # Header.
     EHCA  = b"\xC8\xC3\xC1\x00" # Encrypted HCA header.
 
+class VideoType(Enum):
+    IVF   = b"DKIF" # Header.
+    # H264  = b"" # Header.
+    # MPEG  = b"" # Header.
+
 # I saw some devs swap the unsigned/signed indexes. So I am not sure what's correct or not.
 # In my own experience, swapping those results in an incorrect signed values (should be unsigned) in ACB's/CPK's.
 # If someone were to change this, they must change 'stringtypes' function in UTF/UTFBuilder classes.
@@ -56,6 +61,6 @@ class UTFTypeValues(IntFlag):
     ullong = 6
     llong  = 7
     float  = 8
-    double = 9 # Doesn't seem to exist.
+    double = 9 # Does not seem to exist.
     string = 10
     bytes  = 11

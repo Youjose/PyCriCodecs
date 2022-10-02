@@ -50,6 +50,7 @@ class ADX:
     LoopEndSample: int
     LoopEndByte: int
     looping: bool
+    SamplingRate: int
     
 
     def __init__(self, filename) -> None:
@@ -68,6 +69,8 @@ class ADX:
         elif magic == b"RIFF":
             self.filetype = "wav"
             self.wavStream = stream
+        else:
+            raise ValueError("Invalid ADX or WAV file.")
         if self.filetype == "wav":
             self.riffSignature, self.riffSize, self.wave, self.fmt, self.fmtSize, self.fmtType, self.fmtChannelCount, self.fmtSamplingRate, self.fmtSamplesPerSec, self.fmtSamplingSize, self.fmtBitCount = WavHeaderStruct.unpack(
             self.wavStream.read(WavHeaderStruct.size)
@@ -203,6 +206,7 @@ class ADX:
         outfile.extend(WavData)
         outfile.extend(CriCodecs.AdxDecode(self.sfaStream.read()))
         self.sfaStream.close()
+        self.wavStream = BytesIO(outfile)
         return outfile
             
     # Encodes WAV to ADX.
@@ -300,6 +304,7 @@ class ADX:
         outfile.extend(CriCodecs.AdxEncode(self.wavStream.read(), Blocksize, Encoding, Highpass_Frequency, Filter))
         self.wavStream.close()
         outfile.extend(AdxFooter)
+        self.sfaStream = BytesIO(outfile)
         return outfile
 
     

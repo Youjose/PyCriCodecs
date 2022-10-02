@@ -215,9 +215,9 @@ class UTFBuilder:
         self.encoding = encoding
         self.table_name = table_name
         self.binary = b''
+        self.get_strings()
 
     def parse(self) -> bytearray:
-        self.get_strings()
         self.get_stflag()
         self.column_data = self.write_columns()
         self.rows_data = self.write_rows()

@@ -677,7 +677,7 @@ class USMBuilder:
                             0,
                             0
                             )
-                    SFA_chunk += stream.write_header(get_decrypted=(not self.encryptAudio)).ljust(stream.hca["HeaderSize"]+ padding, b"\x00")
+                    SFA_chunk += stream.get_header().ljust(stream.hca["HeaderSize"]+ padding, b"\x00")
                     SFA_chunks[self.streams.index(stream)].append(SFA_chunk)
                     for i in stream.get_frames():
                         padding = (0x20 - (stream.hca["FrameSize"] % 0x20) if stream.hca["FrameSize"] % 0x20 != 0 else 0)
@@ -749,20 +749,24 @@ class USMBuilder:
             target_interval += self.SFV_interval_for_VP9
 
             if self.audio:
-                idx = 0
-                for stream in SFA_chunks:
-                    if current_interval > target_interval:
-                        break
-                    if i == 0:
-                        header += stream[sfa_count]
-                    if sfa_count < len_sfa[idx]-1:
-                        header += stream[sfa_count+1]
-                    idx += 1
-                else:
-                    current_interval += self.base_interval_per_SFA_chunk[0]
-                    # This is wrong actually, I made the base interval a list in case the intervals are different
-                    # But it seems they are the same no matter what, however I will leave it as this just in case.
-                    sfa_count += 1
+                while current_interval < target_interval:
+                    idx = 0
+                    for stream in SFA_chunks:
+                        if current_interval > target_interval:
+                            # This would not just break the loop, this would break everything.
+                            # Will not happen in typical cases. But if a video had a really weird framerate, this might skew it.
+                            current_interval += self.base_interval_per_SFA_chunk[0] # Not safe. FIXME
+                            break 
+                        if sfa_count == 0:
+                            header += stream[sfa_count]
+                        if sfa_count < len_sfa[idx]-1:
+                            header += stream[sfa_count+1]
+                        idx += 1
+                    else:
+                        current_interval += self.base_interval_per_SFA_chunk[0]
+                        # This is wrong actually, I made the base interval a list in case the intervals are different
+                        # But it seems they are the same no matter what, however I will leave it as this just in case.
+                        sfa_count += 1
         self.usm = header
     
     def build_header(self, SFV_list: list, SFA_chunks: list = False, SBT_chunks = None) -> bytes:
@@ -900,7 +904,7 @@ class USMBuilder:
                 for stream in self.streams:
                     payload = [
                             dict(
-                                hca_header = (UTFTypeValues.bytes, stream.write_header(get_decrypted=(not self.encrypt)))
+                                hca_header = (UTFTypeValues.bytes, stream.get_header())
                             )
                         ]
                     p = UTFBuilder(payload, table_name="AUDIO_HEADER")

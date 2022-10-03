@@ -295,8 +295,8 @@ class HCA:
             self.encrypt(self.key, keyless)
         return self.get_hca()
     
-    def write_header(self, keyless: bool = False, get_decrypted: bool = False) -> bytearray:
-        if self.encrypted or get_decrypted:
+    def write_header(self, keyless: bool = False) -> bytearray:
+        if self.encrypted:
             mask = 0x7F7F7F7F
             self.hca["CipherType"] = 0
         else:
@@ -566,3 +566,10 @@ class HCA:
         self.hcastream.seek(self.header_size, 0)
         for i in range(self.hca['FrameCount']):
             yield (i, self.hcastream.read(self.hca['FrameSize']))
+    
+    def get_header(self) -> bytes:
+        """ Use this function to retrieve the HCA Header. """
+        self.hcastream.seek(0)
+        header = self.hcastream.read(self.header_size)
+        self.hcastream.seek(0)
+        return header

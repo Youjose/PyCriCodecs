@@ -123,7 +123,6 @@ awbObj.extract()
 Check the [Wiki](https://github.com/LittleChungi/PyCriCodecs/wiki/Docs-and-Thoughts) for my thoughts, plans, more options, and some details as well for documentation.
 
 ## TODO List
-- Add USM building.
 - Add ACB building.
 - Add correct ACB extraction.
 

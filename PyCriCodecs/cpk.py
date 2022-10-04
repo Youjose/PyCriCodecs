@@ -271,6 +271,8 @@ class CPKBuilder:
             self.GTOCdata = self.generate_GTOC()
             self.GTOCdata = bytearray(CPKChunkHeader.pack(b'GTOC', encflag, len(self.GTOCdata), 0)) + self.GTOCdata
             self.GTOCdata = self.GTOCdata.ljust(len(self.GTOCdata) + (0x800 - len(self.GTOCdata) % 0x800), b'\x00')
+            self.ETOCdata = self.generate_ETOC()
+            self.ETOCdata = bytearray(CPKChunkHeader.pack(b'ETOC', encflag, len(self.ETOCdata), 0)) + self.ETOCdata
             self.CPKdata = self.generate_CPK()
             self.CPKdata = bytearray(CPKChunkHeader.pack(b'CPK ', encflag, len(self.CPKdata), 0)) + self.CPKdata
             data = self.CPKdata.ljust(len(self.CPKdata) + (0x800 - len(self.CPKdata) % 0x800) - 6, b'\x00') + bytearray(b"(c)CRI") + self.TOCdata + self.GTOCdata
@@ -292,9 +294,6 @@ class CPKBuilder:
             self.TOCdata = self.generate_TOC()
             self.TOCdata = bytearray(CPKChunkHeader.pack(b'TOC ', encflag, len(self.TOCdata), 0)) + self.TOCdata
             self.TOCdata = self.TOCdata.ljust(len(self.TOCdata) + (0x800 - len(self.TOCdata) % 0x800), b'\x00')
-            # Temp
-            self.ETOCdata = self.generate_ETOC()
-            self.ETOCdata = bytearray(CPKChunkHeader.pack(b'ETOC', encflag, len(self.ETOCdata), 0)) + self.ETOCdata
             self.CPKdata = self.generate_CPK()
             self.CPKdata = bytearray(CPKChunkHeader.pack(b'CPK ', encflag, len(self.CPKdata), 0)) + self.CPKdata
             data = self.CPKdata.ljust(len(self.CPKdata) + (0x800 - len(self.CPKdata) % 0x800) - 6, b'\x00') + bytearray(b"(c)CRI") + self.TOCdata

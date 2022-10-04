@@ -250,7 +250,7 @@ class UTFBuilder:
                         len(self.column_data)+0x18, # Rows offset.
                         datalen-len(self.strings)-len(self.binary), # String offset.
                         binary_offset, # Binary data offset.
-                        self.strings.index(b"\x00" + bytes(self.table_name, self.encoding) + b"\x00") + 1, # Table name pointer.
+                        0 if self.strings.startswith(bytes(self.table_name, self.encoding)) else self.strings.index(b"\x00" + bytes(self.table_name, self.encoding) + b"\x00") + 1, # Table name pointer.
                         len(self.stflag), # Num columns.
                         sum([calcsize(self.stringtypes(x[1])) for x in self.stflag if x[0] == 0x50]), # Num rows.
                         len(self.dictarray) # Rows length.
@@ -311,7 +311,6 @@ class UTFBuilder:
                     self.stflag.append((0x10, UTFTypeValuesList.index(val[1][0]), val[0]))
                 else:
                     self.stflag.append((0x50, UTFTypeValuesList.index(val[1][0]), val[0]))
-
 
     def get_strings(self):
         strings = []

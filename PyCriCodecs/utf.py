@@ -250,7 +250,7 @@ class UTFBuilder:
                         len(self.column_data)+0x18, # Rows offset.
                         datalen-len(self.strings)-len(self.binary), # String offset.
                         binary_offset, # Binary data offset.
-                        self.strings.index(bytes(self.table_name, self.encoding)), # Table name pointer.
+                        self.strings.index(b"\x00" + bytes(self.table_name, self.encoding) + b"\x00") + 1, # Table name pointer.
                         len(self.stflag), # Num columns.
                         sum([calcsize(self.stringtypes(x[1])) for x in self.stflag if x[0] == 0x50]), # Num rows.
                         len(self.dictarray) # Rows length.
@@ -269,7 +269,7 @@ class UTFBuilder:
                             idx = self.strings.index(b'\x00\x00') + 1
                             rows += pack(">"+self.stringtypes(data[1]), idx)
                         else:
-                            rows += pack(">"+self.stringtypes(data[1]), self.strings.index(bytes(dict[data[2]][1], self.encoding)))
+                            rows += pack(">"+self.stringtypes(data[1]), self.strings.index(b"\x00" + bytes(dict[data[2]][1], self.encoding) + b"\x00") + 1)
                     else:
                         rows += pack(">"+self.stringtypes(data[1]), self.binary.index(dict[data[2]][1]), len(dict[data[2]][1]))
         return rows
@@ -279,14 +279,14 @@ class UTFBuilder:
         for data in self.stflag:
             columns += int.to_bytes(data[0] | data[1], 1, "big")
             if data[0] in [0x10, 0x50]:
-                columns += int.to_bytes(self.strings.index(bytes(data[2], self.encoding)), 4, "big")
+                columns += int.to_bytes(self.strings.index(b"\x00" + bytes(data[2], self.encoding) + b"\x00") + 1, 4, "big")
             else:
                 if data[1] not in [0xA, 0xB]:
-                    columns += int.to_bytes(self.strings.index(bytes(data[2], self.encoding)), 4, "big")+int.to_bytes(data[3], calcsize(self.stringtypes(data[1])), "big")
+                    columns += int.to_bytes(self.strings.index(b"\x00" + bytes(data[2], self.encoding) + b"\x00") + 1, 4, "big")+int.to_bytes(data[3], calcsize(self.stringtypes(data[1])), "big")
                 elif data[1] == 0xA:
-                    columns += int.to_bytes(self.strings.index(bytes(data[2], self.encoding)), 4, "big")+int.to_bytes(self.strings.index(bytes(data[3], self.encoding)), 4, "big")
+                    columns += int.to_bytes(self.strings.index(b"\x00" + bytes(data[2], self.encoding) + b"\x00") + 1, 4, "big")+int.to_bytes(self.strings.index(b"\x00" + bytes(data[3], self.encoding) + b"\x00") + 1, 4, "big")
                 else:
-                    columns += int.to_bytes(self.strings.index(bytes(data[2], self.encoding)), 4, "big")+int.to_bytes(self.binary.index(data[3]), 4, "big")+int.to_bytes(len(data[3]), 4, "big")
+                    columns += int.to_bytes(self.strings.index(b"\x00" + bytes(data[2], self.encoding) + b"\x00") + 1, 4, "big")+int.to_bytes(self.binary.index(data[3]), 4, "big")+int.to_bytes(len(data[3]), 4, "big")
         return columns
 
     def get_stflag(self):

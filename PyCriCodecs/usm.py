@@ -53,8 +53,8 @@ class USM:
             else:
                 raise ValueError("Inavild input key.")
         elif type(key) == int:
-            key1 = int.to_bytes(key & 0xFFFFFFFF, 8, "big")
-            key2 = int.to_bytes(key >> 32, 8, "big")
+            key1 = int.to_bytes(key & 0xFFFFFFFF, 4, "big")
+            key2 = int.to_bytes(key >> 32, 4, "big")
         else:
             raise ValueError("Invalid key format, must be either a string or an integer.")
         t = bytearray(0x20)

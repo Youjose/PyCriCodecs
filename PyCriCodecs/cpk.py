@@ -15,6 +15,7 @@ class TOC():
     table: dict
     def __init__(self, stream: bytes) -> None:
         self.stream = BytesIO(stream)
+        print(stream)
         self.magic, self.encflag, self.packet_size, self.unk0C = CPKChunkHeader.unpack(
             self.stream.read(CPKChunkHeader.size)
         )
@@ -80,6 +81,8 @@ class CPK:
                     self.tables["HGTOC"] = TOC(self.stream.read(self.tables['CPK']["HgtocSize"][0])).table
             elif key == "EtocOffset":
                 if value[0]:
+                    self.stream.seek(0)
+                    print(self.stream.read(0x100))
                     self.stream.seek(value[0], 0)
                     self.tables["ETOC"] = TOC(self.stream.read(self.tables['CPK']["EtocSize"][0])).table
     
@@ -267,38 +270,44 @@ class CPKBuilder:
         if self.CpkMode == 3:
             self.TOCdata = self.generate_TOC()
             self.TOCdata = bytearray(CPKChunkHeader.pack(b'TOC ', encflag, len(self.TOCdata), 0)) + self.TOCdata
+            self.TOCdata = self.TOCdata.ljust(len(self.TOCdata) + (0x800 - len(self.TOCdata) % 0x800), b'\x00')
             self.GTOCdata = self.generate_GTOC()
             self.GTOCdata = bytearray(CPKChunkHeader.pack(b'GTOC', encflag, len(self.GTOCdata), 0)) + self.GTOCdata
+            self.GTOCdata = self.GTOCdata.ljust(len(self.GTOCdata) + (0x800 - len(self.GTOCdata) % 0x800), b'\x00')
             self.ETOCdata = self.generate_ETOC()
             self.ETOCdata = bytearray(CPKChunkHeader.pack(b'ETOC', encflag, len(self.ETOCdata), 0)) + self.ETOCdata
             self.CPKdata = self.generate_CPK()
             self.CPKdata = bytearray(CPKChunkHeader.pack(b'CPK ', encflag, len(self.CPKdata), 0)) + self.CPKdata
-            data = self.CPKdata.ljust(len(self.CPKdata) + (0x800 - len(self.CPKdata) % 0x800) - 6, b'\x00') + bytearray(b"(c)CRI") + self.TOCdata.ljust(len(self.TOCdata) + (0x800 - len(self.TOCdata) % 0x800), b'\x00') + self.GTOCdata.ljust(len(self.GTOCdata) + (0x800 - len(self.GTOCdata) % 0x800), b'\x00')
+            data = self.CPKdata.ljust(len(self.CPKdata) + (0x800 - len(self.CPKdata) % 0x800) - 6, b'\x00') + bytearray(b"(c)CRI") + self.TOCdata + self.GTOCdata
             self.writetofile(data)
         elif self.CpkMode == 2:
             self.TOCdata = self.generate_TOC()
             self.TOCdata = bytearray(CPKChunkHeader.pack(b'TOC ', encflag, len(self.TOCdata), 0)) + self.TOCdata
+            self.TOCdata = self.TOCdata.ljust(len(self.TOCdata) + (0x800 - len(self.TOCdata) % 0x800), b'\x00')
             self.ITOCdata = self.generate_ITOC()
             self.ITOCdata = bytearray(CPKChunkHeader.pack(b'ITOC', encflag, len(self.ITOCdata), 0)) + self.ITOCdata
+            self.ITOCdata = self.ITOCdata.ljust(len(self.ITOCdata) + (0x800 - len(self.ITOCdata) % 0x800), b'\x00')
             self.ETOCdata = self.generate_ETOC()
             self.ETOCdata = bytearray(CPKChunkHeader.pack(b'ETOC', encflag, len(self.ETOCdata), 0)) + self.ETOCdata
             self.CPKdata = self.generate_CPK()
             self.CPKdata = bytearray(CPKChunkHeader.pack(b'CPK ', encflag, len(self.CPKdata), 0)) + self.CPKdata
-            data = self.CPKdata.ljust(len(self.CPKdata) + (0x800 - len(self.CPKdata) % 0x800) - 6, b'\x00') + bytearray(b"(c)CRI") + self.TOCdata.ljust(len(self.TOCdata) + (0x800 - len(self.TOCdata) % 0x800), b'\x00') + self.ITOCdata.ljust(len(self.ITOCdata) + (0x800 - len(self.ITOCdata) % 0x800), b'\x00')
+            data = self.CPKdata.ljust(len(self.CPKdata) + (0x800 - len(self.CPKdata) % 0x800) - 6, b'\x00') + bytearray(b"(c)CRI") + self.TOCdata + self.ITOCdata
             self.writetofile(data)
         elif self.CpkMode == 1:
             self.TOCdata = self.generate_TOC()
             self.TOCdata = bytearray(CPKChunkHeader.pack(b'TOC ', encflag, len(self.TOCdata), 0)) + self.TOCdata
+            self.TOCdata = self.TOCdata.ljust(len(self.TOCdata) + (0x800 - len(self.TOCdata) % 0x800), b'\x00')
             self.CPKdata = self.generate_CPK()
             self.CPKdata = bytearray(CPKChunkHeader.pack(b'CPK ', encflag, len(self.CPKdata), 0)) + self.CPKdata
-            data = self.CPKdata.ljust(len(self.CPKdata) + (0x800 - len(self.CPKdata) % 0x800) - 6, b'\x00') + bytearray(b"(c)CRI") + self.TOCdata.ljust(len(self.TOCdata) + (0x800 - len(self.TOCdata) % 0x800), b'\x00')
+            data = self.CPKdata.ljust(len(self.CPKdata) + (0x800 - len(self.CPKdata) % 0x800) - 6, b'\x00') + bytearray(b"(c)CRI") + self.TOCdata
             self.writetofile(data)
         elif self.CpkMode == 0:
             self.ITOCdata = self.generate_ITOC()
             self.ITOCdata = bytearray(CPKChunkHeader.pack(b'ITOC', encflag, len(self.ITOCdata), 0)) + self.ITOCdata
+            self.ITOCdata = self.ITOCdata.ljust(len(self.ITOCdata) + (0x800 - len(self.ITOCdata) % 0x800), b'\x00')
             self.CPKdata = self.generate_CPK()
             self.CPKdata = bytearray(CPKChunkHeader.pack(b'CPK ', encflag, len(self.CPKdata), 0)) + self.CPKdata
-            data = self.CPKdata.ljust(len(self.CPKdata) + (0x800 - len(self.CPKdata) % 0x800) - 6, b'\x00') + bytearray(b"(c)CRI") + self.ITOCdata.ljust(len(self.ITOCdata) + (0x800 - len(self.ITOCdata) % 0x800), b'\x00')
+            data = self.CPKdata.ljust(len(self.CPKdata) + (0x800 - len(self.CPKdata) % 0x800) - 6, b'\x00') + bytearray(b"(c)CRI") + self.ITOCdata
             self.writetofile(data)
         
     
@@ -309,8 +318,8 @@ class CPKBuilder:
             out.write(data)
             for i in self.files:
                 d = open(i, "rb").read()
-                if len(d) % 800 != 0:
-                    d = d.ljust(len(d) + (0x800 - len(d) % 800), b"\x00")
+                if len(d) % 0x800 != 0:
+                    d = d.ljust(len(d) + (0x800 - len(d) % 0x800), b"\x00")
                 out.write(d)
             out.write(self.ETOCdata)
             out.close()
@@ -319,8 +328,8 @@ class CPKBuilder:
             out.write(data)
             for i in self.files:
                 d = open(i, "rb").read()
-                if len(d) % 800 != 0:
-                    d = d.ljust(len(d) + (0x800 - len(d) % 800), b"\x00")
+                if len(d) % 0x800 != 0:
+                    d = d.ljust(len(d) + (0x800 - len(d) % 0x800), b"\x00")
                 out.write(d)
             out.write(self.ETOCdata)
             out.close()
@@ -329,8 +338,8 @@ class CPKBuilder:
             out.write(data)
             for i in self.files:
                 d = open(i, "rb").read()
-                if len(d) % 800 != 0:
-                    d = d.ljust(len(d) + (0x800 - len(d) % 800), b"\x00")
+                if len(d) % 0x800 != 0:
+                    d = d.ljust(len(d) + (0x800 - len(d) % 0x800), b"\x00")
                 out.write(d)
             out.close()
         elif self.CpkMode == 0:
@@ -338,8 +347,8 @@ class CPKBuilder:
             out.write(data)
             for i in self.files:
                 d = open(os.path.join(self.dirname, i), "rb").read()
-                if len(d) % 800 != 0:
-                    d = d.ljust(len(d) + (0x800 - len(d) % 800), b"\x00")
+                if len(d) % 0x800 != 0:
+                    d = d.ljust(len(d) + (0x800 - len(d) % 0x800), b"\x00")
                 out.write(d)
             out.close()
     
@@ -453,7 +462,7 @@ class CPKBuilder:
 
     def generate_CPK(self) -> bytearray:
         if self.CpkMode == 3:
-            ContentOffset = (0x800+len(self.TOCdata)+len(self.GTOCdata) + (0x800 - (0x800+len(self.TOCdata)+len(self.GTOCdata)) % 0x800))
+            ContentOffset = (0x800+len(self.TOCdata)+len(self.GTOCdata))
             CpkHeader = [
                 {
                     "UpdateDateTime": (UTFTypeValues.ullong, 1),
@@ -463,7 +472,7 @@ class CPKBuilder:
                     "TocSize": (UTFTypeValues.ullong, len(self.TOCdata)),
                     "EtocOffset": (UTFTypeValues.ullong, self.ContentSize+ContentOffset),
                     "EtocSize": (UTFTypeValues.ullong, len(self.ETOCdata)),
-                    "GtocOffset": (UTFTypeValues.ullong, (0x800+len(self.TOCdata) + (0x800 - (0x800+len(self.TOCdata)) % 0x800))),
+                    "GtocOffset": (UTFTypeValues.ullong, 0x800+len(self.TOCdata)),
                     "GtocSize": (UTFTypeValues.ullong, len(self.GTOCdata)),                    
                     "EnabledPackedSize": (UTFTypeValues.ullong, self.EnabledDataSize),
                     "EnabledDataSize": (UTFTypeValues.ullong, self.EnabledDataSize),
@@ -503,7 +512,7 @@ class CPKBuilder:
                 }
             ]
         elif self.CpkMode == 2:
-            ContentOffset = (0x800+len(self.TOCdata)+len(self.ITOCdata) + (0x800 - (0x800+len(self.TOCdata)+len(self.ITOCdata)) % 0x800))
+            ContentOffset = 0x800+len(self.TOCdata)+len(self.ITOCdata)
             CpkHeader = [
                 {
                     "UpdateDateTime": (UTFTypeValues.ullong, 0),
@@ -513,7 +522,7 @@ class CPKBuilder:
                     "TocSize": (UTFTypeValues.ullong, len(self.TOCdata)),
                     "EtocOffset": (UTFTypeValues.ullong, self.ContentSize+ContentOffset),
                     "EtocSize": (UTFTypeValues.ullong, len(self.ETOCdata)),
-                    "ItocOffset": (UTFTypeValues.ullong, (0x800+len(self.TOCdata) + (0x800 - (0x800+len(self.TOCdata)) % 0x800))),
+                    "ItocOffset": (UTFTypeValues.ullong, 0x800+len(self.TOCdata)),
                     "ItocSize": (UTFTypeValues.ullong, len(self.ITOCdata)),
                     "EnabledPackedSize": (UTFTypeValues.ullong, self.EnabledDataSize),
                     "EnabledDataSize": (UTFTypeValues.ullong, self.EnabledDataSize),
@@ -555,7 +564,7 @@ class CPKBuilder:
             CpkHeader = [
                 {
                     "UpdateDateTime": (UTFTypeValues.ullong, 0),
-                    "ContentOffset": (UTFTypeValues.ullong, (0x800+len(self.TOCdata) + (0x800 - (0x800+len(self.TOCdata)) % 0x800))),
+                    "ContentOffset": (UTFTypeValues.ullong, 0x800+len(self.TOCdata)),
                     "ContentSize": (UTFTypeValues.ullong, self.ContentSize),
                     "TocOffset": (UTFTypeValues.ullong, 0x800),
                     "TocSize": (UTFTypeValues.ullong, len(self.TOCdata)),
@@ -603,7 +612,7 @@ class CPKBuilder:
             CpkHeader = [
                 {
                     "UpdateDateTime": (UTFTypeValues.ullong, 0),
-                    "ContentOffset": (UTFTypeValues.ullong, (0x800+len(self.ITOCdata) + (0x800 - (0x800+len(self.ITOCdata)) % 0x800))),
+                    "ContentOffset": (UTFTypeValues.ullong, 0x800+len(self.ITOCdata)),
                     "ContentSize": (UTFTypeValues.ullong, self.ContentSize),
                     "ItocOffset": (UTFTypeValues.ullong, 0x800),
                     "ItocSize": (UTFTypeValues.ullong, len(self.ITOCdata)),

@@ -70,7 +70,7 @@ class UTF:
             elif stflag == 0x5:
                 target_data.append(int.from_bytes(stream.read(4), "big"))
                 types[0].append((">"+self.stringtypes(typeflag), typeflag))
-            elif stflag == 0x7: # I've seen one article referencing this, but I never saw it personally.
+            elif stflag == 0x7: # Exists in old CPK's.
                 # target_tuple.append((int.from_bytes(stream.read(4), "big"), int.from_bytes(stream.read(calcsize(self.stringtypes(typeflag))), "big")))
                 # types[3].append((">"+self.stringtypes(typeflag), typeflag))
                 raise NotImplementedError("Unsupported 0x70 storage flag.")
@@ -112,7 +112,7 @@ class UTF:
             if types[2][i][1] not in [0xA, 0xB]:
                 val = self.finder(target_constant[i], strings)
                 table.setdefault(strings_copy[val], []).append(0)
-                t_t_dict.update({strings_copy[val]: (UTFTypeValuesList[types[2][i][1]], 0)})
+                t_t_dict.update({strings_copy[val]: (UTFTypeValuesList[types[2][i][1]], None)})
             elif types[2][i][1] == 0xA:
                 val = self.finder(target_constant[i], strings)
                 table.setdefault(strings_copy[val], []).append("<NULL>")
@@ -300,14 +300,14 @@ class UTFBuilder:
                         self.stflag.append((0x50, UTFTypeValuesList.index(val[1][0]), val[0]))
                         break
                 else:
-                    if val[1][1] == 0 or val[1][1] == "<NULL>":
+                    if val[1][1] == None or val[1][1] == "<NULL>":
                         self.stflag.append((0x10, UTFTypeValuesList.index(val[1][0]), val[0]))
                     else:
                         self.stflag.append((0x30, UTFTypeValuesList.index(val[1][0]), val[0], val[1][1]))
             else:
                 # It seems that when there is only one dictionary, there will be no element of type 0x30 flag
                 # Otherwise all of them would be either 0x30 or 0x10 flags with no length to the rows.
-                if val[1][1] == 0 or val[1][1] == "<NULL>":
+                if val[1][1] == None or val[1][1] == "<NULL>":
                     self.stflag.append((0x10, UTFTypeValuesList.index(val[1][0]), val[0]))
                 else:
                     self.stflag.append((0x50, UTFTypeValuesList.index(val[1][0]), val[0]))
@@ -320,6 +320,8 @@ class UTFBuilder:
             for key, value in dict.items():
                 if key not in strings:
                     strings.append(key)
+        for dict in self.dictarray:
+            for key, value in dict.items():
                 if type(value[1]) == str and value[1] not in strings:
                     strings.append(value[1])
                 if (type(value[1]) == bytearray or type(value[1]) == bytes) and value[1] not in binary:

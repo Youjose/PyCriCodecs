@@ -15,7 +15,6 @@ class TOC():
     table: dict
     def __init__(self, stream: bytes) -> None:
         self.stream = BytesIO(stream)
-        print(stream)
         self.magic, self.encflag, self.packet_size, self.unk0C = CPKChunkHeader.unpack(
             self.stream.read(CPKChunkHeader.size)
         )
@@ -81,8 +80,6 @@ class CPK:
                     self.tables["HGTOC"] = TOC(self.stream.read(self.tables['CPK']["HgtocSize"][0])).table
             elif key == "EtocOffset":
                 if value[0]:
-                    self.stream.seek(0)
-                    print(self.stream.read(0x100))
                     self.stream.seek(value[0], 0)
                     self.tables["ETOC"] = TOC(self.stream.read(self.tables['CPK']["EtocSize"][0])).table
     

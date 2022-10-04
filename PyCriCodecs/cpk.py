@@ -211,7 +211,7 @@ class CPKBuilder:
     """ Use this class to build semi-custom CPK archives. """
     __slots__ = ["CpkMode", "Tver", "dirname", "itoc_size", "encrypt", "encoding", "files", "fileslen",
                 "ITOCdata", "CPKdata", "ContentSize", "EnabledDataSize", "outfile", "TOCdata", "GTOCdata",
-                "ETOCdata"]
+                "ETOCdata", "force_no_dirname"]
     CpkMode: int 
     # CPK mode dictates (at least from what I saw) the use of filenames in TOC or the use of
     # ITOC without any filenames (Use of indexes only, will be sorted).
@@ -232,8 +232,9 @@ class CPKBuilder:
     ContentSize: int
     EnabledDataSize: int
     outfile: str
+    force_no_dirname: bool
 
-    def __init__(self, dirname: str, outfile: str, CpkMode: int = 1, Tver: str = False, encrypt: bool = False, encoding: str = "utf-8") -> None:
+    def __init__(self, dirname: str, outfile: str, CpkMode: int = 1, Tver: str = False, encrypt: bool = False, encoding: str = "utf-8", force_no_dirname: bool = True) -> None:
         self.CpkMode = CpkMode
         if not Tver:
             # Some default ones I found with the matching CpkMode, hope they are good enough for all cases.
@@ -257,6 +258,7 @@ class CPKBuilder:
         self.EnabledDataSize = 0
         self.ContentSize = 0
         self.outfile = outfile
+        self.force_no_dirname = force_no_dirname
         self.generate_payload()
     
     def generate_payload(self):
@@ -431,7 +433,10 @@ class CPKBuilder:
             dirname = root.split(os.sep, 1)[1:]
             if dirname == []:
                 dirname = [""]
-            dirname = os.path.join(dirname[0]).replace(os.sep, "/")
+            if self.force_no_dirname:
+                dirname = ""
+            else:
+                dirname = os.path.join(dirname[0]).replace(os.sep, "/")
             for file in files:
                 self.files.append(os.path.join(root, file))
                 sz = os.stat(os.path.join(root, file)).st_size

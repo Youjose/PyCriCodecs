@@ -430,13 +430,9 @@ class CPKBuilder:
         self.fileslen = count
         count = 0
         for root, dirs, files in os.walk(self.dirname):
-            dirname = root.split(os.sep, 1)[1:]
-            if dirname == []:
-                dirname = [""]
-            if self.force_no_dirname:
-                dirname = ""
-            else:
-                dirname = os.path.join(dirname[0]).replace(os.sep, "/")
+            dirname = root.split(self.dirname)[1]
+            if dirname.startswith(("/", "\\", os.sep)):
+                dirname = dirname[1:]
             for file in files:
                 self.files.append(os.path.join(root, file))
                 sz = os.stat(os.path.join(root, file)).st_size

@@ -432,7 +432,8 @@ class CPKBuilder:
             count += 1
         # This estimates how large the TOC table size is.
         lent = ((lent + (4 + 4 + 4 + 4 + 8 + 4) * count + 0x57) if switch else (lent + (4 + 4 + 4 + 8 + 4) * count + 0x5B))
-        lent = lent + (0x800 - lent % 0x800)
+        if lent % 0x800 != 0:
+            lent = lent + (0x800 - lent % 0x800)
 
         self.fileslen = count
         count = 0
@@ -463,7 +464,10 @@ class CPKBuilder:
                 }
             )
             count += 1
-            lent += sz + (0x800 - sz % 0x800)
+            if sz % 0x800 != 0:
+                lent += sz + (0x800 - sz % 0x800)
+            else:
+                lent += sz
         return UTFBuilder(payload, encrypt=self.encrypt, encoding=self.encoding, table_name="CpkTocInfo").parse()    
 
     def get_files(self, lyst, root):

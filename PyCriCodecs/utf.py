@@ -175,6 +175,7 @@ class UTF:
             raise Exception("Failed string lookup.")
     
     def get_payload(self) -> list:
+        """ Returns list of dictionaries used in the UTF. """
         # I am a noob, but I want to standardize the table output to Donmai WannaCri's payload type.
         # Since my table parser has a different approach (an awful one at that),
         # (And it's integrated with the other tools in this lib specifically),
@@ -218,6 +219,7 @@ class UTFBuilder:
         self.get_strings()
 
     def parse(self) -> bytearray:
+        """ Returns a @UTF bytearray Table from the provided payload dict. """
         self.get_stflag()
         self.column_data = self.write_columns()
         self.rows_data = self.write_rows()
@@ -284,7 +286,7 @@ class UTFBuilder:
                 if data[1] not in [0xA, 0xB]:
                     columns += int.to_bytes(self.strings.index(b"\x00" + bytes(data[2], self.encoding) + b"\x00") + 1, 4, "big")+int.to_bytes(data[3], calcsize(self.stringtypes(data[1])), "big")
                 elif data[1] == 0xA:
-                    columns += int.to_bytes(self.strings.index(b"\x00" + bytes(data[2], self.encoding) + b"\x00") + 1, 4, "big")+ b"\x00\x00\x00\x00" if self.strings.startswith(bytes(data[3], self.encoding) + b"\x00") else (int.to_bytes(self.strings.index(b"\x00" + bytes(data[3], self.encoding) + b"\x00")), 4, "big")
+                    columns += int.to_bytes(self.strings.index(b"\x00" + bytes(data[2], self.encoding) + b"\x00") + 1, 4, "big")+b"\x00\x00\x00\x00" if self.strings.startswith(bytes(data[3], self.encoding) + b"\x00") else (int.to_bytes(self.strings.index(b"\x00" + bytes(data[3], self.encoding) + b"\x00"), 4, "big"))
                 else:
                     columns += int.to_bytes(self.strings.index(b"\x00" + bytes(data[2], self.encoding) + b"\x00") + 1, 4, "big")+int.to_bytes(self.binary.index(data[3]), 4, "big")+int.to_bytes(len(data[3]), 4, "big")
         return columns

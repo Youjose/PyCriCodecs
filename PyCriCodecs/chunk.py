@@ -27,8 +27,8 @@ class CPKChunkHeaderType(Enum):
     CPK   = b"CPK " # Header.
     TOC   = b"TOC " # Cpkmode 1, 2, 3.
     ITOC  = b"ITOC" # Cpkmode 0, 2.
-    ETOC  = b"ETOC" # Cpkmode 2, 3.
     GTOC  = b"GTOC" # Cpkmode 3.
+    ETOC  = b"ETOC" # Any CpkMode. Not important.
     HTOC  = b"HTOC" # Unknown.
     HGTOC = b"HGTOC"# Unknown.
 

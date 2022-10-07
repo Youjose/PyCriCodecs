@@ -211,7 +211,7 @@ class CPKBuilder:
     """ Use this class to build semi-custom CPK archives. """
     __slots__ = ["CpkMode", "Tver", "dirname", "itoc_size", "encrypt", "encoding", "files", "fileslen",
                 "ITOCdata", "CPKdata", "ContentSize", "EnabledDataSize", "outfile", "TOCdata", "GTOCdata",
-                "ETOCdata", "force_no_dirname"]
+                "ETOCdata"]
     CpkMode: int 
     # CPK mode dictates (at least from what I saw) the use of filenames in TOC or the use of
     # ITOC without any filenames (Use of indexes only, will be sorted).
@@ -232,9 +232,8 @@ class CPKBuilder:
     ContentSize: int
     EnabledDataSize: int
     outfile: str
-    force_no_dirname: bool
 
-    def __init__(self, dirname: str, outfile: str, CpkMode: int = 1, Tver: str = False, encrypt: bool = False, encoding: str = "utf-8", force_no_dirname: bool = True) -> None:
+    def __init__(self, dirname: str, outfile: str, CpkMode: int = 1, Tver: str = False, encrypt: bool = False, encoding: str = "utf-8") -> None:
         self.CpkMode = CpkMode
         if not Tver:
             # Some default ones I found with the matching CpkMode, hope they are good enough for all cases.
@@ -247,18 +246,19 @@ class CPKBuilder:
             elif self.CpkMode == 3:
                 self.Tver = 'CPKFBSTD1.49.35, DLL3.24.00'
             else:
-                ValueError("Unknown CpkMode.")
+                raise ValueError("Unknown CpkMode.")
         else:
             self.Tver = Tver
         if dirname == "":
             raise ValueError("Invalid directory name/path.")
+        elif self.CpkMode not in [0, 1, 2, 3]:
+            raise ValueError("Unknown CpkMode.")
         self.dirname = dirname
         self.encrypt = encrypt
         self.encoding = encoding
         self.EnabledDataSize = 0
         self.ContentSize = 0
         self.outfile = outfile
-        self.force_no_dirname = force_no_dirname
         self.generate_payload()
     
     def generate_payload(self):
@@ -273,8 +273,6 @@ class CPKBuilder:
             self.GTOCdata = self.generate_GTOC()
             self.GTOCdata = bytearray(CPKChunkHeader.pack(b'GTOC', encflag, len(self.GTOCdata), 0)) + self.GTOCdata
             self.GTOCdata = self.GTOCdata.ljust(len(self.GTOCdata) + (0x800 - len(self.GTOCdata) % 0x800), b'\x00')
-            self.ETOCdata = self.generate_ETOC()
-            self.ETOCdata = bytearray(CPKChunkHeader.pack(b'ETOC', encflag, len(self.ETOCdata), 0)) + self.ETOCdata
             self.CPKdata = self.generate_CPK()
             self.CPKdata = bytearray(CPKChunkHeader.pack(b'CPK ', encflag, len(self.CPKdata), 0)) + self.CPKdata
             data = self.CPKdata.ljust(len(self.CPKdata) + (0x800 - len(self.CPKdata) % 0x800) - 6, b'\x00') + bytearray(b"(c)CRI") + self.TOCdata + self.GTOCdata
@@ -286,8 +284,6 @@ class CPKBuilder:
             self.ITOCdata = self.generate_ITOC()
             self.ITOCdata = bytearray(CPKChunkHeader.pack(b'ITOC', encflag, len(self.ITOCdata), 0)) + self.ITOCdata
             self.ITOCdata = self.ITOCdata.ljust(len(self.ITOCdata) + (0x800 - len(self.ITOCdata) % 0x800), b'\x00')
-            self.ETOCdata = self.generate_ETOC()
-            self.ETOCdata = bytearray(CPKChunkHeader.pack(b'ETOC', encflag, len(self.ETOCdata), 0)) + self.ETOCdata
             self.CPKdata = self.generate_CPK()
             self.CPKdata = bytearray(CPKChunkHeader.pack(b'CPK ', encflag, len(self.CPKdata), 0)) + self.CPKdata
             data = self.CPKdata.ljust(len(self.CPKdata) + (0x800 - len(self.CPKdata) % 0x800) - 6, b'\x00') + bytearray(b"(c)CRI") + self.TOCdata + self.ITOCdata
@@ -309,7 +305,6 @@ class CPKBuilder:
             data = self.CPKdata.ljust(len(self.CPKdata) + (0x800 - len(self.CPKdata) % 0x800) - 6, b'\x00') + bytearray(b"(c)CRI") + self.ITOCdata
             self.writetofile(data)
         
-    
     def writetofile(self, data) -> None:
         # All versions seem to be written the same, but just in case I forgot something, I will leave this to help.
         if self.CpkMode == 3:
@@ -320,7 +315,6 @@ class CPKBuilder:
                 if len(d) % 0x800 != 0:
                     d = d.ljust(len(d) + (0x800 - len(d) % 0x800), b"\x00")
                 out.write(d)
-            out.write(self.ETOCdata)
             out.close()
         elif self.CpkMode == 2:
             out = open(self.outfile, "wb")
@@ -330,7 +324,6 @@ class CPKBuilder:
                 if len(d) % 0x800 != 0:
                     d = d.ljust(len(d) + (0x800 - len(d) % 0x800), b"\x00")
                 out.write(d)
-            out.write(self.ETOCdata)
             out.close()
         elif self.CpkMode == 1:
             out = open(self.outfile, "wb")
@@ -406,6 +399,7 @@ class CPKBuilder:
         return UTFBuilder(payload, encrypt=self.encrypt, encoding=self.encoding, table_name="CpkGtocInfo").parse()
 
     def generate_ETOC(self) -> bytearray:
+        """ This is now unused, a CPK won't be unfuctional without it. I will leave it here for reference. """
         payload = [
             {
                 "UpdateDateTime": (UTFTypeValues.ullong, 0),
@@ -417,59 +411,76 @@ class CPKBuilder:
     def generate_TOC(self) -> bytearray:
         payload = []
         self.files = []
+        self.get_files(os.listdir(self.dirname), self.dirname)
         count = 0
-        # TODO improve calculating the TOC length.
         lent = 0
-        for root, dirs, files in os.walk(self.dirname): # Slows code if there's a lot of files.
-            for i in files:
-                lent += len(i) + 1
-                count += 1
-        # This estimates how large the TOC table size is. Not ideal and could error it out in rare cases.
-        lent = lent + (4 + 4 + 4 + 4 + 8) * count + 32 + 9 + 30 + 6
+        for i in self.files:
+            dirname = os.path.dirname(i.split(self.dirname)[1])
+            if dirname:
+                if dirname.startswith(os.sep) or dirname.startswith("\\"):
+                    dirname = dirname[1:]
+                if "\\" in dirname or os.sep in dirname:
+                    dirname = dirname.replace("\\", "/")
+                    dirname = dirname.replace(os.sep, "/")
+                lent += len(dirname)
+            lent += len(os.path.basename(i))
+            count += 1
+        # This estimates how large the TOC table size is.
+        lent = lent + (4 + 4 + 4 + 4 + 8 + 4) * count + 57
         lent = lent + (0x800 - lent % 0x800)
+
         self.fileslen = count
         count = 0
-        for root, dirs, files in os.walk(self.dirname):
-            dirname = root.split(self.dirname)[1]
-            if dirname.startswith(("/", "\\", os.sep)):
+        for file in self.files:
+            sz = os.stat(file).st_size
+            if sz > 0xFFFFFFFF:
+                raise OverflowError("4GBs is the max size of a single file that can be bundled in a CPK archive of mode 1.")
+            self.EnabledDataSize += sz
+            if sz % 0x800 != 0:
+                self.ContentSize += sz + (0x800 - sz % 0x800)
+            else:
+                self.ContentSize += sz
+            dirname = os.path.dirname(file.split(self.dirname)[1])
+            if dirname.startswith(os.sep) or dirname.startswith("\\"):
                 dirname = dirname[1:]
-            for file in files:
-                self.files.append(os.path.join(root, file))
-                sz = os.stat(os.path.join(root, file)).st_size
-                if sz > 0xFFFFFFFF:
-                    raise OverflowError("4GBs is the max size of a single file that can be bundled in a CPK archive of mode 1.")
-                self.EnabledDataSize += sz
-                if sz % 0x800 != 0:
-                    self.ContentSize += sz + (0x800 - sz % 0x800)
-                else:
-                    self.ContentSize += sz
-                payload.append(
-                    {
-                        "DirName": (UTFTypeValues.string, dirname),
-                        "FileName": (UTFTypeValues.string, file),
-                        "FileSize": (UTFTypeValues.uint, sz),
-                        "ExtractSize": (UTFTypeValues.uint, sz),
-                        "FileOffset": (UTFTypeValues.ullong, lent),
-                        "ID": (UTFTypeValues.uint, count),
-                        "UserString": (UTFTypeValues.string, "<NULL>")
-                    }
-                )
-                count += 1
-                lent += self.ContentSize
-        return UTFBuilder(payload, encrypt=self.encrypt, encoding=self.encoding, table_name="CpkTocInfo").parse()           
+            if "\\" in dirname or os.sep in dirname:
+                dirname = dirname.replace("\\", "/")
+                dirname = dirname.replace(os.sep, "/")
+            payload.append(
+                {
+                    "DirName": (UTFTypeValues.string, dirname),
+                    "FileName": (UTFTypeValues.string, os.path.basename(file)),
+                    "FileSize": (UTFTypeValues.uint, sz),
+                    "ExtractSize": (UTFTypeValues.uint, sz),
+                    "FileOffset": (UTFTypeValues.ullong, lent),
+                    "ID": (UTFTypeValues.uint, count),
+                    "UserString": (UTFTypeValues.string, "<NULL>")
+                }
+            )
+            count += 1
+            lent += sz + (0x800 - sz % 0x800)
+        return UTFBuilder(payload, encrypt=self.encrypt, encoding=self.encoding, table_name="CpkTocInfo").parse()    
+
+    def get_files(self, lyst, root):
+        for i in lyst:
+            name = os.path.join(root, i)
+            if os.path.isdir(name):
+                self.get_files(os.listdir(name), name)
+            else:
+                self.files.append(name)
 
     def generate_CPK(self) -> bytearray:
         if self.CpkMode == 3:
             ContentOffset = (0x800+len(self.TOCdata)+len(self.GTOCdata))
             CpkHeader = [
                 {
-                    "UpdateDateTime": (UTFTypeValues.ullong, 1),
+                    "UpdateDateTime": (UTFTypeValues.ullong, 0),
                     "ContentOffset": (UTFTypeValues.ullong, ContentOffset),
                     "ContentSize": (UTFTypeValues.ullong, self.ContentSize),
                     "TocOffset": (UTFTypeValues.ullong, 0x800),
                     "TocSize": (UTFTypeValues.ullong, len(self.TOCdata)),
-                    "EtocOffset": (UTFTypeValues.ullong, self.ContentSize+ContentOffset),
-                    "EtocSize": (UTFTypeValues.ullong, len(self.ETOCdata)),
+                    "EtocOffset": (UTFTypeValues.ullong, None),
+                    "EtocSize": (UTFTypeValues.ullong, None),
                     "GtocOffset": (UTFTypeValues.ullong, 0x800+len(self.TOCdata)),
                     "GtocSize": (UTFTypeValues.ullong, len(self.GTOCdata)),                    
                     "EnabledPackedSize": (UTFTypeValues.ullong, self.EnabledDataSize),
@@ -518,8 +529,8 @@ class CPKBuilder:
                     "ContentSize": (UTFTypeValues.ullong, self.ContentSize),
                     "TocOffset": (UTFTypeValues.ullong, 0x800),
                     "TocSize": (UTFTypeValues.ullong, len(self.TOCdata)),
-                    "EtocOffset": (UTFTypeValues.ullong, self.ContentSize+ContentOffset),
-                    "EtocSize": (UTFTypeValues.ullong, len(self.ETOCdata)),
+                    "EtocOffset": (UTFTypeValues.ullong, None),
+                    "EtocSize": (UTFTypeValues.ullong, None),
                     "ItocOffset": (UTFTypeValues.ullong, 0x800+len(self.TOCdata)),
                     "ItocSize": (UTFTypeValues.ullong, len(self.ITOCdata)),
                     "EnabledPackedSize": (UTFTypeValues.ullong, self.EnabledDataSize),

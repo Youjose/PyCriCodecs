@@ -284,7 +284,7 @@ class UTFBuilder:
                 if data[1] not in [0xA, 0xB]:
                     columns += int.to_bytes(self.strings.index(b"\x00" + bytes(data[2], self.encoding) + b"\x00") + 1, 4, "big")+int.to_bytes(data[3], calcsize(self.stringtypes(data[1])), "big")
                 elif data[1] == 0xA:
-                    columns += int.to_bytes(self.strings.index(b"\x00" + bytes(data[2], self.encoding) + b"\x00") + 1, 4, "big")+int.to_bytes(self.strings.index(b"\x00" + bytes(data[3], self.encoding) + b"\x00") + 1, 4, "big")
+                    columns += int.to_bytes(self.strings.index(b"\x00" + bytes(data[2], self.encoding) + b"\x00") + 1, 4, "big")+ b"\x00\x00\x00\x00" if self.strings.startswith(bytes(data[3], self.encoding) + b"\x00") else (int.to_bytes(self.strings.index(b"\x00" + bytes(data[3], self.encoding) + b"\x00")), 4, "big")
                 else:
                     columns += int.to_bytes(self.strings.index(b"\x00" + bytes(data[2], self.encoding) + b"\x00") + 1, 4, "big")+int.to_bytes(self.binary.index(data[3]), 4, "big")+int.to_bytes(len(data[3]), 4, "big")
         return columns
@@ -300,7 +300,7 @@ class UTFBuilder:
                         self.stflag.append((0x50, UTFTypeValuesList.index(val[1][0]), val[0]))
                         break
                 else:
-                    if val[1][1] == None or val[1][1] == "<NULL>":
+                    if val[1][1] == None:
                         self.stflag.append((0x10, UTFTypeValuesList.index(val[1][0]), val[0]))
                     else:
                         self.stflag.append((0x30, UTFTypeValuesList.index(val[1][0]), val[0], val[1][1]))

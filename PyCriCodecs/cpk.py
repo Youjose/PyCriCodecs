@@ -414,6 +414,8 @@ class CPKBuilder:
         self.get_files(os.listdir(self.dirname), self.dirname)
         count = 0
         lent = 0
+        switch = False
+        s = set()
         for i in self.files:
             dirname = os.path.dirname(i.split(self.dirname)[1])
             if dirname:
@@ -422,11 +424,14 @@ class CPKBuilder:
                 if "\\" in dirname or os.sep in dirname:
                     dirname = dirname.replace("\\", "/")
                     dirname = dirname.replace(os.sep, "/")
-                lent += len(dirname)
-            lent += len(os.path.basename(i))
+                if dirname and dirname not in s:
+                    switch = True
+                    lent += len(dirname) + 1
+                    s.update({dirname})
+            lent += len(os.path.basename(i)) + 1
             count += 1
         # This estimates how large the TOC table size is.
-        lent = lent + (4 + 4 + 4 + 4 + 8 + 4) * count + 57
+        lent = ((lent + (4 + 4 + 4 + 4 + 8 + 4) * count + 0x57) if switch else (lent + (4 + 4 + 4 + 8 + 4) * count + 0x5B))
         lent = lent + (0x800 - lent % 0x800)
 
         self.fileslen = count

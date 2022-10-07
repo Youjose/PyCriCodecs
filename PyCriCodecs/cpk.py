@@ -86,7 +86,7 @@ class CPK:
     def extract(self):
         if "TOC" in self.tables:
             toctable = self.tables['TOC']
-            rel_off = self.tables['CPK']['TocOffset'][0]
+            rel_off = 0x800
             for i in range(len(toctable['FileName'])):
                 if toctable["DirName"][i%len(toctable["DirName"])] == '':
                     dirname = self.filename.rsplit(".")[0]
@@ -140,7 +140,7 @@ class CPK:
     def extract_file(self, filename):
         if "TOC" in self.tables:
             toctable = self.tables['TOC']
-            rel_off = self.tables['CPK']['TocOffset'][0]
+            rel_off = 0x800
             if toctable["DirName"][0] == '':
                 dirname = self.filename.rsplit(".")[0]
             else:

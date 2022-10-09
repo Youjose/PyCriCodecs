@@ -211,7 +211,7 @@ class CPKBuilder:
     """ Use this class to build semi-custom CPK archives. """
     __slots__ = ["CpkMode", "Tver", "dirname", "itoc_size", "encrypt", "encoding", "files", "fileslen",
                 "ITOCdata", "CPKdata", "ContentSize", "EnabledDataSize", "outfile", "TOCdata", "GTOCdata",
-                "ETOCdata"]
+                "ETOCdata", "compress", "EnabledPackedSize"]
     CpkMode: int 
     # CPK mode dictates (at least from what I saw) the use of filenames in TOC or the use of
     # ITOC without any filenames (Use of indexes only, will be sorted).
@@ -231,9 +231,11 @@ class CPKBuilder:
     CPKdata: bytearray
     ContentSize: int
     EnabledDataSize: int
+    EnabledPackedSize: int
     outfile: str
+    compress: bool
 
-    def __init__(self, dirname: str, outfile: str, CpkMode: int = 1, Tver: str = False, encrypt: bool = False, encoding: str = "utf-8") -> None:
+    def __init__(self, dirname: str, outfile: str, CpkMode: int = 1, Tver: str = False, encrypt: bool = False, encoding: str = "utf-8", compress: bool = False) -> None:
         self.CpkMode = CpkMode
         if not Tver:
             # Some default ones I found with the matching CpkMode, hope they are good enough for all cases.
@@ -253,12 +255,18 @@ class CPKBuilder:
             raise ValueError("Invalid directory name/path.")
         elif self.CpkMode not in [0, 1, 2, 3]:
             raise ValueError("Unknown CpkMode.")
+        elif self.CpkMode == 0 and self.compress:
+            # CpkMode of 0 is a bit hard to do with compression, as I don't know where the actual data would be
+            # categorized (either H or L) after compression. Needs proper testing for me to implement.
+            raise NotImplementedError("CpkMode of 0 with compression is not supported yet.")
         self.dirname = dirname
         self.encrypt = encrypt
         self.encoding = encoding
         self.EnabledDataSize = 0
+        self.EnabledPackedSize = 0
         self.ContentSize = 0
         self.outfile = outfile
+        self.compress = compress
         self.generate_payload()
     
     def generate_payload(self):
@@ -306,39 +314,17 @@ class CPKBuilder:
             self.writetofile(data)
         
     def writetofile(self, data) -> None:
-        # All versions seem to be written the same, but just in case I forgot something, I will leave this to help.
-        if self.CpkMode == 3:
-            out = open(self.outfile, "wb")
-            out.write(data)
-            for i in self.files:
-                d = open(i, "rb").read()
+        out = open(self.outfile, "wb")
+        out.write(data)
+        if self.compress:
+            for d in self.files:
                 if len(d) % 0x800 != 0:
                     d = d.ljust(len(d) + (0x800 - len(d) % 0x800), b"\x00")
                 out.write(d)
             out.close()
-        elif self.CpkMode == 2:
-            out = open(self.outfile, "wb")
-            out.write(data)
+        else:
             for i in self.files:
                 d = open(i, "rb").read()
-                if len(d) % 0x800 != 0:
-                    d = d.ljust(len(d) + (0x800 - len(d) % 0x800), b"\x00")
-                out.write(d)
-            out.close()
-        elif self.CpkMode == 1:
-            out = open(self.outfile, "wb")
-            out.write(data)
-            for i in self.files:
-                d = open(i, "rb").read()
-                if len(d) % 0x800 != 0:
-                    d = d.ljust(len(d) + (0x800 - len(d) % 0x800), b"\x00")
-                out.write(d)
-            out.close()
-        elif self.CpkMode == 0:
-            out = open(self.outfile, "wb")
-            out.write(data)
-            for i in self.files:
-                d = open(os.path.join(self.dirname, i), "rb").read()
                 if len(d) % 0x800 != 0:
                     d = d.ljust(len(d) + (0x800 - len(d) % 0x800), b"\x00")
                 out.write(d)
@@ -411,6 +397,7 @@ class CPKBuilder:
     def generate_TOC(self) -> bytearray:
         payload = []
         self.files = []
+        temp = []
         self.get_files(os.listdir(self.dirname), self.dirname)
         count = 0
         lent = 0
@@ -439,13 +426,26 @@ class CPKBuilder:
         count = 0
         for file in self.files:
             sz = os.stat(file).st_size
+            fz = sz
             if sz > 0xFFFFFFFF:
                 raise OverflowError("4GBs is the max size of a single file that can be bundled in a CPK archive of mode 1.")
-            self.EnabledDataSize += sz
-            if sz % 0x800 != 0:
-                self.ContentSize += sz + (0x800 - sz % 0x800)
+            if self.compress:
+                self.EnabledPackedSize += sz
+                comp_data = CriCodecs.CriLaylaCompress(open(file, "rb").read())
+                temp.append(comp_data)
+                fz = len(comp_data)
+                self.EnabledDataSize += fz
+                if fz % 0x800 != 0:
+                    self.ContentSize += sz + (0x800 - fz % 0x800)
+                else:
+                    self.ContentSize += fz
             else:
-                self.ContentSize += sz
+                self.EnabledDataSize += sz
+                self.EnabledPackedSize += sz
+                if sz % 0x800 != 0:
+                    self.ContentSize += sz + (0x800 - sz % 0x800)
+                else:
+                    self.ContentSize += sz
             dirname = os.path.dirname(file.split(self.dirname)[1])
             if dirname.startswith(os.sep) or dirname.startswith("\\"):
                 dirname = dirname[1:]
@@ -457,17 +457,20 @@ class CPKBuilder:
                     "DirName": (UTFTypeValues.string, dirname),
                     "FileName": (UTFTypeValues.string, os.path.basename(file)),
                     "FileSize": (UTFTypeValues.uint, sz),
-                    "ExtractSize": (UTFTypeValues.uint, sz),
+                    "ExtractSize": (UTFTypeValues.uint, (sz if not self.compress else fz)),
                     "FileOffset": (UTFTypeValues.ullong, lent),
                     "ID": (UTFTypeValues.uint, count),
                     "UserString": (UTFTypeValues.string, "<NULL>")
                 }
             )
             count += 1
+            sz = fz
             if sz % 0x800 != 0:
                 lent += sz + (0x800 - sz % 0x800)
             else:
                 lent += sz
+        if self.compress:
+            self.files = temp
         return UTFBuilder(payload, encrypt=self.encrypt, encoding=self.encoding, table_name="CpkTocInfo").parse()    
 
     def get_files(self, lyst, root):
@@ -492,7 +495,7 @@ class CPKBuilder:
                     "EtocSize": (UTFTypeValues.ullong, None),
                     "GtocOffset": (UTFTypeValues.ullong, 0x800+len(self.TOCdata)),
                     "GtocSize": (UTFTypeValues.ullong, len(self.GTOCdata)),                    
-                    "EnabledPackedSize": (UTFTypeValues.ullong, self.EnabledDataSize),
+                    "EnabledPackedSize": (UTFTypeValues.ullong, self.EnabledPackedSize),
                     "EnabledDataSize": (UTFTypeValues.ullong, self.EnabledDataSize),
                     "Files": (UTFTypeValues.uint, self.fileslen),
                     "Groups": (UTFTypeValues.uint, 0),
@@ -542,7 +545,7 @@ class CPKBuilder:
                     "EtocSize": (UTFTypeValues.ullong, None),
                     "ItocOffset": (UTFTypeValues.ullong, 0x800+len(self.TOCdata)),
                     "ItocSize": (UTFTypeValues.ullong, len(self.ITOCdata)),
-                    "EnabledPackedSize": (UTFTypeValues.ullong, self.EnabledDataSize),
+                    "EnabledPackedSize": (UTFTypeValues.ullong, self.EnabledPackedSize),
                     "EnabledDataSize": (UTFTypeValues.ullong, self.EnabledDataSize),
                     "Files": (UTFTypeValues.uint, self.fileslen),
                     "Groups": (UTFTypeValues.uint, 0),
@@ -596,7 +599,7 @@ class CPKBuilder:
                     "GtocOffset": (UTFTypeValues.ullong, None),
                     "GtocSize": (UTFTypeValues.ullong, None),
                     "GtocCrc": (UTFTypeValues.uint, None),               
-                    "EnabledPackedSize": (UTFTypeValues.ullong, self.EnabledDataSize),
+                    "EnabledPackedSize": (UTFTypeValues.ullong, self.EnabledPackedSize),
                     "EnabledDataSize": (UTFTypeValues.ullong, self.EnabledDataSize),
                     "TotalDataSize": (UTFTypeValues.ullong, None),
                     "Tocs": (UTFTypeValues.uint, None),

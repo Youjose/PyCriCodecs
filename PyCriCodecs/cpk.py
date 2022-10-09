@@ -398,7 +398,7 @@ class CPKBuilder:
         payload = []
         self.files = []
         temp = []
-        self.get_files(sorted(os.listdir(self.dirname)), self.dirname)
+        self.get_files(sorted(os.listdir(self.dirname), key=lambda x: x.lower()), self.dirname)
         count = 0
         lent = 0
         switch = False
@@ -415,10 +415,16 @@ class CPKBuilder:
                     switch = True
                     lent += len(dirname) + 1
                     s.update({dirname})
-            lent += len(os.path.basename(i)) + 1
+            flname = os.path.basename(i)
+            if flname not in s:
+                lent += len(flname) + 1
+                s.update({flname})
             count += 1
         # This estimates how large the TOC table size is.
-        lent = ((lent + (4 + 4 + 4 + 4 + 8 + 4) * count + 0x57) if switch else (lent + (4 + 4 + 4 + 8 + 4) * count + 0x5B))
+        if switch:
+            lent = (lent + (4 + 4 + 4 + 4 + 8 + 4) * count + 0x57)
+        else:
+            lent = (lent + (4 + 4 + 4 + 8 + 4) * count + 0x5B)
         if lent % 0x800 != 0:
             lent = lent + (0x800 - lent % 0x800)
 
@@ -477,7 +483,7 @@ class CPKBuilder:
         for i in lyst:
             name = os.path.join(root, i)
             if os.path.isdir(name):
-                self.get_files(sorted(os.listdir(name)), name)
+                self.get_files(sorted(os.listdir(name), key=lambda x: x.lower()), name)
             else:
                 self.files.append(name)
 
@@ -638,7 +644,7 @@ class CPKBuilder:
                     "ContentSize": (UTFTypeValues.ullong, self.ContentSize),
                     "ItocOffset": (UTFTypeValues.ullong, 0x800),
                     "ItocSize": (UTFTypeValues.ullong, len(self.ITOCdata)),
-                    "EnabledPackedSize": (UTFTypeValues.ullong, self.EnabledDataSize),
+                    "EnabledPackedSize": (UTFTypeValues.ullong, self.EnabledPackedSize),
                     "EnabledDataSize": (UTFTypeValues.ullong, self.EnabledDataSize),
                     "Files": (UTFTypeValues.uint, self.fileslen),
                     "Groups": (UTFTypeValues.uint, 0),
@@ -716,6 +722,7 @@ class CPKBuilder:
                     datal.append(dictl)
             datallen = len(datal)
             datahlen = len(datah)
+            self.EnabledPackedSize = self.EnabledDataSize
             if len(datal) == 0:
                 datal.append({"ID": (UTFTypeValues.ushort, 0), "FileSize": (UTFTypeValues.ushort, 0), "ExtractSize": (UTFTypeValues.ushort, 0)})
             elif len(datah) == 0:

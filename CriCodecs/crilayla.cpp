@@ -1,11 +1,15 @@
 /* 
     CRI layla decompression.
 	written by tpu. (https://forum.xentax.com/viewtopic.php?f=21&t=5137&p=44220&hilit=CRILAYLA#p44220)
-
 	Python wrapper by me (and modification).
-	Note: I have no idea how this decompression technique works, by the looks of it, it really is
+
+	CRIcompress method by KenTse
+    Taken from wmltogether's fork of CriPakTools.
+    Python wrapper by me.
+
+	Note: I have no idea how this compression technique works, by the looks of it, it really is
 	compute expensive and rather inefficient. If this failes for any kind of file, report to me and I will try
-	to rewrite this code. 
+	to rewrite this code.
 */
 #define PY_SSIZE_T_CLEAN
 #pragma once
@@ -106,9 +110,109 @@ unsigned char* layla_decomp(unsigned char* data, crilayla_header header){
 	return dst;
 }
 
+unsigned int layla_comp(unsigned char* dest, unsigned int* destLen, unsigned char* src, unsigned int srcLen){
+    unsigned int n = srcLen - 1, m = *destLen - 0x1, T = 0, d = 0, p, q, i, j, k;
+    unsigned char* odest = dest;
+    for (; n >= 0x100;)
+    {
+        j = n + 3 + 0x2000;
+        if (j > srcLen) j = srcLen;
+        for (i = n + 3, p = 0; i < j; i++)
+        {
+            for (k = 0; k <= n - 0x100; k++)
+            {
+                if (*(src + n - k) != *(src + i - k)) break;
+            }
+            if (k > p)
+            {
+                q = i - n - 3; p = k;
+            }
+        }
+        if (p < 3)
+        {
+            d = (d << 9) | (*(src + n--)); T += 9;
+        }
+        else
+        {
+            d = (((d << 1) | 1) << 13) | q; T += 14; n -= p;
+            if (p < 6)
+            {
+                d = (d << 2) | (p - 3); T += 2;
+            }
+            else if (p < 13)
+            {
+                d = (((d << 2) | 3) << 3) | (p - 6); T += 5;
+            }
+            else if (p < 44)
+            {
+                d = (((d << 5) | 0x1f) << 5) | (p - 13); T += 10;
+            }
+            else
+            {
+                d = ((d << 10) | 0x3ff); T += 10; p -= 44;
+                for (;;)
+                {
+                    for (; T >= 8;)
+                    {
+                        *(dest + m--) = (d >> (T - 8)) & 0xff; T -= 8; d = d & ((1 << T) - 1);
+                    }
+                    if (p < 255) break;
+                    d = (d << 8) | 0xff; T += 8; p = p - 0xff;
+                }
+                d = (d << 8) | p; T += 8;
+            }
+        }
+        for (; T >= 8;)
+        {
+            *(dest + m--) = (d >> (T - 8)) & 0xff; T -= 8; d = d & ((1 << T) - 1);
+        }
+    }
+    if (T != 0)
+    {
+        *(dest + m--) = d << (8 - T);
+    }
+    *(dest + m--) = 0; *(dest + m) = 0;
+    for (;;)
+    {
+        if (((*destLen - m) & 3) == 0) break;
+        *(dest + m--) = 0;
+    }
+    *destLen = *destLen - m; dest += m;
+    unsigned int l[] = { 0x4c495243,0x414c5941,srcLen - 0x100,*destLen };
+    for (j = 0; j < 4; j++)
+    {
+        for (i = 0; i < 4; i++)
+        {
+            *(odest + i + j * 4) = l[j] & 0xff; l[j] >>= 8;
+        }
+    }
+    for (j = 0, odest += 0x10; j < *destLen; j++)
+    {
+        *(odest++) = *(dest + j);
+    }
+    for (j = 0; j < 0x100; j++)
+    {
+        *(odest++) = *(src + j);
+    }
+    *destLen += 0x110;
+    return *destLen;
+}
+
 PyObject* CriLaylaDecompress(PyObject* self, PyObject* d){
 	unsigned char *data = (unsigned char *)PyBytes_AsString(d);
 	crilayla_header header = *(crilayla_header*)data;
 	unsigned char *out = layla_decomp((data+16), header);
 	return Py_BuildValue("y#", out, header.decompress_size+256);
+}
+
+PyObject* CriLaylaCompress(PyObject* self, PyObject* args){
+	unsigned char *data;
+	unsigned int data_size;
+    if(!PyArg_ParseTuple(args, "y#", &data, &data_size)){
+        return NULL;
+    }
+    unsigned char *buf = new unsigned char[data_size];
+    memset(buf, 0, data_size);
+    layla_comp(buf, &data_size, data, data_size);
+	return Py_BuildValue("y#", buf, data_size);
 }

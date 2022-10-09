@@ -398,7 +398,7 @@ class CPKBuilder:
         payload = []
         self.files = []
         temp = []
-        self.get_files(os.listdir(self.dirname), self.dirname)
+        self.get_files(sorted(os.listdir(self.dirname)), self.dirname)
         count = 0
         lent = 0
         switch = False
@@ -477,7 +477,7 @@ class CPKBuilder:
         for i in lyst:
             name = os.path.join(root, i)
             if os.path.isdir(name):
-                self.get_files(os.listdir(name), name)
+                self.get_files(sorted(os.listdir(name)), name)
             else:
                 self.files.append(name)
 

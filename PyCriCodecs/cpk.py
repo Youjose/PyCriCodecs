@@ -1,7 +1,8 @@
-import os
-from io import BytesIO, FileIO
-from .chunk import *
 from typing import BinaryIO
+from io import BytesIO, FileIO
+import os
+import re
+from .chunk import *
 from .utf import UTF, UTFBuilder
 import CriCodecs
 
@@ -218,7 +219,7 @@ class CPKBuilder:
     # CPK mode of 0 = Use of ITOC only, CPK mode = 1, use of TOC, ITOC and optionally ETOC?
     Tver: str
     # Seems to be CPKMaker/CPKDLL version, I will put in one of the few ones I found as default.
-    # I am not sure if this affects of modding these files.
+    # I am not sure if this affects the modding these files.
     # However, you can change it.
     dirname: str
     itoc_size: int
@@ -398,7 +399,7 @@ class CPKBuilder:
         payload = []
         self.files = []
         temp = []
-        self.get_files(sorted(os.listdir(self.dirname), key=lambda x: x.lower()), self.dirname)
+        self.get_files(sorted(os.listdir(self.dirname), key=lambda x: re.sub(r'[^A-Za-z0-9\.]+', '~', x).lower()), self.dirname)
         count = 0
         lent = 0
         switch = False
@@ -442,7 +443,7 @@ class CPKBuilder:
                 fz = len(comp_data)
                 self.EnabledDataSize += fz
                 if fz % 0x800 != 0:
-                    self.ContentSize += sz + (0x800 - fz % 0x800)
+                    self.ContentSize += fz + (0x800 - fz % 0x800)
                 else:
                     self.ContentSize += fz
             else:
@@ -483,7 +484,7 @@ class CPKBuilder:
         for i in lyst:
             name = os.path.join(root, i)
             if os.path.isdir(name):
-                self.get_files(sorted(os.listdir(name), key=lambda x: x.lower()), name)
+                self.get_files(sorted(os.listdir(name), key=lambda x: re.sub(r'[^A-Za-z0-9\.]+', '~', x).lower()), name)
             else:
                 self.files.append(name)
 

@@ -398,7 +398,7 @@ class CPKBuilder:
         payload = []
         self.files = []
         temp = []
-        self.get_files(sorted(os.listdir(self.dirname), key=lambda x: "".join([s if s not in '"_-:;,<>?' else "~" for s in x]).lower()), self.dirname)
+        self.get_files(sorted(os.listdir(self.dirname), key=lambda x: "".join([s if s != '_' else "~" for s in x]).lower()), self.dirname)
         count = 0
         lent = 0
         switch = False
@@ -483,7 +483,7 @@ class CPKBuilder:
         for i in lyst:
             name = os.path.join(root, i)
             if os.path.isdir(name):
-                self.get_files(sorted(os.listdir(name), key=lambda x: "".join([s if s not in '"_-:;,<>?' else "~" for s in x]).lower()), name)
+                self.get_files(sorted(os.listdir(name), key=lambda x: "".join([s if s != '_' else "~" for s in x]).lower()), name)
             else:
                 self.files.append(name)
 

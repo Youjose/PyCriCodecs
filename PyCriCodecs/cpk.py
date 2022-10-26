@@ -430,13 +430,13 @@ class CPKBuilder:
         
         # This estimates how large the TOC table size is.
         if switch and len(sd) != 1:
-            lent = (lent + (4 + 4 + 4 + 4 + 8 + 4) * count + 0x57)
+            lent = (lent + (4 + 4 + 4 + 4 + 8 + 4) * count + 0x57 + 0x51)
         else:
-            lent = (lent + (4 + 4 + 4 + 8 + 4) * count + 0x5B)
+            lent = (lent + (4 + 4 + 4 + 8 + 4) * count + 0x5B + 0x51)
         if lent % 0x800 != 0:
             lent = lent + (0x800 - lent % 0x800)
         # init_toc_len will also be the first file offset.
-        # Used to assert that estimated TOC length is equal to the actual length, just in case the estimating went wrong. 
+        # Used to assert that the estimated TOC length is equal to the actual length, just in case the estimating went wrong. 
         self.init_toc_len = lent
 
         self.fileslen = count

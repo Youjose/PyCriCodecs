@@ -211,7 +211,7 @@ class CPKBuilder:
     """ Use this class to build semi-custom CPK archives. """
     __slots__ = ["CpkMode", "Tver", "dirname", "itoc_size", "encrypt", "encoding", "files", "fileslen",
                 "ITOCdata", "CPKdata", "ContentSize", "EnabledDataSize", "outfile", "TOCdata", "GTOCdata",
-                "ETOCdata", "compress", "EnabledPackedSize"]
+                "ETOCdata", "compress", "EnabledPackedSize", "init_toc_len"]
     CpkMode: int 
     # CPK mode dictates (at least from what I saw) the use of filenames in TOC or the use of
     # ITOC without any filenames (Use of indexes only, will be sorted).
@@ -234,6 +234,7 @@ class CPKBuilder:
     EnabledPackedSize: int
     outfile: str
     compress: bool
+    init_toc_len: int # This is a bit of a redundancy, but some CPK's need it.
 
     def __init__(self, dirname: str, outfile: str, CpkMode: int = 1, Tver: str = False, encrypt: bool = False, encoding: str = "utf-8", compress: bool = False) -> None:
         self.CpkMode = CpkMode
@@ -278,6 +279,7 @@ class CPKBuilder:
             self.TOCdata = self.generate_TOC()
             self.TOCdata = bytearray(CPKChunkHeader.pack(b'TOC ', encflag, len(self.TOCdata), 0)) + self.TOCdata
             self.TOCdata = self.TOCdata.ljust(len(self.TOCdata) + (0x800 - len(self.TOCdata) % 0x800), b'\x00')
+            assert self.init_toc_len == len(self.TOCdata)
             self.GTOCdata = self.generate_GTOC()
             self.GTOCdata = bytearray(CPKChunkHeader.pack(b'GTOC', encflag, len(self.GTOCdata), 0)) + self.GTOCdata
             self.GTOCdata = self.GTOCdata.ljust(len(self.GTOCdata) + (0x800 - len(self.GTOCdata) % 0x800), b'\x00')
@@ -289,6 +291,7 @@ class CPKBuilder:
             self.TOCdata = self.generate_TOC()
             self.TOCdata = bytearray(CPKChunkHeader.pack(b'TOC ', encflag, len(self.TOCdata), 0)) + self.TOCdata
             self.TOCdata = self.TOCdata.ljust(len(self.TOCdata) + (0x800 - len(self.TOCdata) % 0x800), b'\x00')
+            assert self.init_toc_len == len(self.TOCdata)
             self.ITOCdata = self.generate_ITOC()
             self.ITOCdata = bytearray(CPKChunkHeader.pack(b'ITOC', encflag, len(self.ITOCdata), 0)) + self.ITOCdata
             self.ITOCdata = self.ITOCdata.ljust(len(self.ITOCdata) + (0x800 - len(self.ITOCdata) % 0x800), b'\x00')
@@ -300,6 +303,7 @@ class CPKBuilder:
             self.TOCdata = self.generate_TOC()
             self.TOCdata = bytearray(CPKChunkHeader.pack(b'TOC ', encflag, len(self.TOCdata), 0)) + self.TOCdata
             self.TOCdata = self.TOCdata.ljust(len(self.TOCdata) + (0x800 - len(self.TOCdata) % 0x800), b'\x00')
+            assert self.init_toc_len == len(self.TOCdata)
             self.CPKdata = self.generate_CPK()
             self.CPKdata = bytearray(CPKChunkHeader.pack(b'CPK ', encflag, len(self.CPKdata), 0)) + self.CPKdata
             data = self.CPKdata.ljust(len(self.CPKdata) + (0x800 - len(self.CPKdata) % 0x800) - 6, b'\x00') + bytearray(b"(c)CRI") + self.TOCdata
@@ -402,31 +406,38 @@ class CPKBuilder:
         count = 0
         lent = 0
         switch = False
-        s = set()
+        sf = set()
+        sd = set()
         for i in self.files:
+            # Dirname management.
             dirname = os.path.dirname(i.split(self.dirname)[1])
-            if dirname:
-                if dirname.startswith(os.sep) or dirname.startswith("\\"):
-                    dirname = dirname[1:]
-                if "\\" in dirname or os.sep in dirname:
-                    dirname = dirname.replace("\\", "/")
-                    dirname = dirname.replace(os.sep, "/")
-                if dirname and dirname not in s:
-                    switch = True
-                    lent += len(dirname) + 1
-                    s.update({dirname})
+            if dirname.startswith(os.sep) or dirname.startswith("\\"):
+                dirname = dirname[1:]
+            if "\\" in dirname or os.sep in dirname:
+                dirname = dirname.replace("\\", "/")
+                dirname = dirname.replace(os.sep, "/")
+            if dirname not in sd:
+                switch = True
+                lent += len(dirname) + 1
+                sd.update({dirname})
+            
+            # Filename management.
             flname = os.path.basename(i)
-            if flname not in s:
+            if flname not in sf:
                 lent += len(flname) + 1
-                s.update({flname})
+                sf.update({flname})
             count += 1
+        
         # This estimates how large the TOC table size is.
-        if switch:
+        if switch and len(sd) != 1:
             lent = (lent + (4 + 4 + 4 + 4 + 8 + 4) * count + 0x57)
         else:
             lent = (lent + (4 + 4 + 4 + 8 + 4) * count + 0x5B)
         if lent % 0x800 != 0:
             lent = lent + (0x800 - lent % 0x800)
+        # init_toc_len will also be the first file offset.
+        # Used to assert that estimated TOC length is equal to the actual length, just in case the estimating went wrong. 
+        self.init_toc_len = lent
 
         self.fileslen = count
         count = 0
@@ -477,7 +488,7 @@ class CPKBuilder:
                 lent += sz
         if self.compress:
             self.files = temp
-        return UTFBuilder(payload, encrypt=self.encrypt, encoding=self.encoding, table_name="CpkTocInfo").parse()    
+        return UTFBuilder(payload, encrypt=self.encrypt, encoding=self.encoding, table_name="CpkTocInfo").parse()
 
     def get_files(self, lyst, root):
         for i in lyst:
@@ -588,11 +599,12 @@ class CPKBuilder:
                 }
             ]
         elif self.CpkMode == 1:
+            ContentOffset = 0x800 + len(self.TOCdata)
             CpkHeader = [
                 {
                     "UpdateDateTime": (UTFTypeValues.ullong, 0),
                     "FileSize": (UTFTypeValues.ullong, None),
-                    "ContentOffset": (UTFTypeValues.ullong, 0x800+len(self.TOCdata)),
+                    "ContentOffset": (UTFTypeValues.ullong, ContentOffset),
                     "ContentSize": (UTFTypeValues.ullong, self.ContentSize),
                     "TocOffset": (UTFTypeValues.ullong, 0x800),
                     "TocSize": (UTFTypeValues.ullong, len(self.TOCdata)),

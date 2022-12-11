@@ -8,16 +8,15 @@ import os
 # TODO revamp the whole ACB class. ACB is a lot more complex with those @UTF tables.
 class ACB(UTF):
     """ An ACB is basically a giant @UTF table. Use this class to extract any ACB. """
-    __slots__ = ["filename", "payload", "dirname", "filename"]
+    __slots__ = ["filename", "payload", "filename", "awb"]
     payload: list
-    dirname: str
     filename: str
+    awb: AWB
 
-    def __init__(self, filename, dirname: str = "") -> None:
+    def __init__(self, filename) -> None:
         self.payload = UTF(filename).get_payload()
         self.filename = filename
         self.acbparse(self.payload)
-        self.dirname = dirname
         # TODO check on ACB version.
     
     def acbparse(self, payload: list) -> None:
@@ -29,6 +28,19 @@ class ACB(UTF):
                         par = UTF(v[1]).get_payload()
                         payload[dict][k] = par
                         self.acbparse(par)
+        self.load_awb()
+    
+    def load_awb(self) -> None:
+        # There are two types of ACB's, one that has an AWB file inside it,
+        # and one with an AWB pair.
+        if self.payload[0]['AwbFile'][1] == b'':
+            if type(self.filename) == str:
+                awbObj = AWB(os.path.join(os.path.dirname(self.filename), self.payload[0]['Name'][1]+".awb"))
+            else:
+                awbObj = AWB(self.payload[0]['Name'][1]+".awb")
+        else:
+            awbObj = AWB(self.payload[0]['AwbFile'][1])
+        self.awb = awbObj
     
     # revamping...
     def exp_extract(self, decode: bool = False, key = 0):
@@ -51,7 +63,7 @@ class ACB(UTF):
         # I will try to make this code go through all of them in advance. 
 
         """ Load Cue names and indexes. """
-        cue_names_and_indexes: list[tuple] = []
+        cue_names_and_indexes: list = []
         for i in pl["CueNameTable"]:
             cue_names_and_indexes.append((i["CueIndex"], i["CueName"]))
         srt_names = sorted(cue_names_and_indexes, key=lambda x: x[0])
@@ -126,47 +138,25 @@ class ACB(UTF):
     def parse_sequence(self):
         pass
 
-    def extract(self, decode=False, key=0):
-        # There are two types of ACB's, one that has an AWB file inside it,
-        # and one with an AWB pair.
-        if self.payload[0]['AwbFile'][1] == b'':
-            if type(self.filename) == str:
-                awbObj = AWB(os.path.join(os.path.dirname(self.filename), self.payload[0]['Name'][1]+".awb"))
-            else:
-                awbObj = AWB(self.payload[0]['Name'][1]+".awb")
+    def extract(self, decode: bool = False, key: int = 0, dirname: str = ""):
+        """ Extracts audio files in an AWB/ACB without preserving filenames. """
+        if dirname:
+            os.makedirs(dirname, exist_ok=True)
+        filename = 1
+        if decode:
+            for i in self.awb.getfiles():
+                hca = HCA(i, key=key, subkey=self.awb.subkey).decode()
+                open(os.path.join(dirname, str(filename)+".wav"), "wb").write(hca)
+                filename+=1
         else:
-            awbObj = AWB(self.payload[0]['AwbFile'][1])
-        
-        # From here on, it'a all wrong. FIXME.
-        # Sort indexes based on AWB's IDs if they exist on there, otherwise sort normally. Although seemingly the AWB IDs are always sorted.
-        names = sorted(self.payload[0]['CueNameTable'], key=lambda x: awbObj.ids.index(x['CueIndex'][1]) if x['CueIndex'][1] in awbObj.ids else x['CueIndex'][1]) # A bit compute expensive.
-        sqnce = self.payload[0]['SequenceTable'] # Perhaps it's not good to sort the names above, since it might conflict with those. Although I never saw them get mangled.
-        stream_ids = [x["CueName"][1] for x in names]
-        flnames = []
-        if len(set(stream_ids)) != len(self.payload[0]['TrackTable']):
-            for i in range(len(sqnce)):
-                if sqnce[i]['TrackIndex'][1] != b'':
-                    for num in iter_unpack(">H", sqnce[i]['TrackIndex'][1]):
-                        flnames.append(stream_ids[i]+"_"+str(num[0]))
-        else:
-            flnames = stream_ids
-
-        cnt = 0
-        if self.dirname != "":
-            os.makedirs(self.dirname, exist_ok=True)
-        for i in awbObj.getfiles():
-            if decode:
-                open(os.path.join(self.dirname, flnames[cnt]+".wav"), "wb").write(HCA(i, key=key, subkey=awbObj.subkey).decode())
-                cnt += 1
+            if self.payload[0]['WaveformTable'][filename]['EncodeType'][1] == 2: # As far as I saw, this is HCA.
+                open(os.path.join(dirname, str(filename)+".hca"), "wb").write(i)
+                filename += 1
             else:
-                if self.payload[0]['WaveformTable'][cnt]['EncodeType'][1] == 2: # As far as I saw, this is HCA.
-                    open(os.path.join(self.dirname, flnames[cnt]+".hca"), "wb").write(i)
-                    cnt += 1
-                else:
-                    open(os.path.join(self.dirname, flnames[cnt]), "wb").write(i)
-                    cnt += 1
+                open(os.path.join(dirname, str(filename)), "wb").write(i)
+                filename += 1
 
 
-# Need to finish HCA encoding first. TODO
+# TODO Have to finish correct ACB extracting first.
 class ACBBuilder(UTFBuilder):
     pass

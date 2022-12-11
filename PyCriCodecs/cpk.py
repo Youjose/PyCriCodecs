@@ -430,9 +430,9 @@ class CPKBuilder:
         
         # This estimates how large the TOC table size is.
         if switch and len(sd) != 1:
-            lent = (lent + (4 + 4 + 4 + 4 + 8 + 4) * count + 0x57 + 0x51)
+            lent = (lent + (4 + 4 + 4 + 4 + 8 + 4) * count + 0x57 + 0x51) # 0x57 is header len when there are mutiple dirs.
         else:
-            lent = (lent + (4 + 4 + 4 + 8 + 4) * count + 0x5B + 0x51)
+            lent = (lent + (4 + 4 + 4 + 8 + 4) * count + 0x5B + 0x51) # 0x5B is header len when there is only one dir.
         if lent % 0x800 != 0:
             lent = lent + (0x800 - lent % 0x800)
         # init_toc_len will also be the first file offset.

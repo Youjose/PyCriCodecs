@@ -128,7 +128,7 @@ bool Decode(int *d,unsigned char *s, AdxHeader header, int* coeffs){
         scale = 1 << (12 - scale);
     }else if(header.encoding == 2){
         scale = (scale & 0x1fff) + 1;
-        static const signed short static_coeffs[8] = {0x0000,0x0000,0x0F00,0x0000,0x1CC0,0xF300,0x1880,0xF240};
+        static const signed short static_coeffs[8] = {0x0000,0x0000,0x0F00,0x0000,0x1CC0,(signed short)0xF300,0x1880,(signed short)0xF240};
         coeffs[0] = static_coeffs[predictor*2 + 0];
         coeffs[1] = static_coeffs[predictor*2 + 1];
     }else{
@@ -239,7 +239,7 @@ static PyObject* AdxEncode(PyObject* self, PyObject* args){
     int* coeffs = new int [2];
     coeffs = CalculateCoefficients(coeffs, highpass_freq, header.fmtSamplingRate);
     if((Filter == 0 || Filter == 1 || Filter == 2 || Filter == 3) && highpass_freq == 0 && encoding_ver == 2){
-        static const signed short static_coeffs[8] = {0x0000,0x0000,0x0F00,0x0000,0x1CC0,0xF300,0x1880,0xF240};
+        static const signed short static_coeffs[8] = {0x0000,0x0000,0x0F00,0x0000,0x1CC0,(signed short)0xF300,0x1880,(signed short)0xF240};
         coeffs[0] = static_coeffs[Filter*2 + 0];
         coeffs[1] = static_coeffs[Filter*2 + 1];
     }

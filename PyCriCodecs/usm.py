@@ -46,12 +46,12 @@ class USM:
     
     def init_key(self, key: str):
         if type(key) == str:
-            if len(key) < 16:
+            if len(key) <= 16:
                 key = key.rjust(16, "0")
                 key1 = bytes.fromhex(key[8:])
                 key2 = bytes.fromhex(key[:8])
             else:
-                raise ValueError("Inavild input key.")
+                raise ValueError("Invalid input key.")
         elif type(key) == int:
             key1 = int.to_bytes(key & 0xFFFFFFFF, 4, "big")
             key2 = int.to_bytes(key >> 32, 4, "big")

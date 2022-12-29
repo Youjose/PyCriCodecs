@@ -2706,7 +2706,7 @@ static const float* QuantizerDeadZone = (const float*)QuantizerDeadZoneHex;
 
 static const float QuantizerInverseStepSize[] = {
     0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 15.5, 31.5, 63.5, 127.5, 255.5, 511.5, 1023.5, 2047.5
-    };
+};
 
 static const int QuantizeSpectrumBits[8][16] = {
     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},

@@ -45,9 +45,9 @@ class AWB:
             self.ofs.append(i[0] if i[0] % self.align == 0 else (i[0] + (self.align - (i[0] % self.align))))
         
         # Seeks to files offset.
-        headersize = 16 + (intsize*(self.numfiles+1)) + (2*self.numfiles)
-        if headersize % self.align != 0:
-            self.headersize = headersize + (self.align - (headersize % self.align))
+        self.headersize = 16 + (intsize*(self.numfiles+1)) + (2*self.numfiles)
+        if self.headersize % self.align != 0:
+            self.headersize = self.headersize + (self.align - (self.headersize % self.align))
         self.stream.seek(self.headersize, 0)
 
     def extract(self, decode=False, key=0):

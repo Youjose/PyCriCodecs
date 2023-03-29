@@ -4,7 +4,7 @@
 class BitWriter{
 public:
     unsigned char* buffer;
-    unsigned int len; // This would give maximum file buffer to be 512 megabytes (0xFFFFFFFF * 8).
+    unsigned long long len; // This would give maximum file buffer to be 512 megabytes (0xFFFFFFFF * 8).
     unsigned int pos;
 
     int get_remaining(){

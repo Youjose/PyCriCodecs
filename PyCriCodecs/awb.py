@@ -108,27 +108,80 @@ class AWB:
 
 class AWBBuilder:
     """ Use this class to build any AWB of any kind given a directory with files. """
-    __slots__ = []
+    __slots__ = ["dirname", "outfile", "version", "align", "subkey"]
 
     # Didn't think I would manage this in one function.
-    def __init__(self, dirname: str, outfile: str, version: int = 2, align: int = 0x20, subkey: int = 0) -> None:
-        size = 0
+    def __init__(self, dirname: list[str], subkey: int = 0, version: int = 2, align: int = 0x20) -> None:
         if dirname == "":
             raise ValueError("Invalid directory.")
-        elif outfile == "":
-            raise ValueError("Invalid output file name.")
         elif version == 1 and subkey != 0:
             raise ValueError("Cannot have a subkey with AWB version of 1.")
-        elif subkey != 0:
-            raise NotImplementedError("Subkey encryption is not supported yet.")
+        self.dirname = dirname
+        self.version = version
+        self.align = align
+        self.subkey = subkey
 
+    def build(self, outfile):
+        if outfile == "":
+            raise ValueError("Invalid output file name.")
+        if type(self.dirname) == list:
+            self.build_files(outfile)
+        else:
+            self.build_dir(outfile)
+    
+    def build_files(self, outfile: str):
+        size = 0
         ofs = []
         numfiles = 0
-        for r, d, f in os.walk(dirname):
+        for file in self.dirname:
+            sz = os.stat(file).st_size
+            if sz % self.align != 0: # Doesn't always needs to be this way?
+                sz = sz + (self.align - sz % self.align)
+            ofs.append(size+sz)
+            size += sz
+            numfiles += 1
+        
+        if size > 0xFFFFFFFF:
+            intsize = 8 # Unsigned long long.
+            strtype = "<Q"
+        else:
+            intsize = 4 # Unsigned int, but could be a ushort, never saw it as one before though.
+            strtype = "<I"
+        
+        header = AWBChunkHeader.pack(
+            b'AFS2', self.version, intsize, 0x2, numfiles, self.align, self.subkey
+        )
+
+        for i in range(numfiles):
+            header += pack("<H", i)
+        
+        headersize = len(header) + intsize * numfiles + intsize
+        ofs = [(x+headersize) + (self.align - ((x+headersize) % self.align)) if (x+headersize) % self.align != 0 else (x+headersize) for x in ofs]
+        ofs = [headersize] + ofs
+
+        for i in ofs:
+            header += pack(strtype, i)
+        
+        if headersize % self.align != 0:
+            header = header.ljust(headersize + (self.align - (headersize % self.align)), b"\x00")
+        out = open(outfile, "wb")
+        out.write(header)
+        for file in self.dirname:
+            fl = open(file, "rb").read()
+            if len(fl) % self.align != 0:
+                fl = fl.ljust(len(fl) + (self.align - (len(fl) % self.align)), b"\x00")
+            out.write(fl)
+        out.close()
+    
+    def build_dir(self, outfile: str):
+        size = 0
+        ofs = []
+        numfiles = 0
+        for r, d, f in os.walk(self.dirname):
             for file in f:
                 sz = os.stat(os.path.join(r, file)).st_size
-                if sz % align != 0: # Doesn't always needs to be this way?
-                    sz = sz + (align - sz % align)
+                if sz % self.align != 0: # Doesn't always needs to be this way?
+                    sz = sz + (self.align - sz % self.align)
                 ofs.append(size+sz)
                 size += sz
                 numfiles += 1
@@ -141,27 +194,27 @@ class AWBBuilder:
             strtype = "<I"
         
         header = AWBChunkHeader.pack(
-            b'AFS2', version, intsize, 0x2, numfiles, align, subkey
+            b'AFS2', self.version, intsize, 0x2, numfiles, self.align, self.subkey
         )
 
         for i in range(numfiles):
             header += pack("<H", i)
         
         headersize = len(header) + intsize * numfiles + intsize
-        ofs = [(x+headersize) + (align - ((x+headersize) % align)) if (x+headersize) % align != 0 else (x+headersize) for x in ofs]
+        ofs = [(x+headersize) + (self.align - ((x+headersize) % self.align)) if (x+headersize) % self.align != 0 else (x+headersize) for x in ofs]
         ofs = [headersize] + ofs
 
         for i in ofs:
             header += pack(strtype, i)
         
-        if headersize % align != 0:
-            header = header.ljust(headersize + (align - (headersize % align)), b"\x00")
+        if headersize % self.align != 0:
+            header = header.ljust(headersize + (self.align - (headersize % self.align)), b"\x00")
         out = open(outfile, "wb")
         out.write(header)
-        for r, d, f in os.walk(dirname):
+        for r, d, f in os.walk(self.dirname):
             for file in f:
                 fl = open(os.path.join(r, file), "rb").read()
-                if len(fl) % align != 0:
-                    fl = fl.ljust(len(fl) + (align - (len(fl) % align)), b"\x00")
+                if len(fl) % self.align != 0:
+                    fl = fl.ljust(len(fl) + (self.align - (len(fl) % self.align)), b"\x00")
                 out.write(fl)
         out.close()

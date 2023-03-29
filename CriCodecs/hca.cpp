@@ -29,31 +29,14 @@
 //--------------------------------------------------
 #define PY_SSIZE_T_CLEAN
 #pragma once
-#include <Python.h>
 #include "hca.h"
-#include "BitWriter.cpp"
+#include "pcm.cpp"
 #include <stddef.h>
 #include <stdlib.h>
 #include <memory.h>
-#include <iostream>
 #include <cstring>
 #include <cmath>
 
-/* CRI libs may only accept last version in some cases/modes, though most decoding takes older versions
- * into account. Lib is identified with "HCA Decoder (Float)" + version string. Some known versions:
- * - ~V1.1 2011 [first public version]
- * - ~V1.2 2011 [ciph/ath chunks, disabled ATH]
- * - Ver.1.40 2011-04 [header mask]
- * - Ver.1.42 2011-05
- * - Ver.1.45.02 2012-03
- * - Ver.2.00.02 2012-06 [decoding updates]
- * - Ver.2.02.02 2013-12, 2014-11
- * - Ver.2.06.05 2018-12 [scramble subkey API]
- * - Ver.2.06.07 2020-02, 2021-02
- * - Ver.3.01.00 2020-11 [decoding updates]
- * Same version rebuilt gets a newer date, and new APIs change header strings, but header versions
- * only change when decoder does. Despite the name, no "Integer" version seems to exist.
- */
 #define HCA_VERSION_V101 0x0101 /* V1.1+ [El Shaddai (PS3/X360)] */
 #define HCA_VERSION_V102 0x0102 /* V1.2+ [Gekka Ryouran Romance (PSP)] */
 #define HCA_VERSION_V103 0x0103 /* V1.4+ [Phantasy Star Online 2 (PC), Binary Domain (PS3)] */
@@ -86,10 +69,13 @@
 #define HCA_ERROR_UNPACK        -5
 #define HCA_ERROR_BITREADER     -6
 
+int HcaErrorCode = 0;
+
 //--------------------------------------------------
 // Decoder config/state
 //--------------------------------------------------
 typedef enum { DISCRETE = 0, STEREO_PRIMARY = 1, STEREO_SECONDARY = 2 } channel_type_t;
+typedef enum { Highest, High, Middle, Low, Lowest} CriHcaQuality;
 
 typedef struct stChannel {
     /* HCA channel config */
@@ -148,9 +134,13 @@ typedef struct clHCA {
     unsigned int stereo_band_count;
     // Note here, these are in VGMStream code as well, but aren't part of the struct.
     // Also I am not sure if they are unsigned as well, VGAudio has them as "int".
-    unsigned int HfrBandCount; /* Added from VGAudio. Used for Encoding only. */
-    int AcceptableNoiseLevel;  /* Added from VGAudio. Used for Encoding only. */
-    int EvaluationBoundary;    /* Added from VGAudio. Used for Encoding only. */
+    unsigned int HfrBandCount;                /* Added from VGAudio. Used for Encoding only. */
+    int AcceptableNoiseLevel;                 /* Added from VGAudio. Used for Encoding only. */
+    int EvaluationBoundary;                   /* Added from VGAudio. Used for Encoding only. */
+    unsigned int sample_count_per_channel;    /* Added from VGAudio. Used for Encoding only. */
+    int BufferPreSamples;                     /* Added from VGAudio. Used for Encoding only. */
+    unsigned int PostSamples;                 /* Added from VGAudio. Used for Encoding only. */
+    unsigned int BufferPosition;              /* Added from VGAudio. Used for Encoding only. */
     unsigned int bands_per_hfr_group;
     unsigned int ms_stereo;
     unsigned int reserved;
@@ -189,10 +179,10 @@ typedef struct clData {
     int bit;
 } clData;
 
+inline int DivideByRoundUp(int value, int divisor){
+    return (int)std::ceil((float)value / divisor);
+}
 
-//--------------------------------------------------
-// Checksum
-//--------------------------------------------------
 static const unsigned short hcacommon_crc_mask_table[256] = {
     0x0000,0x8005,0x800F,0x000A,0x801B,0x001E,0x0014,0x8011,0x8033,0x0036,0x003C,0x8039,0x0028,0x802D,0x8027,0x0022,
     0x8063,0x0066,0x006C,0x8069,0x0078,0x807D,0x8077,0x0072,0x0050,0x8055,0x805F,0x005A,0x804B,0x004E,0x0044,0x8041,
@@ -212,15 +202,11 @@ static const unsigned short hcacommon_crc_mask_table[256] = {
     0x0220,0x8225,0x822F,0x022A,0x823B,0x023E,0x0234,0x8231,0x8213,0x0216,0x021C,0x8219,0x0208,0x820D,0x8207,0x0202,
 };
 
-//HCACommon_CalculateCrc
 static unsigned short crc16_checksum(const unsigned char* data, unsigned int size) {
     unsigned int i;
     unsigned short sum = 0;
-
-    /* HCA header/frames should always have checksum 0 (checksum(size-16b) = last 16b) */
-    for (i = 0; i < size; i++) {
+    for(i = 0; i < size; i++)
         sum = (sum << 8) ^ hcacommon_crc_mask_table[(sum >> 8) ^ data[i]];
-    }
     return sum;
 }
 
@@ -2032,94 +2018,76 @@ static void imdct_transform(stChannel* ch, int subframe) {
     }
 }
 
-// Adapated from K0lb3 FPNG python wrapper code.
-PyObject *py_decode_err(int code)
-{
-    switch (code)
-    {
-    case -1:
-        PyErr_SetString(PyExc_ValueError, "Header decoding error, the header is not a valid HCA header.");
-        break;
-    case -2:
-        PyErr_SetString(PyExc_ValueError, "Decoding error, either an incorrect key or an unknown exception.");
-        break;
-    case -3:
-        PyErr_SetString(PyExc_ValueError, "Encoding error.");
-        break;
-    case -4:
-        PyErr_SetString(PyExc_ValueError, "Encoding error, band level is in the negatives, unsupported.");
-        break;
-    case -5:
-        PyErr_SetString(PyExc_ValueError, "No PCM data is available in the WAV file.");
-        break;
-    }
-    return NULL;
-}
-
-// Taken from Nyagamon's clHCA code.
-struct stWAVEHeader {
-    char riff[4];
-    unsigned int riffSize;
-    char wave[4];
-    char fmt[4];
-    unsigned int fmtSize;
-    unsigned short fmtType;
-    unsigned short fmtChannelCount;
-    unsigned int fmtSamplingRate;
-    unsigned int fmtSamplesPerSec;
-    unsigned short fmtSamplingSize;
-    unsigned short fmtBitCount;
-};
-struct stWAVEsmpl {
-    char smpl[4];
-    unsigned int smplSize;
-    unsigned int manufacturer;
-    unsigned int product;
-    unsigned int samplePeriod;
-    unsigned int MIDIUnityNote;
-    unsigned int MIDIPitchFraction;
-    unsigned int SMPTEFormat;
-    unsigned int SMPTEOffset;
-    unsigned int sampleLoops;
-    unsigned int samplerData;
-    unsigned int loop_Identifier;
-    unsigned int loop_Type;
-    unsigned int loop_Start;
-    unsigned int loop_End;
-    unsigned int loop_Fraction;
-    unsigned int loop_PlayCount;
-};
-struct stWAVEnote {
-    char note[4];
-    unsigned int noteSize;
-    unsigned int dwName;
-};
-struct stWAVEdata {
-    char data[4];
-    unsigned int dataSize;
-};
-
 /**
- * @brief Encoding related functions are here.
- * A partial port of VGAudio HCA encoder.
+ * @brief Encoding Steps from here, a port of VGAudio. 
  * 
  */
 
-int GetNextMultiple(int value, int multiple){
-    if (multiple <= 0)
-        return value;
+static const unsigned char DefaultChannelMapping[9] = {0, 1, 0, 4, 0, 1, 3, 7, 3};
 
-    if (value % multiple == 0)
-        return value;
+static const unsigned char QuantizedSpectrumMaxBits[16] = {0, 2, 3, 3, 4, 4, 4, 4, 5, 6, 7, 8, 9, 10, 11, 12};
 
-    return value + multiple - value % multiple;
-}
+static const float QuantizerInverseStepSize[16] = {
+    0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 15.5, 31.5, 63.5, 127.5, 255.5, 511.5, 1023.5, 2047.5
+};
 
-int DivideByRoundUp(int value, int divisor){
-    return (int)std::ceil((float)value / divisor);
-}
+static const int ScaleToResolutionCurve[59] = {
+    0x0F, 0x0E, 0x0E, 0x0E, 0x0E, 0x0E, 0x0E, 0x0D, 0x0D, 0x0D, 0x0D,
+    0x0D, 0x0D, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0B, 0x0B, 0x0B,
+    0x0B, 0x0B, 0x0B, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x09,
+    0x09, 0x09, 0x09, 0x09, 0x09, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08,
+    0x07, 0x06, 0x06, 0x05, 0x04, 0x04, 0x04, 0x03, 0x03, 0x03, 0x02,
+    0x02, 0x02, 0x02, 0x01
+};
 
-static const int ShuffleTables[128] = {
+static const unsigned char ValidChannelMappings[8][8] = {
+    {0, 1, 0, 0, 0, 0, 0, 0},
+    {1, 0, 0, 0, 0, 0, 0, 0},
+    {0, 1, 1, 0, 1, 0, 0, 0},
+    {1, 0, 0, 1, 0, 1, 0, 0},
+    {0, 1, 1, 0, 0, 0, 0, 1},
+    {0, 0, 0, 1, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 1},
+    {0, 0, 0, 1, 0, 0, 0, 0}
+};
+
+static const int QuantizeSpectrumBits[8][16] = {
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 0, 2, 1, 2, 0, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 0, 3, 2, 2, 2, 3, 0, 0, 0, 0, 0},
+    {0, 0, 0, 0, 0, 3, 3, 3, 2, 3, 3, 3, 0, 0, 0, 0},
+    {0, 0, 0, 0, 4, 3, 3, 3, 3, 3, 3, 3, 4, 0, 0, 0},
+    {0, 0, 0, 4, 4, 4, 3, 3, 3, 3, 3, 4, 4, 4, 0, 0},
+    {0, 0, 4, 4, 4, 4, 4, 3, 3, 3, 4, 4, 4, 4, 4, 0},
+    {0, 4, 4, 4, 4, 4, 4, 4, 3, 4, 4, 4, 4, 4, 4, 4}
+};
+
+static const unsigned int IntensityRatioBoundsTableHex[14] = {
+    0x3FF6DB6E, 0x3FE49249, 0x3FD24925, 0x3FC00000, 0x3FADB6DB, 0x3F9B6DB7, 0x3F892492, 
+    0x3F6DB6DB, 0x3F492492, 0x3F249249, 0x3F000000, 0x3EB6DB6E, 0x3E5B6DB7, 0x3D924925
+};
+
+static const float* IntensityRatioBoundsTable = (const float*)IntensityRatioBoundsTableHex;
+
+static const unsigned int QuantizerDeadZoneHex[16] = {
+    0x00000000, 0x3EAAAAAB, 0x3E4CCCCD, 0x3E124925, 0x3DE38E39, 0x3DBA2E8C, 0x3D9D89D9, 0x3D888889,
+    0x3D042108, 0x3C820821, 0x3C010204, 0x3B808081, 0x3B004020, 0x3A802008, 0x3A001002, 0x39800801
+};
+
+static const float* QuantizerDeadZone = (const float*)QuantizerDeadZoneHex;
+
+static const signed char QuantizeSpectrumValue[8][16] = {
+    {0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0},
+    {0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x3, 0x0, 0x2, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0},
+    {0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x7, 0x2, 0x0, 0x1, 0x6, 0x0, 0x0, 0x0, 0x0, 0x0},
+    {0x0, 0x0, 0x0, 0x0, 0x0, 0x7, 0x5, 0x3, 0x0, 0x2, 0x4, 0x6, 0x0, 0x0, 0x0, 0x0},
+    {0x0, 0x0, 0x0, 0x0, 0xF, 0x6, 0x4, 0x2, 0x0, 0x1, 0x3, 0x5, 0xE, 0x0, 0x0, 0x0},
+    {0x0, 0x0, 0x0, 0xF, 0xD, 0xB, 0x4, 0x2, 0x0, 0x1, 0x3, 0xA, 0xC, 0xE, 0x0, 0x0},
+    {0x0, 0x0, 0xF, 0xD, 0xB, 0x9, 0x7, 0x2, 0x0, 0x1, 0x6, 0x8, 0xA, 0xC, 0xE, 0x0},
+    {0x0, 0xF, 0xD, 0xB, 0x9, 0x7, 0x5, 0x3, 0x0, 0x2, 0x4, 0x6, 0x8, 0xA, 0xC, 0xE}
+};
+
+static const unsigned char ShuffleTable[128] = {
     0x00, 0x40, 0x60, 0x20, 0x30, 0x70, 0x50, 0x10, 0x18, 0x58, 0x78, 0x38, 0x28, 0x68, 0x48, 0x08,
     0x0C, 0x4C, 0x6C, 0x2C, 0x3C, 0x7C, 0x5C, 0x1C, 0x14, 0x54, 0x74, 0x34, 0x24, 0x64, 0x44, 0x04,
     0x06, 0x46, 0x66, 0x26, 0x36, 0x76, 0x56, 0x16, 0x1E, 0x5E, 0x7E, 0x3E, 0x2E, 0x6E, 0x4E, 0x0E,
@@ -2130,24 +2098,18 @@ static const int ShuffleTables[128] = {
     0x09, 0x49, 0x69, 0x29, 0x39, 0x79, 0x59, 0x19, 0x11, 0x51, 0x71, 0x31, 0x21, 0x61, 0x41, 0x01
 };
 
-static const float hcamdct_window_float[128] = {
-    6.90533780e-4f, 1.97623484e-3f, 3.67386453e-3f, 5.72424009e-3f, 8.09670333e-3f, 1.07731819e-2f, 1.37425177e-2f, 1.69978570e-2f,
-    2.05352642e-2f, 2.43529025e-2f, 2.84505188e-2f, 3.28290947e-2f, 3.74906212e-2f, 4.24378961e-2f, 4.76744287e-2f, 5.32043017e-2f,
-    5.90321124e-2f, 6.51628822e-2f, 7.16020092e-2f, 7.83552229e-2f, 8.54284912e-2f, 9.28280205e-2f, 1.00560151e-1f, 1.08631350e-1f,
-    1.17048122e-1f, 1.25816986e-1f, 1.34944350e-1f, 1.44436508e-1f, 1.54299513e-1f, 1.64539129e-1f, 1.75160721e-1f, 1.86169162e-1f,
-    1.97568730e-1f, 2.09362969e-1f, 2.21554622e-1f, 2.34145418e-1f, 2.47135997e-1f, 2.60525763e-1f, 2.74312705e-1f, 2.88493186e-1f,
-    3.03061932e-1f, 3.18011731e-1f, 3.33333343e-1f, 3.49015296e-1f, 3.65043819e-1f, 3.81402701e-1f, 3.98073107e-1f, 4.15033519e-1f,
-    4.32259798e-1f, 4.49725032e-1f, 4.67399567e-1f, 4.85251158e-1f, 5.03244936e-1f, 5.21343827e-1f, 5.39508522e-1f, 5.57697773e-1f,
-    5.75868905e-1f, 5.93978047e-1f, 6.11980557e-1f, 6.29831433e-1f, 6.47486031e-1f, 6.64900243e-1f, 6.82031155e-1f, 6.98837578e-1f,
-    7.15280414e-1f, 7.31323123e-1f, 7.46932149e-1f, 7.62077332e-1f, 7.76731849e-1f, 7.90872812e-1f, 8.04481268e-1f, 8.17542017e-1f,
-    8.30044091e-1f, 8.41980159e-1f, 8.53346705e-1f, 8.64143789e-1f, 8.74374807e-1f, 8.84046197e-1f, 8.93167078e-1f, 9.01749134e-1f,
-    9.09806132e-1f, 9.17353690e-1f, 9.24408972e-1f, 9.30990338e-1f, 9.37117040e-1f, 9.42809045e-1f, 9.48086798e-1f, 9.52970862e-1f,
-    9.57481921e-1f, 9.61640537e-1f, 9.65466917e-1f, 9.68980789e-1f, 9.72201586e-1f, 9.75147963e-1f, 9.77837980e-1f, 9.80289042e-1f,
-    9.82517719e-1f, 9.84539866e-1f, 9.86370564e-1f, 9.88024116e-1f, 9.89514053e-1f, 9.90853190e-1f, 9.92053449e-1f, 9.93126273e-1f,
-    9.94082093e-1f, 9.94930983e-1f, 9.95682180e-1f, 9.96344328e-1f, 9.96925533e-1f, 9.97433305e-1f, 9.97874618e-1f, 9.98256087e-1f,
-    9.98583674e-1f, 9.98862922e-1f, 9.99099135e-1f, 9.99296963e-1f, 9.99460995e-1f, 9.99595225e-1f, 9.99703407e-1f, 9.99789119e-1f,
-    9.99855518e-1f, 9.99905586e-1f, 9.99941945e-1f, 9.99967217e-1f, 9.99983609e-1f, 9.99993265e-1f, 9.99998033e-1f, 9.99999762e-1f
+static const unsigned int QuantizerScalingTableHex[64] = {
+    0x4AC0213B, 0x4A9031DC, 0x4A587039, 0x4A227043, 0x49F3D290, 0x49B6FD92, 0x498955EE, 0x494E248C,
+    0x491AB62B, 0x48E8396A, 0x48AE4934, 0x4882CD87, 0x4844563F, 0x48135A2B, 0x47DD2D82, 0x47A5FED7,
+    0x4779295A, 0x473AFF5B, 0x470C57CA, 0x46D2A81E, 0x469E196E, 0x466D4F30, 0x46321A32, 0x4605AAC3,
+    0x45C8A2D8, 0x4596942D, 0x4562055B, 0x4529A15B, 0x44FE9E11, 0x44BF179A, 0x448F6A81, 0x445744FD,
+    0x44218FAF, 0x43F28177, 0x43B60094, 0x4388980F, 0x434D078C, 0x4319E046, 0x42E6F85B, 0x42AD583F,
+    0x428218AF, 0x424346CD, 0x42128E72, 0x41DBFBB8, 0x41A51958, 0x4177D0DF, 0x4139FCD2, 0x410B95C2,
+    0x40D184DF, 0x409D3EDA, 0x406C0719, 0x403123F6, 0x4004F1F6, 0x3FC78D75, 0x3F95C3FF, 0x3F60CCDF,
+    0x3F28B6D5, 0x3EFD3E0C, 0x3EBE0F68, 0x3E8EA43A, 0x3E561B5E, 0x3E20B051, 0x3DF13231, 0x3DB504F3
 };
+
+static const float* QuantizerScalingTable = (const float*)QuantizerScalingTableHex;
 
 static const unsigned int SinTablesHex[8][128] = {
     {
@@ -2241,152 +2203,126 @@ static const unsigned int CosTablesHex[8][128] = {
     }
 };
 
-void DCT4(float* input, int subframe, stChannel *ch){
-    {
-        const float* sinTable = (const float *)SinTablesHex[HCA_MDCT_BITS];
-        const float* cosTable = (const float *)CosTablesHex[HCA_MDCT_BITS];
-        float *dctTemp = &ch->temp[0];
+unsigned int CalculateBitrate(clHCA &hca, CriHcaQuality quality){
+    unsigned int pcmBitrate = hca.sample_rate * hca.channels * 16;
+    unsigned int maxBitrate = pcmBitrate / 4;
+    unsigned int minBitrate = 0;
+    int compressionRatio = 6;
+    switch(quality){
+        case Highest:
+            compressionRatio = 4;
+            break;
+        case High:
+            compressionRatio = 6;
+            break;
+        case Middle:
+            compressionRatio = 8;
+            break;
+        case Low:
+            compressionRatio = hca.channels == 1 ? 10 : 12;
+            break;
+        case Lowest:
+            compressionRatio = hca.channels == 1 ? 12 : 16;
+            break;
+    }
+    unsigned int bitrate = pcmBitrate / compressionRatio;
+    if(bitrate < 0)
+        bitrate = 0;
+    else if(bitrate > maxBitrate)
+        bitrate = maxBitrate;
+    return bitrate;
+}
 
-        int size = HCA_SAMPLES_PER_SUBFRAME;
-        int lastIndex = size - 1;
-        int halfSize = size / 2;
+void CalculateBandCounts(clHCA &hca, unsigned int bitrate, unsigned int cutoffFrequency){
+    hca.frame_size = bitrate * 1024 / hca.sample_rate / 8;
+    unsigned int numGroups = 0;\
+    unsigned int pcmBitrate = hca.sample_rate * hca.channels * 16;
+    unsigned int hfrRatio;
+    unsigned int cutoffRatio;
 
-        for (int i = 0; i < halfSize; i++)
-        {
-            int i2 = i * 2;
-            float a = input[i2];
-            float b = input[lastIndex - i2];
-            float sin = sinTable[i];
-            float cos = cosTable[i];
-            dctTemp[i2] = a * cos + b * sin;
-            dctTemp[i2 + 1] = a * sin - b * cos;
-        }
-        int stageCount = HCA_MDCT_BITS - 1;
+    if(hca.channels <= 1 || pcmBitrate / bitrate <= 6){
+        hfrRatio = 6;
+        cutoffRatio = 12;
+    }else{
+        hfrRatio = 8;
+        cutoffRatio = 16;
+    }
 
-        for (int stage = 0; stage < stageCount; stage++)
-        {
-            int blockCount = 1 << stage;
-            int blockSizeBits = stageCount - stage;
-            int blockHalfSizeBits = blockSizeBits - 1;
-            int blockSize = 1 << blockSizeBits;
-            int blockHalfSize = 1 << blockHalfSizeBits;
-            sinTable = (const float *)SinTablesHex[blockHalfSizeBits];
-            cosTable = (const float *)CosTablesHex[blockHalfSizeBits];
+    if(bitrate < pcmBitrate / cutoffRatio)
+        cutoffFrequency = std::min(cutoffFrequency, cutoffRatio * bitrate / (32 * hca.channels));
 
-            for (int block = 0; block < blockCount; block++)
-            {
-                for (int i = 0; i < blockHalfSize; i++)
-                {
-                    int frontPos = (block * blockSize + i) * 2;
-                    int backPos = frontPos + blockSize;
-                    float a = dctTemp[frontPos] - dctTemp[backPos];
-                    float b = dctTemp[frontPos + 1] - dctTemp[backPos + 1];
-                    float sin = sinTable[i];
-                    float cos = cosTable[i];
-                    dctTemp[frontPos] += dctTemp[backPos];
-                    dctTemp[frontPos + 1] += dctTemp[backPos + 1];
-                    dctTemp[backPos] = a * cos + b * sin;
-                    dctTemp[backPos + 1] = a * sin - b * cos;
-                }
-            }
-        }
+    unsigned int totalBandCount = (unsigned int)round(cutoffFrequency * 256.0 / hca.sample_rate);
 
-        for (int i = 0; i < HCA_SAMPLES_PER_SUBFRAME; i++)
-        {
-            ch->spectra[subframe][i] = dctTemp[ShuffleTables[i]] * 0.125f; // (0.125 is the scale derived by sqrt(2 / 128))
-        }
+    unsigned int hfrStartBand = (unsigned int)std::min(totalBandCount, (unsigned int)round((hfrRatio * bitrate * 128.0) / pcmBitrate));
+    unsigned int stereoStartBand = hfrRatio == 6 ? hfrStartBand : (hfrStartBand + 1) / 2;
+
+    unsigned int hfrBandCount = totalBandCount - hfrStartBand;
+    unsigned int bandsPerGroup = DivideByRoundUp(hfrBandCount, 8);
+
+    if(bandsPerGroup > 0)
+        numGroups = DivideByRoundUp(hfrBandCount, bandsPerGroup);
+
+    hca.total_band_count = totalBandCount;
+    hca.base_band_count = stereoStartBand;
+    hca.stereo_band_count = hfrStartBand - stereoStartBand;
+    hca.hfr_group_count = numGroups;
+    hca.bands_per_hfr_group = bandsPerGroup;
+}
+
+void CalculateHfrValues(clHCA &hca){
+    if (hca.bands_per_hfr_group <= 0)
+        return;
+    hca.HfrBandCount = hca.total_band_count - hca.base_band_count - hca.base_band_count;
+    hca.hfr_group_count = DivideByRoundUp(hca.HfrBandCount, hca.bands_per_hfr_group);
+}
+
+char SetChannelConfiguration(clHCA &hca, int channelConfig = -1){
+    int channelsPerTrack = hca.channels / hca.track_count;
+
+    if(channelConfig == -1)
+        channelConfig = (int)DefaultChannelMapping[channelsPerTrack];
+
+    if(ValidChannelMappings[channelsPerTrack - 1][channelConfig] != 1)
+        return -1;
+
+    hca.channel_config = channelConfig;
+    return 0;
+}
+
+void CalculateLoopInfo(clHCA &hca, unsigned int loopStart, unsigned int loopEnd){
+    loopStart += hca.encoder_delay;
+    loopEnd += hca.encoder_delay;
+
+    hca.loop_start_frame = loopStart / HCA_SAMPLES_PER_FRAME;
+    hca.loop_start_delay = loopStart % HCA_SAMPLES_PER_FRAME;
+    hca.loop_end_frame = loopEnd / HCA_SAMPLES_PER_FRAME;
+    hca.loop_end_padding = HCA_SAMPLES_PER_FRAME - loopEnd % HCA_SAMPLES_PER_FRAME;
+
+    if (hca.loop_end_padding == HCA_SAMPLES_PER_FRAME){
+        hca.loop_end_frame--;
+        hca.loop_end_padding = 0;
     }
 }
 
-// No idea what I am doing here, but I should modify this to MDCT for WAV->HCA, since HCA->WAV has a different method.
-static void mdct_transform(stChannel* ch, int subframe) {
-    static const unsigned int size = HCA_SAMPLES_PER_SUBFRAME;
-    static const unsigned int half = HCA_SAMPLES_PER_SUBFRAME / 2;
-    static const unsigned int mdct_bits = HCA_MDCT_BITS;
-    unsigned int i, j, k;
-    float *scratchmdct = new float[HCA_SAMPLES_PER_SUBFRAME];
-    memset(scratchmdct, 0, sizeof(float)*HCA_SAMPLES_PER_SUBFRAME);
-    {
-        for(int i = 0; i < half; i++){
-            // input, in this case, is wave array and output would be the spectra array.
-            float a = hcamdct_window_float[half - i - 1] * -ch->wave[subframe][half + i];
-            float b = hcamdct_window_float[half + i] * ch->wave[subframe][half- i - 1];
-            float c = hcamdct_window_float[i] * ch->imdct_previous[i];
-            float d = hcamdct_window_float[size - i - 1] * ch->imdct_previous[size - i - 1];
-
-            scratchmdct[i] = a - b;
-            scratchmdct[half + i] = c - d;
-        }
-    }
-
-    // DCT 4 here.
-    DCT4(scratchmdct, subframe, ch);
-    // All taken from VGAudio.
-    memcpy(ch->imdct_previous, ch->wave[subframe], HCA_SAMPLES_PER_SUBFRAME*sizeof(float));
-}
-
-void CalculateLoopInfo(clHCA *hca, int loopStart, int loopEnd){
-    loopStart += hca->encoder_delay;
-    loopEnd += hca->encoder_delay;
-
-    hca->loop_start_frame = loopStart / HCA_SAMPLES_PER_FRAME;
-    hca->loop_start_delay = loopStart % HCA_SAMPLES_PER_FRAME;
-    hca->loop_end_frame = loopEnd / HCA_SAMPLES_PER_FRAME;
-    hca->loop_end_padding = HCA_SAMPLES_PER_FRAME - loopEnd % HCA_SAMPLES_PER_FRAME;
-
-    if (hca->loop_end_padding == HCA_SAMPLES_PER_FRAME)
-    {
-        hca->loop_end_frame--;
-        hca->loop_end_padding = 0;
+void CalculateHeaderSize(clHCA &hca){
+    const unsigned int baseHeaderSize = 96;
+    const unsigned int baseHeaderAlignment = 32;
+    const unsigned int loopFrameAlignment = 2048;
+    hca.header_size = GetNextMultiple(baseHeaderSize + hca.comment_len, baseHeaderAlignment);
+    if(hca.loop_flag){
+        unsigned int loopFrameOffset = hca.header_size + hca.frame_size * hca.loop_start_frame;
+        unsigned int paddingBytes = GetNextMultiple(loopFrameOffset, loopFrameAlignment) - loopFrameOffset;
+        unsigned int paddingFrames = paddingBytes / hca.frame_size;
+        hca.encoder_delay += paddingFrames * HCA_SAMPLES_PER_FRAME;
+        hca.loop_start_frame += paddingFrames;
+        hca.loop_end_frame += paddingFrames;
+        hca.header_size += paddingBytes % hca.frame_size;
     }
 }
 
-int CalculateHeaderSize(clHCA *hca){
-    const int baseHeaderSize = 96;
-    const int baseHeaderAlignment = 32;
-    const int loopFrameAlignment = 2048;
-
-    int HeaderSize = GetNextMultiple(baseHeaderSize + hca->comment_len, baseHeaderAlignment);
-    if (hca->loop_flag)
-    {
-        int loopFrameOffset = HeaderSize + hca->frame_size * hca->loop_start_frame;
-        int paddingBytes = GetNextMultiple(loopFrameOffset, loopFrameAlignment) - loopFrameOffset;
-        int paddingFrames = paddingBytes / hca->frame_size;
-
-        hca->encoder_delay += paddingFrames * HCA_SAMPLES_PER_FRAME;
-        hca->loop_start_frame += paddingFrames;
-        hca->loop_end_frame += paddingFrames;
-        HeaderSize += paddingBytes % hca->frame_size;
-    }
-    return HeaderSize;
-}
-
-static const unsigned int IntensityRatioBoundsTableHex[14] = {
-    0x3FF6DB6E, 0x3FE49249, 0x3FD24925, 0x3FC00000, 0x3FADB6DB, 0x3F9B6DB7, 0x3F892492, 
-    0x3F6DB6DB, 0x3F492492, 0x3F249249, 0x3F000000, 0x3EB6DB6E, 0x3E5B6DB7, 0x3D924925
-};
-static const float* IntensityRatioBoundsTable = (const float*)IntensityRatioBoundsTableHex;
-
-// Values here are too big to be precise for a floating point.
-// However, most of the res/quality will take values from high indexes where it's a lot more precise.
-static const unsigned int QuantizerScalingTableHex[] = {
-    0x4AC0213B, 0x4A9031DC, 0x4A587039, 0x4A227043, 0x49F3D290, 0x49B6FD92, 0x498955EE, 0x494E248C,
-    0x491AB62B, 0x48E8396A, 0x48AE4934, 0x4882CD87, 0x4844563F, 0x48135A2B, 0x47DD2D82, 0x47A5FED7,
-    0x4779295A, 0x473AFF5B, 0x470C57CA, 0x46D2A81E, 0x469E196E, 0x466D4F30, 0x46321A32, 0x4605AAC3,
-    0x45C8A2D8, 0x4596942D, 0x4562055B, 0x4529A15B, 0x44FE9E11, 0x44BF179A, 0x448F6A81, 0x445744FD,
-    0x44218FAF, 0x43F28177, 0x43B60094, 0x4388980F, 0x434D078C, 0x4319E046, 0x42E6F85B, 0x42AD583F,
-    0x428218AF, 0x424346CD, 0x42128E72, 0x41DBFBB8, 0x41A51958, 0x4177D0DF, 0x4139FCD2, 0x410B95C2,
-    0x40D184DF, 0x409D3EDA, 0x406C0719, 0x403123F6, 0x4004F1F6, 0x3FC78D75, 0x3F95C3FF, 0x3F60CCDF,
-    0x3F28B6D5, 0x3EFD3E0C, 0x3EBE0F68, 0x3E8EA43A, 0x3E561B5E, 0x3E20B051, 0x3DF13231, 0x3DB504F3
-};
-static const float* QuantizerScalingTable = (const float*)QuantizerScalingTableHex;
-
-int QuantizedSpectrumMaxBits[] = {0, 2, 3, 3, 4, 4, 4, 4, 5, 6, 7, 8, 9, 10, 11, 12};
-
-void GetChannelTypes(clHCA *Frame, channel_type_t *types){
-    int channelsPerTrack = Frame->channels / Frame->track_count;
-    if (Frame->stereo_band_count == 0 || channelsPerTrack == 1){
-        // types = new channel_type_t[8];
+void GetChannelTypes(clHCA &hca, channel_type_t *types){
+    int channelsPerTrack = hca.channels / hca.track_count;
+    if(hca.stereo_band_count == 0 || channelsPerTrack == 1){
         memset(types, DISCRETE, 8);
         return;
     }
@@ -2403,34 +2339,33 @@ void GetChannelTypes(clHCA *Frame, channel_type_t *types){
             types[2] = DISCRETE;
             break;
         case 4: 
-            if(Frame->channel_config != 0){
+            if(hca.channel_config != 0){
                 types[0] = STEREO_PRIMARY; 
                 types[1] = STEREO_SECONDARY; 
                 types[2] = DISCRETE;
                 types[3] = DISCRETE;
-                }
-            else if(Frame->channel_config == 0){
+            }else if(hca.channel_config == 0){
                 types[0] = STEREO_PRIMARY; 
                 types[1] = STEREO_SECONDARY; 
                 types[2] = STEREO_PRIMARY; 
                 types[3] = STEREO_SECONDARY;
-                }
+            }
             break;
         case 5: 
-            if(Frame->channel_config > 2){
+            if(hca.channel_config > 2){
                 types[0] = STEREO_PRIMARY; 
                 types[1] = STEREO_SECONDARY; 
                 types[2] = DISCRETE; 
                 types[3] = DISCRETE; 
                 types[4] = DISCRETE;
-                }
-            else if(Frame->channel_config <= 2){
+            }
+            else if(hca.channel_config <= 2){
                 types[0] = STEREO_PRIMARY; 
                 types[1] = STEREO_SECONDARY; 
                 types[2] = DISCRETE; 
                 types[3] = STEREO_PRIMARY; 
                 types[4] = STEREO_SECONDARY;
-                }
+            }
             break;
         case 6: 
             types[0] = STEREO_PRIMARY; 
@@ -2466,37 +2401,181 @@ void GetChannelTypes(clHCA *Frame, channel_type_t *types){
     }
 }
 
-void SetChannelType(clHCA *Frame){
-    channel_type_t *types = new channel_type_t[Frame->channels];
-    GetChannelTypes(Frame, types);
-    stChannel *ch = Frame->channel;
-    memset(ch, 0, sizeof(stChannel)*Frame->channels);
-    for (int i = 0; i < Frame->channels; i++){
-        {
-            ch[i].type = types[i],
-            ch[i].coded_count = types[i] == STEREO_SECONDARY ? Frame->base_band_count : Frame->base_band_count + Frame->stereo_band_count;
-        };
+void SetChannelType(clHCA &hca){
+    channel_type_t types[8];
+    GetChannelTypes(hca, types);
+    stChannel *ch = hca.channel;
+    memset(ch, 0, sizeof(stChannel)*hca.channels);
+    for(unsigned int i = 0; i < hca.channels; i++){
+        ch[i].type = types[i];
+        ch[i].coded_count = types[i] == STEREO_SECONDARY ? hca.base_band_count : hca.base_band_count + hca.stereo_band_count;
     }
 }
 
-void EncodeIntensityStereo(clHCA *frame){
-    if (frame->stereo_band_count <= 0) return;
+char initHCAEncode(PCM &wave, clHCA &hca, CriHcaQuality quality){
+    fmt FMTChunk = wave.wav.chunks.WAVEfmt;
+    unsigned int CutoffFrequency = FMTChunk.SampleRate / 2;
+    hca.PostSamples = 128;
+    hca.BufferPosition = 0;
+    char res = 0;
 
-    for (int c = 0; c < frame->channels; c++)
     {
-        if (frame->channel[c].type != STEREO_PRIMARY) continue;
+        hca.channels = FMTChunk.Channels;
+        hca.track_count = 1;
+        hca.sample_rate = FMTChunk.SampleRate;
+        hca.sample_count_per_channel = wave.ColumnSize / FMTChunk.Channels;
+        hca.min_resolution = 1;
+        hca.max_resolution = 15;
+        hca.encoder_delay = HCA_SAMPLES_PER_SUBFRAME;
+    }
 
-        for (int sf = 0; sf < HCA_SUBFRAMES; sf++)
-        {
-            float *l = &frame->channel[c].spectra[sf][0];
-            float *r = &frame->channel[c + 1].spectra[sf][0];
+    unsigned int Bitrate = CalculateBitrate(hca, quality);
+    CalculateBandCounts(hca, Bitrate, CutoffFrequency);
+    CalculateHfrValues(hca);
+    res = SetChannelConfiguration(hca);
+
+    if(res < 0)
+        return res;
+    
+    unsigned int inputSampleCount = hca.sample_count_per_channel;
+    if(hca.loop_flag){
+        unsigned int LoopEnd = wave.wav.chunks.WAVEsmpl.Loops[0].End;
+        unsigned int LoopStart = wave.wav.chunks.WAVEsmpl.Loops[0].Start;
+        hca.sample_count_per_channel = std::min(LoopEnd, wave.ColumnSize);
+        hca.encoder_delay += GetNextMultiple(LoopStart, HCA_SAMPLES_PER_FRAME) - LoopStart;
+        CalculateLoopInfo(hca, LoopStart, LoopEnd);
+        inputSampleCount = std::min((unsigned int)GetNextMultiple(hca.sample_count_per_channel, HCA_SAMPLES_PER_SUBFRAME), wave.ColumnSize);
+        inputSampleCount += HCA_SAMPLES_PER_SUBFRAME * 2;
+        hca.PostSamples = inputSampleCount - hca.sample_count_per_channel;
+    }
+
+    CalculateHeaderSize(hca);
+
+    unsigned int totalSamples = inputSampleCount + hca.encoder_delay;
+
+    hca.frame_count = DivideByRoundUp(totalSamples, HCA_SAMPLES_PER_FRAME);
+    hca.encoder_padding = hca.frame_count * HCA_SAMPLES_PER_FRAME - hca.encoder_delay - inputSampleCount;
+    
+    SetChannelType(hca);
+    hca.BufferPreSamples = hca.encoder_delay - HCA_SAMPLES_PER_SUBFRAME;
+
+    return res;
+}
+
+/**
+ * @brief For optimizations, the pcm pointer here is not a jagged array of Samples[Channels][1024] But rather normal pcm array.
+ * 
+ * @param pcm 
+ * @param hca 
+ */
+void PcmToFloat(short *pcm, clHCA &hca){
+    for(int c = 0; c < hca.channels; c++){
+        unsigned int idx = 0;
+        for(int sf = 0; sf < HCA_SUBFRAMES; sf++)
+            for(int i = 0; i < HCA_SAMPLES_PER_SUBFRAME; i++){
+                hca.channel[c].wave[sf][i] = (float)(pcm[idx + c] * (float)(1.0f / 32768.0f));
+                idx += hca.channels;
+            }
+    }
+}
+
+void DCT4(float* input, int subframe, stChannel &ch){
+    const float* sinTable = (const float *)SinTablesHex[HCA_MDCT_BITS];
+    const float* cosTable = (const float *)CosTablesHex[HCA_MDCT_BITS];
+    float *dctTemp = &ch.temp[0];
+
+    int size = HCA_SAMPLES_PER_SUBFRAME;
+    int lastIndex = size - 1;
+    int halfSize = size / 2;
+
+    for(int i = 0; i < halfSize; i++){
+        int i2 = i * 2;
+        float a = input[i2];
+        float b = input[lastIndex - i2];
+        float sin = sinTable[i];
+        float cos = cosTable[i];
+        dctTemp[i2] = a * cos + b * sin;
+        dctTemp[i2 + 1] = a * sin - b * cos;
+    }
+    int stageCount = HCA_MDCT_BITS - 1;
+
+    for(int stage = 0; stage < stageCount; stage++){
+        int blockCount = 1 << stage;
+        int blockSizeBits = stageCount - stage;
+        int blockHalfSizeBits = blockSizeBits - 1;
+        int blockSize = 1 << blockSizeBits;
+        int blockHalfSize = 1 << blockHalfSizeBits;
+        sinTable = (const float *)SinTablesHex[blockHalfSizeBits];
+        cosTable = (const float *)CosTablesHex[blockHalfSizeBits];
+
+        for(int block = 0; block < blockCount; block++)
+            for(int i = 0; i < blockHalfSize; i++){
+                int frontPos = (block * blockSize + i) * 2;
+                int backPos = frontPos + blockSize;
+                float a = dctTemp[frontPos] - dctTemp[backPos];
+                float b = dctTemp[frontPos + 1] - dctTemp[backPos + 1];
+                float sin = sinTable[i];
+                float cos = cosTable[i];
+                dctTemp[frontPos] += dctTemp[backPos];
+                dctTemp[frontPos + 1] += dctTemp[backPos + 1];
+                dctTemp[backPos] = a * cos + b * sin;
+                dctTemp[backPos + 1] = a * sin - b * cos;
+            }
+    }
+
+    for(int i = 0; i < HCA_SAMPLES_PER_SUBFRAME; i++)
+        ch.spectra[subframe][i] = dctTemp[ShuffleTable[i]] * 0.125f;
+}
+
+static void mdct_transform(stChannel &ch, int subframe) {
+    static const unsigned int size = HCA_SAMPLES_PER_SUBFRAME;
+    static const unsigned int half = HCA_SAMPLES_PER_SUBFRAME / 2;
+    static const unsigned int mdct_bits = HCA_MDCT_BITS;
+    unsigned int i, j, k;
+    float scratchmdct[HCA_SAMPLES_PER_SUBFRAME];
+    memset(&scratchmdct[0], 0, sizeof(float)*HCA_SAMPLES_PER_SUBFRAME);
+    {
+        for(int i = 0; i < half; i++){
+            // input, in this case, is wave array and output would be the spectra array.
+            float a =  hcaimdct_window_float[half - i - 1] * -ch.wave[subframe][half + i];
+            float b = -hcaimdct_window_float[half + i] * ch.wave[subframe][half- i - 1];
+            float c =  hcaimdct_window_float[i] * ch.imdct_previous[i];
+            float d = -hcaimdct_window_float[size - i - 1] * ch.imdct_previous[size - i - 1];
+
+            scratchmdct[i] = a - b;
+            scratchmdct[half + i] = c - d;
+        }
+    }
+
+    // DCT 4 here.
+    DCT4(scratchmdct, subframe, ch);
+    // All taken from VGAudio.
+    memcpy(ch.imdct_previous, ch.wave[subframe], HCA_SAMPLES_PER_SUBFRAME*sizeof(float));
+}
+
+void RunMdct(clHCA &hca){
+    for(int c = 0; c < hca.channels; c++)
+        for(int sf = 0; sf < HCA_SUBFRAMES; sf++)
+            mdct_transform(hca.channel[c], sf);
+}
+
+void EncodeIntensityStereo(clHCA &hca){
+    if(hca.stereo_band_count <= 0)
+        return;
+
+    for(int c = 0; c < hca.channels; c++){
+        if(hca.channel[c].type != STEREO_PRIMARY)
+            continue;
+
+        for(int sf = 0; sf < HCA_SUBFRAMES; sf++){
+            float *l = &hca.channel[c].spectra[sf][0];
+            float *r = &hca.channel[c + 1].spectra[sf][0];
 
             float energyL = 0;
             float energyR = 0;
             float energyTotal = 0;
 
-            for (int b = frame->base_band_count; b < frame->total_band_count; b++)
-            {
+            for(int b = hca.base_band_count; b < hca.total_band_count; b++){
                 energyL += abs(l[b]);
                 energyR += abs(r[b]);
                 energyTotal += abs(l[b] + r[b]);
@@ -2506,27 +2585,23 @@ void EncodeIntensityStereo(clHCA *frame){
             float energyLR = energyR + energyL;
             float storedValue = 2 * energyL / energyLR;
             float energyRatio = energyLR / energyTotal;
-            if(energyRatio < 0.5)energyRatio=0.5;
-            else if(energyRatio > sqrt(2) / 2)energyRatio = sqrt(2) / 2;
+            if(energyRatio < 0.5)
+                energyRatio=0.5;
+            else if(energyRatio > sqrt(2) / 2)
+                energyRatio = sqrt(2) / 2;
 
             int quantized = 1;
-            if (energyR > 0 || energyL > 0)
-            {
-                while (quantized < 13 && IntensityRatioBoundsTable[quantized] >= storedValue)
-                {
+            if(energyR > 0 || energyL > 0)
+                while(quantized < 13 && IntensityRatioBoundsTable[quantized] >= storedValue)
                     quantized++;
-                }
-            }
-            else
-            {
+            else{
                 quantized = 0;
                 energyRatio = 1;
             }
 
-            frame->channel[c + 1].intensity[sf] = quantized;
+            hca.channel[c + 1].intensity[sf] = quantized;
 
-            for (int b = frame->base_band_count; b < frame->total_band_count; b++)
-            {
+            for(int b = hca.base_band_count; b < hca.total_band_count; b++){
                 l[b] = (l[b] + r[b]) * energyRatio;
                 r[b] = 0;
             }
@@ -2534,367 +2609,502 @@ void EncodeIntensityStereo(clHCA *frame){
     }
 }
 
-unsigned char DefaultChannelMapping[] = { 0, 1, 0, 4, 0, 1, 3, 7, 3 };
-
 int FindScaleFactor(float value){
     const float *sf = &hcadequantizer_scaling_table_float[0];
     unsigned int low = 0;
     unsigned int high = 63;
-    while (low < high)
-    {
+    while (low < high){
         unsigned int mid = (low + high) / 2;
-        if (sf[mid] <= value)
-        {
+        if(sf[mid] <= value)
             low = mid + 1;
-        }
         else
-        {
             high = mid;
-        }
     }
     return (int)low;
 }
 
-void CalculateHfrGroupAverages(clHCA *frame){
-    if (frame->hfr_group_count == 0) return;
+void CalculateScaleFactors(clHCA &hca){
+    for(int c = 0; c < hca.channels; c++){
+        for(int b = 0; b < hca.channel[c].coded_count; b++){
+            float max = 0;
+            for(int sf = 0; sf < HCA_SUBFRAMES; sf++){
+                float coeff = abs(hca.channel[c].spectra[sf][b]);
+                max = std::max(coeff, max);
+            }
+            hca.channel[c].scalefactors[b] = FindScaleFactor(max);
+        }
+        memset(hca.channel[c].scalefactors+hca.channel[c].coded_count, 0, HCA_SAMPLES_PER_SUBFRAME - hca.channel[c].coded_count);
+    }
+}
 
-    int hfrStartBand = frame->stereo_band_count + frame->base_band_count;
-    stChannel *channel = frame->channel;
-    for(int c = 0; c < frame->channels; c++)
-    {
-        if (channel->type == STEREO_SECONDARY) continue;
+void ScaleSpectra(clHCA &hca){
+    for(int c = 0; c < hca.channels; c++)
+        for(int b = 0; b < hca.channel[c].coded_count; b++){
+            float *scaledSpectra = &hca.channel[c].scaledspectra[b][0];
+            int scaleFactor = hca.channel[c].scalefactors[b];
+            for(int sf = 0; sf < HCA_SUBFRAMES; sf++){
+                float coeff = hca.channel[c].spectra[sf][b];
+                float ans = (coeff * QuantizerScalingTable[scaleFactor]);
+                if(ans > 0.9999999f)
+                    ans = 0.9999999f;
+                else if(ans < -0.9999999f)
+                    ans = -0.9999999f;
+                scaledSpectra[sf] = scaleFactor == 0 ? 0 : ans;
+            }
+        }
+}
 
-        for (int group = 0, band = hfrStartBand; group < frame->hfr_group_count; group++)
-        {
+void CalculateHfrGroupAverages(clHCA &hca){
+    if (hca.hfr_group_count == 0)
+        return;
+    int hfrStartBand = hca.stereo_band_count + hca.base_band_count;
+    for(int c = 0; c < hca.channels; c++){
+        if(hca.channel[c].type == STEREO_SECONDARY)
+            continue;
+        for(int group = 0, band = hfrStartBand; group < hca.hfr_group_count; group++){
             float sum = 0.0;
             int count = 0;
-
-            for (int i = 0; i < frame->bands_per_hfr_group && band < HCA_SAMPLES_PER_SUBFRAME; band++, i++)
-            {
-                for (int subframe = 0; subframe < HCA_SUBFRAMES; subframe++)
-                {
-                    sum += abs(channel->spectra[subframe][band]);
-                }
+            for(int i = 0; i < hca.bands_per_hfr_group && band < HCA_SAMPLES_PER_SUBFRAME; band++, i++){
+                for(int subframe = 0; subframe < HCA_SUBFRAMES; subframe++)
+                    sum += abs(hca.channel[c].spectra[subframe][band]);
                 count += HCA_SUBFRAMES;
             }
-
-            channel->HfrGroupAverageSpectra[group] = sum / count;
+            hca.channel[c].HfrGroupAverageSpectra[group] = sum / count;
         }
     }
 }
 
-void CalculateHfrScale(clHCA *hca){
-    if (hca->hfr_group_count == 0) return;
+void CalculateHfrScale(clHCA &hca){
+    if(hca.hfr_group_count == 0)
+        return;
 
-    int hfrStartBand = hca->stereo_band_count + hca->base_band_count;
-    int hfrBandCount = std::min(hca->HfrBandCount, hca->total_band_count - hca->HfrBandCount);
+    int hfrStartBand = hca.stereo_band_count + hca.base_band_count;
+    int hfrBandCount = std::min(hca.HfrBandCount, hca.total_band_count - hca.HfrBandCount);
 
-    for(int c = 0; c < hca->channels; c++)
-    {
-        if(hca->channel[c].type == STEREO_SECONDARY) continue;
+    for(int c = 0; c < hca.channels; c++){
+        if(hca.channel[c].type == STEREO_SECONDARY)
+            continue;
 
-        float *groupSpectra = &hca->channel[c].HfrGroupAverageSpectra[0];
+        float *groupSpectra = &hca.channel[c].HfrGroupAverageSpectra[0];
 
-        for (int group = 0, band = 0; group < hca->hfr_group_count; group++)
-        {
+        for(int group = 0, band = 0; group < hca.hfr_group_count; group++){
             float sum = 0.0;
             int count = 0;
 
-            for (int i = 0; i < hca->bands_per_hfr_group && band < hfrBandCount; band++, i++)
-            {
-                for (int subframe = 0; subframe < HCA_SUBFRAMES; subframe++)
-                {
-                    sum += abs(hca->channel[c].scaledspectra[hfrStartBand - band - 1][subframe]);
-                }
+            for(int i = 0; i < hca.bands_per_hfr_group && band < hfrBandCount; band++, i++){
+                for(int subframe = 0; subframe < HCA_SUBFRAMES; subframe++)
+                    sum += abs(hca.channel[c].scaledspectra[hfrStartBand - band - 1][subframe]);
                 count += HCA_SUBFRAMES;
             }
 
             float averageSpectra = sum / count;
-            if (averageSpectra > 0.0)
-            {
+            if(averageSpectra > 0.0)
                 groupSpectra[group] *= std::min(1.0 / averageSpectra, sqrt(2));
-            }
 
-            hca->channel[c].HfrScales[group] = FindScaleFactor(groupSpectra[group]);
+            hca.channel[c].HfrScales[group] = FindScaleFactor(groupSpectra[group]);
         }
     }
 }
 
-void CalculateHfrValues(clHCA *Frame){
-    if (Frame->bands_per_hfr_group <= 0) return;
-
-    int HfrBandCount = Frame->total_band_count - Frame->base_band_count - Frame->stereo_band_count;
-    Frame->HfrBandCount = DivideByRoundUp(HfrBandCount, Frame->bands_per_hfr_group);
-}
-
-
-void CalculateOptimalDeltaLength(stChannel *channel){
+void CalculateOptimalDeltaLength(stChannel &channel){
     bool emptyChannel = 1;
-    for (int i = 0; i < channel->coded_count; i++)
-    {
-        if (channel->scalefactors[i] != 0)
-        {
+    for(int i = 0; i < channel.coded_count; i++)
+        if(channel.scalefactors[i] != 0){
             emptyChannel = 0;
             break;
         }
-    }
 
-    if (emptyChannel)
-    {
-        channel->HeaderLengthBits = 3;
-        channel->ScaleFactorDeltaBits = 0;
+    if(emptyChannel){
+        channel.HeaderLengthBits = 3;
+        channel.ScaleFactorDeltaBits = 0;
         return;
     }
 
     int minDeltaBits = 6;
-    int minLength = 3 + 6 * channel->coded_count;
+    int minLength = 3 + 6 * channel.coded_count;
 
-    for (int deltaBits = 1; deltaBits < 6; deltaBits++)
-    {
+    for(int deltaBits = 1; deltaBits < 6; deltaBits++){
         int maxDelta = (1 << (deltaBits - 1)) - 1;
         int length = 3 + 6;
-        for (int band = 1; band < channel->coded_count; band++)
-        {
-            int delta = channel->scalefactors[band] - channel->scalefactors[band - 1];
+        for(int band = 1; band < channel.coded_count; band++){
+            int delta = channel.scalefactors[band] - channel.scalefactors[band - 1];
             length += abs(delta) > maxDelta ? deltaBits + 6 : deltaBits;
         }
-        if (length < minLength)
-        {
+        if(length < minLength){
             minLength = length;
             minDeltaBits = deltaBits;
         }
     }
 
-    channel->HeaderLengthBits = minLength;
-    channel->ScaleFactorDeltaBits = minDeltaBits;
+    channel.HeaderLengthBits = minLength;
+    channel.ScaleFactorDeltaBits = minDeltaBits;
 }
 
-void CalculateFrameHeaderLength(clHCA *frame){
-    for(int c = 0; c < frame->channels; c++){
-        CalculateOptimalDeltaLength(&frame->channel[c]);
-        if (frame->channel[c].type == STEREO_SECONDARY) frame->channel[c].HeaderLengthBits += 32;
-        else if (frame->hfr_group_count > 0) frame->channel[c].HeaderLengthBits += 6 * frame->hfr_group_count;
+void CalculateFrameHeaderLength(clHCA &hca){
+    for(int c = 0; c < hca.channels; c++){
+        CalculateOptimalDeltaLength(hca.channel[c]);
+        if(hca.channel[c].type == STEREO_SECONDARY)
+            hca.channel[c].HeaderLengthBits += 32;
+        else if(hca.hfr_group_count > 0)
+            hca.channel[c].HeaderLengthBits += 6 * hca.hfr_group_count;
     }
 }
-
-static const int ScaleToResolutionCurve[] = {
-    15, 14, 14, 14, 14, 14, 14, 13, 13, 13, 13, 13, 13, 12, 12, 12, 12, 12, 12, 11,
-    11, 11, 11, 11, 11, 10, 10, 10, 10, 10, 10, 10, 9, 9, 9, 9, 9, 9, 8, 8, 8, 8,
-    8, 8, 7, 6, 6, 5, 4, 4, 4, 3, 3, 3, 2, 2, 2, 2, 1
-};
 
 int CalculateResolution(int scaleFactor, int noiseLevel){
-    if (scaleFactor == 0)
-    {
+    if(scaleFactor == 0)
         return 0;
-    }
     int curvePosition = noiseLevel - 5 * scaleFactor / 2 + 2;
-    if(curvePosition < 0){
+    if(curvePosition < 0)
         curvePosition = 0;
-    }else if(curvePosition > 58){
+    else if(curvePosition > 58)
         curvePosition = 58;
-    }
     return ScaleToResolutionCurve[curvePosition];
 }
 
-// First element of this table in VGAudio's generator is actually NaN, but here I just defaulted it to 0.
-static const unsigned int QuantizerDeadZoneHex[] = {
-    0x00000000, 0x3EAAAAAB, 0x3E4CCCCD, 0x3E124925, 0x3DE38E39, 0x3DBA2E8C, 0x3D9D89D9, 0x3D888889,
-    0x3D042108, 0x3C820821, 0x3C010204, 0x3B808081, 0x3B004020, 0x3A802008, 0x3A001002, 0x39800801
-};
-static const float* QuantizerDeadZone = (const float*)QuantizerDeadZoneHex;
-
-static const float QuantizerInverseStepSize[] = {
-    0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 15.5, 31.5, 63.5, 127.5, 255.5, 511.5, 1023.5, 2047.5
-};
-
-static const int QuantizeSpectrumBits[8][16] = {
-    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-    {0, 0, 0, 0, 0, 0, 0, 2, 1, 2, 0, 0, 0, 0, 0, 0},
-    {0, 0, 0, 0, 0, 0, 3, 2, 2, 2, 3, 0, 0, 0, 0, 0},
-    {0, 0, 0, 0, 0, 3, 3, 3, 2, 3, 3, 3, 0, 0, 0, 0},
-    {0, 0, 0, 0, 4, 3, 3, 3, 3, 3, 3, 3, 4, 0, 0, 0},
-    {0, 0, 0, 4, 4, 4, 3, 3, 3, 3, 3, 4, 4, 4, 0, 0},
-    {0, 0, 4, 4, 4, 4, 4, 3, 3, 3, 4, 4, 4, 4, 4, 0},
-    {0, 4, 4, 4, 4, 4, 4, 4, 3, 4, 4, 4, 4, 4, 4, 4}
-};
-
-int CalculateUsedBits(clHCA *frame, int noiseLevel, int evalBoundary){
-    int length = 16 + 16 + 16; // Sync word, noise level and checksum
-
-    for(int c = 0; c < frame->channels; c++)
-    {
-        length += frame->channel[c].HeaderLengthBits;
-        for (int i = 0; i < frame->channel[c].coded_count; i++)
-        {
+int CalculateUsedBits(clHCA &hca, int noiseLevel, int evalBoundary){
+    int length = 16 + 16 + 16;
+    for(int c = 0; c < hca.channels; c++){
+        length += hca.channel[c].HeaderLengthBits;
+        for(int i = 0; i < hca.channel[c].coded_count; i++){
             int noise = i < evalBoundary ? noiseLevel - 1 : noiseLevel;
-            int resolution = CalculateResolution(frame->channel[c].scalefactors[i], noise);
-
-            if (resolution >= 8)
-            {
+            int resolution = CalculateResolution(hca.channel[c].scalefactors[i], noise);
+            if(resolution >= 8){
                 int bits = QuantizedSpectrumMaxBits[resolution] - 1;
                 float deadZone = QuantizerDeadZone[resolution];
-                for(int j = 0; j < HCA_SUBFRAMES; j++)
-                {
+                for(int j = 0; j < HCA_SUBFRAMES; j++){
                     length += bits;
-                    if (abs(frame->channel[c].scaledspectra[i][j]) >= deadZone) length++;
+                    if(abs(hca.channel[c].scaledspectra[i][j]) >= deadZone)
+                        length++;
                 }
-            }
-            else
-            {
+            }else{
                 float stepSizeInv = QuantizerInverseStepSize[resolution];
                 float shiftUp = stepSizeInv + 1;
                 int shiftDown = (int)(stepSizeInv + 0.5 - 8);
-                for(int j = 0; j < HCA_SUBFRAMES; j++)
-                {
-                    int quantizedSpectra = (int)(frame->channel[c].scaledspectra[i][j] * stepSizeInv + shiftUp) - shiftDown;
+                for(int j = 0; j < HCA_SUBFRAMES; j++){
+                    int quantizedSpectra = (int)(hca.channel[c].scaledspectra[i][j] * stepSizeInv + shiftUp) - shiftDown;
                     length += QuantizeSpectrumBits[resolution][quantizedSpectra];
                 }
             }
         }
     }
-
     return length;
 }
 
-int BinarySearchLevel(clHCA *frame, int availableBits, int low, int high){
+int BinarySearchLevel(clHCA &hca, int availableBits, int low, int high){
     int max = high;
     int midValue = 0;
 
-    while (low != high)
-    {
+    while(low != high){
         int mid = (low + high) / 2;
-        midValue = CalculateUsedBits(frame, mid, 0);
+        midValue = CalculateUsedBits(hca, mid, 0);
 
         if (midValue > availableBits)
-        {
             low = mid + 1;
-        }
-        else if (midValue <= availableBits)
-        {
+        else if(midValue <= availableBits)
             high = mid;
-        }
     }
 
     return low == max && midValue > availableBits ? -1 : low;
 }
 
-void CalculateNoiseLevel(clHCA *frame){
-    int highestBand = frame->base_band_count + frame->stereo_band_count - 1;
-    int availableBits = frame->frame_size * 8;
+char CalculateNoiseLevel(clHCA &hca){
+    int highestBand = hca.base_band_count + hca.stereo_band_count - 1;
+    int availableBits = hca.frame_size * 8;
     int maxLevel = 255;
     int minLevel = 0;
-    int level = BinarySearchLevel(frame, availableBits, minLevel, maxLevel);
+    int level = BinarySearchLevel(hca, availableBits, minLevel, maxLevel);
 
-    // If there aren't enough available bits, remove bands until there are.
-    while (level < 0)
-    {
+    while(level < 0){
         highestBand -= 2;
-        if (highestBand < 0)
-        {
-            // errors here
-            // return py_decode_err(-3);
-            return;
+        if(highestBand < 0)
+            return -3;
+
+        for(int c = 0; c < hca.channels; c++){
+            hca.channel[c].scalefactors[highestBand + 1] = 0;
+            hca.channel[c].scalefactors[highestBand + 2] = 0;
         }
 
-        for(int c = 0; c < frame->channels; c++)
-        {
-            frame->channel[c].scalefactors[highestBand + 1] = 0;
-            frame->channel[c].scalefactors[highestBand + 2] = 0;
-        }
-
-        CalculateFrameHeaderLength(frame);
-        level = BinarySearchLevel(frame, availableBits, minLevel, maxLevel);
+        CalculateFrameHeaderLength(hca);
+        level = BinarySearchLevel(hca, availableBits, minLevel, maxLevel);
     }
 
-    frame->AcceptableNoiseLevel = level;
+    hca.AcceptableNoiseLevel = level;
+    return 0;
 }
 
-int BinarySearchBoundary(clHCA *frame, int availableBits, int noiseLevel, int low, int high){
+int BinarySearchBoundary(clHCA &hca, int availableBits, int noiseLevel, int low, int high){
     int max = high;
 
-    while (abs(high - low) > 1)
-    {
+    while(abs(high - low) > 1){
         int mid = (low + high) / 2;
-        int midValue = CalculateUsedBits(frame, noiseLevel, mid);
-
+        int midValue = CalculateUsedBits(hca, noiseLevel, mid);
         if (availableBits < midValue)
-        {
             high = mid - 1;
-        }
-        else if (availableBits >= midValue)
-        {
+        else if(availableBits >= midValue)
             low = mid;
-        }
     }
 
-    if (low == high)
-    {
+    if(low == high)
         return low < max ? low : -1;
-    }
-
-    int hiValue = CalculateUsedBits(frame, noiseLevel, high);
-
+    int hiValue = CalculateUsedBits(hca, noiseLevel, high);
     return hiValue > availableBits ? low : high;
 }
 
-void CalculateEvaluationBoundary(clHCA *frame){
-    if (frame->AcceptableNoiseLevel == 0)
-    {
-        frame->EvaluationBoundary = 0;
-        return;
+char CalculateEvaluationBoundary(clHCA &hca){
+    if (hca.AcceptableNoiseLevel == 0){
+        hca.EvaluationBoundary = 0;
+        return 0;
     }
 
-    int availableBits = frame->frame_size * 8;
+    int availableBits = hca.frame_size * 8;
     int maxLevel = 127;
     int minLevel = 0;
-    int level = BinarySearchBoundary(frame, availableBits, frame->AcceptableNoiseLevel, minLevel, maxLevel);
-    if(level < 0){
-        // errors here
-        py_decode_err(-4);
-        return;
-    }
-    frame->EvaluationBoundary = level;
+    int level = BinarySearchBoundary(hca, availableBits, hca.AcceptableNoiseLevel, minLevel, maxLevel);
+    if(level < 0)
+        return -4;
+    hca.EvaluationBoundary = level;
+    return 0;
 }
 
-void CalculateFrameResolutions(clHCA *frame){
-    for(int c = 0; c < frame->channels; c++)
-    {
-        for (int i = 0; i < frame->EvaluationBoundary; i++)
-        {
-            frame->channel[c].resolution[i] = CalculateResolution(frame->channel[c].scalefactors[i], frame->AcceptableNoiseLevel - 1);
-        }
-        for (int i = frame->EvaluationBoundary; i < frame->channel[c].coded_count; i++)
-        {
-            frame->channel[c].resolution[i] = CalculateResolution(frame->channel[c].scalefactors[i], frame->AcceptableNoiseLevel);
-        }
-        memset(frame->channel[c].resolution+frame->channel[c].coded_count, 0, HCA_SAMPLES_PER_SUBFRAME-frame->channel[c].coded_count);
+void CalculateFrameResolutions(clHCA &hca){
+    for(int c = 0; c < hca.channels; c++){
+        for(int i = 0; i < hca.EvaluationBoundary; i++)
+            hca.channel[c].resolution[i] = CalculateResolution(hca.channel[c].scalefactors[i], hca.AcceptableNoiseLevel - 1);
+        for(int i = hca.EvaluationBoundary; i < hca.channel[c].coded_count; i++)
+            hca.channel[c].resolution[i] = CalculateResolution(hca.channel[c].scalefactors[i], hca.AcceptableNoiseLevel);
+        memset(hca.channel[c].resolution+hca.channel[c].coded_count, 0, HCA_SAMPLES_PER_SUBFRAME-hca.channel[c].coded_count);
     }
 }
 
-void QuantizeSpectra(clHCA *frame){
-    for(int c = 0; c < frame->channels; c++)
-    {
-        for (int i = 0; i < frame->channel[c].coded_count; i++)
-        {
-            float *scaled = &frame->channel[c].scaledspectra[i][0];
-            int resolution = frame->channel[c].resolution[i];
+void QuantizeSpectra(clHCA &hca){
+    for(int c = 0; c < hca.channels; c++)
+        for(int i = 0; i < hca.channel[c].coded_count; i++){
+            float *scaled = &hca.channel[c].scaledspectra[i][0];
+            int resolution = hca.channel[c].resolution[i];
             float stepSizeInv = QuantizerInverseStepSize[resolution];
             float shiftUp = stepSizeInv + 1;
             int shiftDown = (int)(stepSizeInv + 0.5);
 
-            for (int sf = 0; sf < HCA_SUBFRAMES; sf++)
-            {
+            for(int sf = 0; sf < HCA_SUBFRAMES; sf++){
                 int quantizedSpectra = (int)(scaled[sf] * stepSizeInv + shiftUp) - shiftDown;
-                frame->channel[c].QuantizedSpectra[sf][i] = quantizedSpectra;
+                hca.channel[c].QuantizedSpectra[sf][i] = quantizedSpectra;
             }
+        }
+}
+
+void WriteScalesFactors(clHCA &hca, BitWriter &bw, int c){
+    int deltabits = hca.channel[c].ScaleFactorDeltaBits;
+    unsigned char *scales = &hca.channel[c].scalefactors[0];
+    bw.Write(deltabits, 3);
+    if(deltabits == 0)
+        return;
+    if(deltabits == 6){
+        for(int i = 0; i < hca.channel[c].coded_count; i++)
+            bw.Write(scales[i], 6);
+        return;
+    }
+    bw.Write(scales[0], 6);
+    int maxDelta = (1 << (deltabits - 1)) - 1;
+    int escapeValue = (1 << deltabits) - 1;
+
+    for(int i = 1; i < hca.channel[c].coded_count; i++){
+        int delta = scales[i] - scales[i - 1];
+        if (abs(delta) > maxDelta){
+            bw.Write(escapeValue, deltabits);
+            bw.Write(scales[i], 6);
+        }
+        else
+            bw.Write(maxDelta + delta, deltabits);
+    }
+}
+
+void WriteSpectra(BitWriter &bw, clHCA &hca, int sf, int c){
+    for(int i = 0; i < hca.channel[c].coded_count; i++){
+        int resolution = hca.channel[c].resolution[i];
+        int quantizedSpectra = hca.channel[c].QuantizedSpectra[sf][i];
+        if(resolution == 0)
+            continue;
+        if(resolution < 8){
+            int bits = QuantizeSpectrumBits[resolution][quantizedSpectra + 8];
+            bw.Write(QuantizeSpectrumValue[resolution][quantizedSpectra + 8], bits);
+        }else if(resolution < 16){
+            int bits = QuantizedSpectrumMaxBits[resolution] - 1;
+            bw.Write(abs(quantizedSpectra), bits);
+            if(quantizedSpectra != 0)
+                bw.Write(quantizedSpectra > 0 ? 0 : 1, 1);
         }
     }
 }
 
-// Packing functions.
+void PackFrame(clHCA &hca, unsigned char *HcaBuffer){
+    WriteShortBE(HcaBuffer, 0xFFFF);
+    BitWriter bw;
+    bw.SetBuffer(HcaBuffer+2, hca.frame_size-2);
+    bw.Write(hca.AcceptableNoiseLevel, 9);
+    bw.Write(hca.EvaluationBoundary, 7);
+    for(int c = 0; c < hca.channels; c++){
+        WriteScalesFactors(hca, bw, c);
+        if(hca.channel[c].type == STEREO_SECONDARY)
+            for(int i = 0; i < HCA_SUBFRAMES; i++)
+                bw.Write(hca.channel[c].intensity[i], 4);
+        else if(hca.hfr_group_count > 0)
+            for(int i = 0; i < hca.hfr_group_count; i++)
+                bw.Write(hca.channel[c].HfrScales[i], 6);
+    }
+    for(int sf = 0; sf < HCA_SUBFRAMES; sf++)
+        for(int c = 0; c < hca.channels; c++)
+            WriteSpectra(bw, hca, sf, c);
 
-void PackHeader(BitWriter &outfile, clHCA *Frame, int header_size){
+    bw.AlignPosition(8);
+    for(int i = bw.Position / 8; i < hca.frame_size - 2; i++)
+        bw.Buffer[i] = 0;
+
+    unsigned short crc16 = crc16_checksum(HcaBuffer, hca.frame_size - 2);
+    WriteShortBE(HcaBuffer+hca.frame_size-2, crc16);
+}
+
+void EncodeFrame(clHCA &hca, short* pcm,  unsigned char *HcaBuffer){
+    char res = 0;
+    PcmToFloat(pcm, hca);
+    RunMdct(hca);
+    EncodeIntensityStereo(hca);
+    CalculateScaleFactors(hca);
+    ScaleSpectra(hca);
+    CalculateHfrGroupAverages(hca);
+    CalculateHfrScale(hca);
+    CalculateFrameHeaderLength(hca);
+    res = CalculateNoiseLevel(hca);
+    if(res < 0){
+        HcaErrorCode = res;
+        return;
+    }
+    res = CalculateEvaluationBoundary(hca);
+    if(res < 0){
+        HcaErrorCode = res;
+        return;
+    }
+    CalculateFrameResolutions(hca);
+    QuantizeSpectra(hca);
+    PackFrame(hca, HcaBuffer);
+}
+
+unsigned int OutputFrame(unsigned int &framesOutput, unsigned char *HcaBuffer, unsigned int &FramesProcessed, clHCA &hca, short *pcm){
+    if((HCA_SAMPLES_PER_FRAME - hca.BufferPosition) != 0)
+        return framesOutput;
+
+    EncodeFrame(hca, pcm, HcaBuffer);
+    hca.BufferPosition = 0;
+    FramesProcessed++;
+    return framesOutput + 1;
+}
+
+void PreEncode(clHCA &hca, short *pcm, unsigned char *HcaBuffer, unsigned int &framesOutput, unsigned int &FramesProcessed, short *PcmAudio){
+    while(hca.BufferPreSamples > HCA_SAMPLES_PER_FRAME){
+        hca.BufferPosition = HCA_SAMPLES_PER_FRAME;
+        framesOutput = OutputFrame(framesOutput, HcaBuffer+hca.frame_size*framesOutput, FramesProcessed, hca, PcmAudio);
+        hca.BufferPreSamples -= HCA_SAMPLES_PER_FRAME;
+    }
+
+    for(int j = 0; j < hca.BufferPreSamples; j++)
+        for(int i = 0; i < hca.channels; i++)
+            PcmAudio[i + hca.channels * j] = pcm[i];
+
+    hca.BufferPosition = hca.BufferPreSamples;
+    hca.BufferPreSamples = 0;
+}
+
+void SaveLoopAudio(clHCA &hca, short *pcm, unsigned int SamplesProcessed, short *PostAudio, unsigned int &PostAudioLengthPerChannel, unsigned int &FramesProcessed, unsigned int LoopStartSample){
+    unsigned int startPos = std::max((long long)LoopStartSample - SamplesProcessed, 0ll);
+    unsigned int loopPos = std::max((long long)SamplesProcessed - LoopStartSample, 0ll);
+    unsigned int endPos = std::min((long long)LoopStartSample - SamplesProcessed + hca.PostSamples, (long long)HCA_SAMPLES_PER_FRAME);
+    unsigned int length = endPos - startPos;
+
+    memcpy(PostAudio+loopPos*hca.channels, pcm+startPos*hca.channels, length*sizeof(short)*hca.channels);
+    PostAudioLengthPerChannel = length;
+}
+
+void EncodeMainAudio(clHCA &hca, short *pcm, unsigned char *HcaBuffer, unsigned int &framesOutput, unsigned int &pcmPosition, unsigned int &SamplesProcessed, unsigned int &FramesProcessed, short *PcmAudio){
+    unsigned int toCopy = std::min(HCA_SAMPLES_PER_FRAME - hca.BufferPosition, HCA_SAMPLES_PER_FRAME - pcmPosition);
+    toCopy = std::min(toCopy, hca.sample_count_per_channel - SamplesProcessed);
+    memcpy(PcmAudio+hca.BufferPosition*hca.channels, pcm+pcmPosition*hca.channels, toCopy * hca.channels * sizeof(short));
+    hca.BufferPosition += toCopy;
+    SamplesProcessed += toCopy;
+    pcmPosition += toCopy;
+    framesOutput = OutputFrame(framesOutput, HcaBuffer, FramesProcessed, hca, PcmAudio);
+}
+
+void EncodePostAudio(clHCA &hca, short* PcmAudio, unsigned char* HcaBuffer, unsigned int &framesOutput, unsigned int &FramesProcessed, short *PostAudio, unsigned int PostAudioLengthPerChannel){
+    unsigned int postPos = 0;
+    unsigned int remaining = hca.PostSamples;
+
+    while(postPos < remaining){
+        unsigned int toCopy = std::min((long long)HCA_SAMPLES_PER_FRAME - hca.BufferPosition, (long long)remaining - postPos);
+        memcpy(PcmAudio+hca.BufferPosition*hca.channels, PostAudio+postPos*hca.channels, toCopy*hca.channels*sizeof(short));
+        hca.BufferPosition += toCopy;
+        postPos += toCopy;
+        framesOutput = OutputFrame(framesOutput, HcaBuffer+hca.frame_size*framesOutput, FramesProcessed, hca, PcmAudio);
+    }
+
+    while(FramesProcessed < hca.frame_count){
+        memset(PcmAudio+hca.BufferPosition*hca.channels, 0, (HCA_SAMPLES_PER_FRAME - hca.BufferPosition) * hca.channels * sizeof(short));
+        hca.BufferPosition = HCA_SAMPLES_PER_FRAME;
+        framesOutput = OutputFrame(framesOutput, HcaBuffer+hca.frame_size*framesOutput, FramesProcessed, hca, PcmAudio);
+    }
+}
+
+void HcaEncode(clHCA &hca, short *pcm, unsigned char *HcaBuffer, unsigned int &framesOutput, unsigned int &SamplesProcessed, unsigned int SamplesToEncode, short *&PostAudio, unsigned int PostAudioLengthPerChannel, unsigned int &FramesProcessed, unsigned int &LoopStartSample, unsigned int &LoopEndSample, short* PcmAudio){
+    unsigned int pcmPosition = 0;
+    unsigned int HcaPosition = 0;
+    if(hca.BufferPreSamples)
+        PreEncode(hca, pcm, HcaBuffer, framesOutput, FramesProcessed, PcmAudio);
+    HcaPosition = framesOutput * hca.frame_size;
+    if(hca.loop_flag && LoopStartSample + hca.PostSamples >= SamplesProcessed && LoopStartSample < SamplesProcessed + HCA_SAMPLES_PER_FRAME)
+        SaveLoopAudio(hca, pcm, SamplesProcessed, PostAudio, PostAudioLengthPerChannel, FramesProcessed, LoopStartSample);
+    while(HCA_SAMPLES_PER_FRAME - pcmPosition > 0 && hca.sample_count_per_channel > SamplesProcessed){
+        EncodeMainAudio(hca, pcm, HcaBuffer+HcaPosition, framesOutput, pcmPosition, SamplesProcessed, FramesProcessed, PcmAudio);
+        HcaPosition = framesOutput * hca.frame_size;
+    }
+    HcaPosition = framesOutput * hca.frame_size;
+    if(hca.sample_count_per_channel == SamplesProcessed)
+        EncodePostAudio(hca, PcmAudio, HcaBuffer+HcaPosition, framesOutput, FramesProcessed, PostAudio, PostAudioLengthPerChannel);
+}
+
+void Encode(clHCA &hca, PCM &pcm, unsigned char *HcaBuffer){
+    unsigned int FrameIndex = 0;
+    unsigned int SamplesProcessed = 0;
+    unsigned int PcmPosition = 0;
+    unsigned int HcaPosition = 0;
+    unsigned int framesOutput = 0;
+    unsigned int FramesProcessed = 0;
+    unsigned int LoopStartSample = 0;
+    unsigned int LoopEndSample = 0;
+    unsigned int PostAudioLengthPerChannel = 0;
+    unsigned int SamplesToEncode = 0;
+    unsigned int SampleCount = pcm.ColumnSize / hca.channels;
+
+    short *PcmBuffer = pcm.Get_PCM16();
+    short *PostAudio = new short[hca.PostSamples * hca.channels];
+    memset(PostAudio, 0, hca.PostSamples * hca.channels * sizeof(short));
+    short *PcmAudio = new short[HCA_SAMPLES_PER_FRAME * hca.channels];
+    memset(PcmAudio, 0, HCA_SAMPLES_PER_FRAME * hca.channels * sizeof(short));
+
+    if(hca.loop_flag){
+        LoopStartSample = hca.loop_start_frame * HCA_SAMPLES_PER_FRAME + hca.loop_start_delay - hca.encoder_delay;
+        LoopEndSample = (hca.loop_end_frame + 1) * HCA_SAMPLES_PER_FRAME - hca.loop_end_padding - hca.encoder_delay;
+    }
+    
+    for(unsigned int i = 0; FrameIndex < hca.frame_count; i++, PcmPosition += SamplesToEncode){
+        SamplesToEncode = std::min(SampleCount - i * HCA_SAMPLES_PER_FRAME, (unsigned int)HCA_SAMPLES_PER_FRAME) * hca.channels;
+        HcaEncode(hca, PcmBuffer+PcmPosition, HcaBuffer+HcaPosition, framesOutput, SamplesProcessed, SamplesToEncode, PostAudio, PostAudioLengthPerChannel, FramesProcessed, LoopStartSample, LoopEndSample, PcmAudio);
+        if(HcaErrorCode < 0)
+            return;
+        HcaPosition += hca.frame_size * framesOutput;
+        FrameIndex += framesOutput;
+        framesOutput = 0;
+    }
+}
+
+void PackHeader(clHCA &hca, unsigned char* HcaBuffer){
     static const unsigned int HCAHeader = 0x48434100;
     static const unsigned int FMTHeader = 0x666D7400;
     static const unsigned int COMHeader = 0x636F6D70;
@@ -2903,446 +3113,234 @@ void PackHeader(BitWriter &outfile, clHCA *Frame, int header_size){
     static const unsigned int PADHeader = 0x70616400;
 
     // HCA
-    outfile.Write(HCAHeader, 32);
-    outfile.Write(0x0200, 16); // Version.
-    outfile.Write(header_size, 16);
+    WriteIntBE(HcaBuffer, HCAHeader);
+    WriteShortBE(HcaBuffer+4, 0x0200);
+    WriteShortBE(HcaBuffer+6, hca.header_size);
 
     // FMT
-    outfile.Write(FMTHeader, 32);
-    outfile.Write(Frame->channels, 8);
-    outfile.Write(Frame->sample_rate, 24);
-    outfile.Write(Frame->frame_count, 32);
-    outfile.Write(Frame->encoder_delay, 16);
-    outfile.Write(Frame->encoder_padding, 16);
+    WriteIntBE(HcaBuffer+8, FMTHeader);
+    WriteIntBE(HcaBuffer+12, hca.sample_rate);
+    WriteChar(HcaBuffer+12, hca.channels);
+    WriteIntBE(HcaBuffer+16, hca.frame_count);
+    WriteShortBE(HcaBuffer+20, hca.encoder_delay);
+    WriteShortBE(HcaBuffer+22, hca.encoder_padding);
 
     // COMP
-    outfile.Write(COMHeader, 32);
-    outfile.Write(Frame->frame_size, 16);
-    outfile.Write(Frame->min_resolution, 8);
-    outfile.Write(Frame->max_resolution, 8);
-    outfile.Write(Frame->track_count, 8);
-    outfile.Write(Frame->channel_config, 8);
-    outfile.Write(Frame->total_band_count, 8);
-    outfile.Write(Frame->base_band_count, 8);
-    outfile.Write(Frame->stereo_band_count, 8);
-    outfile.Write(Frame->bands_per_hfr_group, 8);
-    outfile.Write(0x0000, 16);
+    WriteIntBE(HcaBuffer+24, COMHeader);
+    WriteShortBE(HcaBuffer+28, hca.frame_size);
+    WriteChar(HcaBuffer+30, hca.min_resolution);
+    WriteChar(HcaBuffer+31, hca.max_resolution);
+    WriteChar(HcaBuffer+32, hca.track_count);
+    WriteChar(HcaBuffer+33, hca.channel_config);
+    WriteChar(HcaBuffer+34, hca.total_band_count);
+    WriteChar(HcaBuffer+35, hca.base_band_count);
+    WriteChar(HcaBuffer+36, hca.stereo_band_count);
+    WriteChar(HcaBuffer+37, hca.bands_per_hfr_group);
+    // WriteShortBE(HcaBuffer+38, 0x0000);
+
+    unsigned int Position = 40;
 
     // LOOP
-    if(Frame->loop_flag){
-        outfile.Write(LOPHeader, 32);
-        outfile.Write(Frame->loop_start_frame, 32);
-        outfile.Write(Frame->loop_end_frame, 32);
-        outfile.Write(Frame->loop_start_delay, 16);
-        outfile.Write(Frame->loop_end_padding, 16);
+    if(hca.loop_flag){
+        WriteIntBE(HcaBuffer+40, LOPHeader);
+        WriteIntBE(HcaBuffer+44, hca.loop_start_frame);
+        WriteIntBE(HcaBuffer+48, hca.loop_end_frame);
+        WriteShortBE(HcaBuffer+52, hca.loop_start_delay);
+        WriteShortBE(HcaBuffer+54, hca.loop_end_padding);
+        Position = 56;
     }
 
     // CIPH
-    outfile.Write(CIPHeader, 32);
-    outfile.Write(0x0000, 16);
+    WriteIntBE(HcaBuffer+Position, CIPHeader);
+    WriteShortBE(HcaBuffer+Position+4, 0x0000);
+    Position += 6;
 
     // PAD
-    outfile.Write(PADHeader, 32);
-    if(Frame->loop_flag){
-        outfile.pos += (0xCC * 8);
-    }else{
-        outfile.pos += (0x2C * 8); // Just before the CRC sum.
-    }
-    outfile.Write(crc16_checksum(outfile.buffer, header_size-2), 16);
+    WriteIntBE(HcaBuffer+Position, PADHeader);
+
+    WriteShortBE(HcaBuffer+hca.header_size-2, crc16_checksum(HcaBuffer, hca.header_size-2));
 }
 
-void WriteScalesFactors(clHCA *Frame, BitWriter &outfile, int c){
-    int deltabits = Frame->channel[c].ScaleFactorDeltaBits;
-    unsigned char *scales = &Frame->channel[c].scalefactors[0];
-    outfile.Write(deltabits, 3);
-    if(deltabits ==0)return;
-    if(deltabits == 6){
-        for (int i = 0; i < Frame->channel[c].coded_count; i++){
-            outfile.Write(scales[i], 6);
-        }
-        return;
-    }
-    outfile.Write(scales[0], 6);
-    int maxDelta = (1 << (deltabits - 1)) - 1;
-    int escapeValue = (1 << deltabits) - 1;
+void CryptHeader(clHCA* hca, unsigned char *data, unsigned int size, unsigned int type){
+    // we already validated the header, so we drop checks and only focus on (de/en)crypting.
+    clData br;
+    unsigned int header_size = size;
 
-    for (int i = 1; i < Frame->channel[c].coded_count; i++){
-        int delta = scales[i] - scales[i - 1];
-        if (abs(delta) > maxDelta)
-        {
-            outfile.Write(escapeValue, deltabits);
-            outfile.Write(scales[i], 6);
-        }
-        else
-        {
-            outfile.Write(maxDelta + delta, deltabits);
-        }
+    bitreader_init(&br, data, size);
+
+    /* HCA base header */
+    if ((bitreader_peek(&br, 32) & HCA_MASK) == 0x48434100) { /* "HCA\0" */
+        *(unsigned int *)(data+(br.bit/8)) ^= 0x00808080;
+        bitreader_skip(&br, 32+16+16);
+        size -= 0x08;
     }
+
+    /* format info */
+    if(size >= 0x10 && (bitreader_peek(&br, 32) & HCA_MASK) == 0x666D7400) { /* "fmt\0" */
+        *(unsigned int *)(data+(br.bit/8)) ^= 0x00808080;
+        bitreader_skip(&br, 32+8+24+32+16+16);
+        size -= 0x10;
+    }
+
+    /* compression (v2.0) or decode (v1.x) info */
+    if (size >= 0x10 && (bitreader_peek(&br, 32) & HCA_MASK) == 0x636F6D70) { /* "comp" */
+        *(unsigned int *)(data+(br.bit/8)) ^= 0x80808080;
+        bitreader_skip(&br, 32+16+8+8+8+8+8+8+8+8+8+8);
+        size -= 0x10;
+    }
+    else if (size >= 0x0c && (bitreader_peek(&br, 32) & HCA_MASK) == 0x64656300) { /* "dec\0" */
+        *(unsigned int *)(data+(br.bit/8)) ^= 0x00808080;
+        bitreader_skip(&br, 32+16+8+8+8+8+4+4+8);
+        size -= 0x0c;
+    }
+    if (size >= 0x08 && (bitreader_peek(&br, 32) & HCA_MASK) == 0x76627200) { /* "vbr\0" */
+        *(unsigned int *)(data+(br.bit/8)) ^= 0x00808080;
+        bitreader_skip(&br, 32+16+16);
+        size -= 0x08;
+    }
+    if (size >= 0x06 && (bitreader_peek(&br, 32) & HCA_MASK) == 0x61746800) { /* "ath\0" */
+        *(unsigned int *)(data+(br.bit/8)) ^= 0x00808080;
+        bitreader_skip(&br, 32+16);
+    }
+
+    /* loop info */
+    if (size >= 0x10 && (bitreader_peek(&br, 32) & HCA_MASK) == 0x6C6F6F70) { /* "loop" */
+        *(unsigned int *)(data+(br.bit/8)) ^= 0x80808080;
+        bitreader_skip(&br, 32+32+32+16+16);
+        size -= 0x10;
+    }
+
+    /* cipher/encryption info */
+    if (size >= 0x06 && (bitreader_peek(&br, 32) & HCA_MASK) == 0x63697068) { /* "ciph" */
+        *(unsigned int *)(data+(br.bit/8)) ^= 0x80808080;
+        WriteShortBE(data+(br.bit/8)+4, (unsigned short)type);
+        bitreader_skip(&br, 32+16);
+        size -= 0x06;
+    }
+
+    /* RVA (relative volume adjustment) info */
+    if(size >= 0x08 && (bitreader_peek(&br, 32) & HCA_MASK) == 0x72766100) { /* "rva\0" */
+        *(unsigned int *)(data+(br.bit/8)) ^= 0x00808080;
+        bitreader_skip(&br, 32+32);
+        size -= 0x08;
+    }
+
+    /* comment */
+    if (size >= 0x05 && (bitreader_peek(&br, 32) & HCA_MASK) == 0x636F6D6D) {/* "comm" */
+        unsigned int i;
+        *(unsigned int *)(data+(br.bit/8)) ^= 0x80808080;
+        bitreader_skip(&br, 32);
+        hca->comment_len = bitreader_read(&br, 8);
+        for (i = 0; i < hca->comment_len; ++i)
+            bitreader_skip(&br, 8);
+
+        size -= 0x05 + hca->comment_len;
+    }
+
+    /* padding info */
+    if (size >= 0x04 && (bitreader_peek(&br, 32) & HCA_MASK) == 0x70616400) { /* "pad\0" */
+        *(unsigned int *)(data+(br.bit/8)) ^= 0x00808080;
+        size -= (size - 0x02); /* fills up to header_size, sans checksum */
+    }
+
+    unsigned short crc = crc16_checksum(data, header_size-2);
+    WriteShortBE(data+header_size-2, crc);
 }
 
-static const signed char QuantizeSpectrumValue[8][16] = {
-    {0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0},
-    {0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x3, 0x0, 0x2, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0},
-    {0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x7, 0x2, 0x0, 0x1, 0x6, 0x0, 0x0, 0x0, 0x0, 0x0},
-    {0x0, 0x0, 0x0, 0x0, 0x0, 0x7, 0x5, 0x3, 0x0, 0x2, 0x4, 0x6, 0x0, 0x0, 0x0, 0x0},
-    {0x0, 0x0, 0x0, 0x0, 0xF, 0x6, 0x4, 0x2, 0x0, 0x1, 0x3, 0x5, 0xE, 0x0, 0x0, 0x0},
-    {0x0, 0x0, 0x0, 0xF, 0xD, 0xB, 0x4, 0x2, 0x0, 0x1, 0x3, 0xA, 0xC, 0xE, 0x0, 0x0},
-    {0x0, 0x0, 0xF, 0xD, 0xB, 0x9, 0x7, 0x2, 0x0, 0x1, 0x6, 0x8, 0xA, 0xC, 0xE, 0x0},
-    {0x0, 0xF, 0xD, 0xB, 0x9, 0x7, 0x5, 0x3, 0x0, 0x2, 0x4, 0x6, 0x8, 0xA, 0xC, 0xE}
-};
-
-void WriteSpectra(BitWriter &outfile, clHCA *Frame, int sf, int c){
-    for(int i = 0; i < Frame->channel[c].coded_count; i++){
-        int resolution = Frame->channel[c].resolution[i];
-        int quantizedSpectra = Frame->channel[c].QuantizedSpectra[sf][i];
-        if (resolution == 0)continue;
-        if (resolution < 8){
-            int bits = QuantizeSpectrumBits[resolution][quantizedSpectra + 8];
-            outfile.Write(QuantizeSpectrumValue[resolution][quantizedSpectra + 8], bits);
-        }
-        else if (resolution < 16){
-            int bits = QuantizedSpectrumMaxBits[resolution] - 1;
-            outfile.Write(abs(quantizedSpectra), bits);
-            if (quantizedSpectra != 0){
-                outfile.Write(quantizedSpectra > 0 ? 0 : 1, 1);
-            }
-        }
+PyObject *py_codec_err(int code){
+    switch (code){
+    case -1:
+        PyErr_SetString(PyExc_ValueError, "Header decoding error, the header is not a valid HCA header.");
+        break;
+    case -2:
+        PyErr_SetString(PyExc_ValueError, "Decoding error, either an incorrect key or an unknown exception.");
+        break;
+    case -3:
+        PyErr_SetString(PyExc_ValueError, "Error setting up channel configuration.");
+        break;
+    case -4:
+        PyErr_SetString(PyExc_ValueError, "Unknown Encoding error.");
+        break;
     }
+    return NULL;
 }
 
-void PackFrame(clHCA *Frame, BitWriter &outfile){
-    int ogpos = outfile.pos;
-    outfile.Write(0xffff, 16);
-    outfile.Write(Frame->AcceptableNoiseLevel, 9);
-    outfile.Write(Frame->EvaluationBoundary, 7);
 
-    for(int c = 0; c < Frame->channels; c++){
-        WriteScalesFactors(Frame, outfile, c);
-        if (Frame->channel[c].type == STEREO_SECONDARY){
-            for (int i = 0; i < HCA_SUBFRAMES; i++){
-                outfile.Write(Frame->channel[c].intensity[i], 4);
-            }
-        }
-        else if (Frame->hfr_group_count > 0){
-            for (int i = 0; i < Frame->hfr_group_count; i++){
-                outfile.Write(Frame->channel[c].HfrScales[i], 6);
-            }
-        }
-    }
+static PyObject* HcaCrypt(PyObject* self, PyObject* args){
+    Py_buffer view;
+    PyObject *buf;
+    unsigned int Crypt; // Encrypt = 1, Decrypt = 0
+    unsigned int type; // Normal Encryption = 56, Keyless encryption = 1, this variable is ignored when decrypting.
+    unsigned int header_size;
+    unsigned long long keycode;
+    unsigned short subkey; 
 
-    for (int sf = 0; sf < HCA_SUBFRAMES; sf++){
-        for(int c = 0; c < Frame->channels; c++){
-            WriteSpectra(outfile, Frame, sf, c);
-        }
-    }
-
-    outfile.AlignPosition(8);
-    for (int i = outfile.pos / 8; i < Frame->frame_size - 2; i++){
-        outfile.buffer[i] = 0;
-    }
-
-    outfile.pos = ogpos + (Frame->frame_size * 8) - 16;
-    unsigned short crc16 = crc16_checksum(outfile.buffer+(outfile.pos/8)-(Frame->frame_size - 2), Frame->frame_size - 2);
-    outfile.Write(crc16, 16);
-}
-
-// Insanely messy.
-static PyObject* HcaEncode(PyObject* self, PyObject* args){
-    unsigned char *data;
-    unsigned int data_size;
-    unsigned int force_nolooping;
-    int looping = 0;
-    if(!PyArg_ParseTuple(args, "y#I", &data, &data_size, &force_nolooping)){
+    if(!PyArg_ParseTuple(args, "OIIIKH", &buf, &Crypt, &header_size, &type, &keycode, &subkey))
         return NULL;
-    }
 
-    // Initial check is done python side.
-    stWAVEHeader fmtdata = *(stWAVEHeader*)data;data+=sizeof(stWAVEHeader);
-    // Wav in order is RIFF -> FMT -> SMPL -> NOTE -> DATA, above RIFF and FMT is done.
-    // There might be a cue chunk sometimes for 6 or 8 channel audio, unsupported.
-
-    // I didn't count for endiannes so I will check it this way for compatibility.
-    // 73 6D 70 6C = smpl
-    stWAVEsmpl smplchk;
-    if(*data == 0x73 && *(data + 1) == 0x6D && *(data + 2) == 0x70 && *(data + 3) == 0x6C){
-        smplchk = *(stWAVEsmpl*)data;data+=sizeof(stWAVEsmpl);
-        looping = 1;
-    }
-    // 6E 6F 74 65 = note
-    if(*data == 0x6E && *(data + 1) == 0x6F && *(data + 2) == 0x74 && *(data + 3) == 0x65){
-        stWAVEnote notechk = *(stWAVEnote*)data;data+=sizeof(stWAVEnote);
-        unsigned char *comment = new unsigned char [notechk.noteSize];
-        memcpy(comment, data, notechk.noteSize);
-        data += notechk.noteSize; // +1? also +padding_size?
-    }
-    // 64 61 74 61 = data
-    stWAVEdata datachk;
-    if(*data == 0x64 && *(data + 1) == 0x61 && *(data + 2) == 0x74 && *(data + 3) == 0x61){
-        datachk = *(stWAVEdata*)data;data+=sizeof(stWAVEdata);
-    }else{
-        // errors here since no data chunk is present.
-        return py_decode_err(-5);
-    }
+    if(Py_TYPE(buf)->tp_as_buffer && Py_TYPE(buf)->tp_as_buffer->bf_releasebuffer){
+        buf = PyMemoryView_FromObject(buf);
+        if(buf == NULL)
+            return NULL;
+    }else
+        Py_INCREF(buf);
     
-    int CutoffFrequency = fmtdata.fmtSamplingRate / 2;
-    const int PostSamples = 128;
-
-    clHCA *Frame = new clHCA;
-    // memsetting just incase.
-    memset(Frame, 0, sizeof(clHCA));
-
-    // Initialize values from WAV paramaters.
-    {
-        Frame->channels = fmtdata.fmtChannelCount;
-        Frame->track_count = 1;
-        Frame->sample_rate = fmtdata.fmtSamplingRate;
-        Frame->min_resolution = 1;
-        Frame->max_resolution = 15;
-        Frame->encoder_delay = HCA_SAMPLES_PER_SUBFRAME;
-    }
-    //
-
-    // Bitrate, compression set to HCA default of High. Don't think it's worth supporting other qualities.
-    int pcmBitrate = Frame->sample_rate * Frame->channels * 16;
-    int Bitrate = pcmBitrate / 6;
-    if(Bitrate < 0)Bitrate = 0;
-    else if(Bitrate > (pcmBitrate/4))Bitrate = pcmBitrate/4; // Won't happen.
-    //
-
-    //////////////////////////////////////////////////////
-    // Calc Band counts. Whatever that is.
-    //////////////////////////////////////////////////////
-    Frame->frame_size = Bitrate * 1024 / Frame->sample_rate / 8;
-    int numGroups = 0;
-    int hfrRatio; // HFR is used at bitrates below (pcmBitrate / hfrRatio)
-    int cutoffRatio; // The cutoff frequency is lowered at bitrates below (pcmBitrate / cutoffRatio)
-
-    if (Frame->channels <= 1 || pcmBitrate / Bitrate <= 6)
-    {
-        hfrRatio = 6;
-        cutoffRatio = 12;
-    }
-    else
-    {
-        hfrRatio = 8;
-        cutoffRatio = 16;
-    }
-
-    if (Bitrate < pcmBitrate / cutoffRatio)
-    {
-        float CutoffFrequency = std::min((float)CutoffFrequency, (float)(cutoffRatio * Bitrate / (32 * Frame->channels)));
-    }
-
-    int totalBandCount = (int)round(CutoffFrequency * 256.0 / Frame->sample_rate);
-
-    int hfrStartBand = (int)std::min((float)totalBandCount, (float)round((float)(hfrRatio * Bitrate * 128.0f) / (float)pcmBitrate));
-    int stereoStartBand = hfrRatio == 6 ? hfrStartBand : (hfrStartBand + 1) / 2;
-
-    int hfrBandCount = totalBandCount - hfrStartBand;
-    int bandsPerGroup = DivideByRoundUp(hfrBandCount, 8);
-
-    if (bandsPerGroup > 0)
-    {
-        numGroups = DivideByRoundUp(hfrBandCount, bandsPerGroup);
-    }
-
-    Frame->total_band_count = totalBandCount;
-    Frame->base_band_count = stereoStartBand;
-    Frame->stereo_band_count = hfrStartBand - stereoStartBand;
-    Frame->hfr_group_count = numGroups;
-    Frame->bands_per_hfr_group = bandsPerGroup;
-    //
-
-    //////////////////////////////////////////////////////
-    // Init Channel Config.
-    //////////////////////////////////////////////////////
-    int channelsPerTrack = Frame->channels / Frame->track_count;
-    int channelConfig = DefaultChannelMapping[channelsPerTrack];
-    // Could be wrong, reason being, I've got no clue how this is derived.
-    Frame->channel_config = channelConfig;
-    ////
-
-    int inputSampleCount = datachk.dataSize / fmtdata.fmtSamplingSize;
-
-    if(force_nolooping){
-        looping = 0;
-    }
-    if (looping)
-    {
-        Frame->loop_flag = 1;
-        int SampleCount = std::min((int)smplchk.loop_End, inputSampleCount);
-        Frame->encoder_delay += GetNextMultiple(smplchk.loop_Start, HCA_SAMPLES_PER_FRAME) - smplchk.loop_Start;
-        CalculateLoopInfo(Frame, smplchk.loop_Start, smplchk.loop_End);
-        inputSampleCount = std::min(GetNextMultiple(SampleCount, HCA_SAMPLES_PER_SUBFRAME), inputSampleCount);
-        inputSampleCount += HCA_SAMPLES_PER_SUBFRAME * 2;
-        const int PostSamples = inputSampleCount - (SampleCount);
-    }
-
-    int header_size = CalculateHeaderSize(Frame);
-
-    int totalSamples = inputSampleCount + Frame->encoder_delay;
-
-    Frame->frame_count = DivideByRoundUp(totalSamples, HCA_SAMPLES_PER_FRAME);
-    Frame->encoder_padding = Frame->frame_count * HCA_SAMPLES_PER_FRAME - Frame->encoder_delay - inputSampleCount;
-    int BufferPreSamples = Frame->encoder_delay - HCA_SAMPLES_PER_SUBFRAME;
-    CalculateHfrValues(Frame);
-    SetChannelType(Frame);
-
-    // Frame(s) are now ready to be encoded.
-
-    /** Unused
-    short PostAudio[fmtdata.fmtChannelCount][PostSamples];
-    short **PostAudio = new short*[fmtdata.fmtChannelCount];
-    for(int i = 0; i < fmtdata.fmtChannelCount; i++){
-        PostAudio[i] = new short [PostSamples];
-    }
-    memset(*PostAudio, 0, fmtdata.fmtChannelCount*sizeof(short)*PostSamples);
-    */
-
-    // According to VGAudio, the PCM data must be in a jagged array of [channelcount][1024], and that is then encoded into a single HCA frame.
-    short *pcm = new short[fmtdata.fmtChannelCount * 1024];
-    memset(pcm, 0, fmtdata.fmtChannelCount*sizeof(short)*1024);
-    unsigned int padded_wav_size = datachk.dataSize + (fmtdata.fmtChannelCount*sizeof(short)*1024);
-    if(padded_wav_size % (1024*fmtdata.fmtChannelCount) != 0){
-        padded_wav_size = (padded_wav_size + (fmtdata.fmtChannelCount*1024 - (padded_wav_size % fmtdata.fmtChannelCount*1024))) + fmtdata.fmtChannelCount*1024;
-    }
-    short *wavfile = new short[(padded_wav_size)/2];
-    memset(wavfile, 0, padded_wav_size); // To make sure our padding was 0's;
-    memcpy(wavfile, data, datachk.dataSize);
-    unsigned char *hcaOut = new unsigned char[Frame->frame_count*Frame->frame_size + (header_size)];
-    memset(hcaOut, 0, Frame->frame_count*Frame->frame_size + (header_size));
-    BitWriter outfile;
-    outfile.pos = 0;
-    outfile.len = (Frame->frame_count*Frame->frame_size + (header_size)) * 8;
-    outfile.buffer = hcaOut;
-    PackHeader(outfile, Frame, header_size);
-
-    int LoopStartSample = Frame->loop_start_frame * 1024 + Frame->encoder_delay - 128;
-    int LoopEndSample = (Frame->loop_end_frame + 1) * 1024 - Frame->encoder_padding - 128;
-
-    // Start going through the WAV and copy the audio to buffer.
-    // It's good to note that I have not encoded Post Audio Samples for looping.
-    // However, I have no idea how this still works. I might be short on suitable WAV's for testing.
-    for(int counter = 0; counter < Frame->frame_count; counter++){
-        int smaplesread = counter * HCA_SAMPLES_PER_FRAME;
-
-        if(BufferPreSamples > 0){
-            int BufferPosition; // Unused variable.
-            while (BufferPreSamples > HCA_SAMPLES_PER_FRAME){
-                BufferPosition = HCA_SAMPLES_PER_FRAME;
-                PackFrame(Frame, outfile); // This is probably wrong.
-                counter++;
-                BufferPreSamples -= HCA_SAMPLES_PER_FRAME;
-            }
-            BufferPosition = BufferPreSamples;
-            BufferPreSamples = 0;
+    if(PyObject_GetBuffer(buf, &view, PyBUF_WRITABLE | PyBUF_SIMPLE) < 0){
+        PyErr_Clear();
+        if (PyObject_GetBuffer(buf, &view, PyBUF_SIMPLE) < 0){
+            Py_DECREF(buf);
+            return NULL;
         }
-
-        // Save Post Loop Point Audio to PostAudio. (I think?)
-        // Although not used at all but somehow works.
-        /*
-        if(Frame->loop_flag && LoopStartSample >= smaplesread && LoopStartSample < smaplesread + HCA_SAMPLES_PER_FRAME){
-            int startPos = std::max(LoopStartSample - smaplesread, 0);
-            int loopPos = std::max(smaplesread - LoopStartSample, 0);
-            int endPos = std::min(LoopStartSample - smaplesread + (int)PostSamples, smaplesread);
-            int length = endPos - startPos;
-            for (int i = 0; i < Frame->channels; i++)
-            {
-                std::copy(&pcm[i][0]+startPos, &pcm[i][0]+startPos+length, &PostAudio[i][0]+loopPos);
-            }
-        }
-        */
-
-        for(int i = 0; i<fmtdata.fmtChannelCount; i++){
-            for(int j = 0; j<1024; j++){
-                pcm[1024 * i + j] = wavfile[j * fmtdata.fmtChannelCount];
-            }
-            wavfile++;
-        }
-        wavfile -= fmtdata.fmtChannelCount;
-        wavfile += (1024 * fmtdata.fmtChannelCount);
-
-        /////////////////////////////////////////////////////
-        ///// Encoding steps from down here.
-        /////////////////////////////////////////////////////
-
-        // PCM to float.
-        for(int c = 0; c < fmtdata.fmtChannelCount; c++){
-            unsigned int idx = 0;
-            for (int sf = 0; sf < HCA_SUBFRAMES; sf++)
-            {
-                for (int i = 0; i < HCA_SAMPLES_PER_SUBFRAME; i++)
-                {
-                    Frame->channel[c].wave[sf][i] = (float)(pcm[c * 1024 + idx++] * (float)(1.0f / 32768.0f));
-                }
-            }
-        }
-
-        // Run MDCT.
-        for(int c = 0; c < fmtdata.fmtChannelCount; c++){
-            for (int sf = 0; sf < HCA_SUBFRAMES; sf++){
-                mdct_transform(&Frame->channel[c], sf);
-            }
-        }
-
-        // Encode Intensity.
-        EncodeIntensityStereo(Frame);
-
-        // Calculate Scale Factors.
-        for(int c = 0; c < fmtdata.fmtChannelCount; c++){
-            for (int b = 0; b < Frame->channel[c].coded_count; b++)
-            {
-                float max = 0;
-                for (int sf = 0; sf < HCA_SUBFRAMES; sf++)
-                {
-                    float coeff = abs(Frame->channel[c].spectra[sf][b]);
-                    max = std::max(coeff, max);
-                }
-                Frame->channel[c].scalefactors[b] = FindScaleFactor(max);
-            }
-            memset(Frame->channel[c].scalefactors+Frame->channel[c].coded_count, 0, HCA_SAMPLES_PER_SUBFRAME - Frame->channel[c].coded_count);
-        }
-
-        // Scale Spectra.
-        for(int c = 0; c < fmtdata.fmtChannelCount; c++){
-            for (int b = 0; b < Frame->channel[c].coded_count; b++){
-                float *scaledSpectra = &Frame->channel[c].scaledspectra[b][0];
-                int scaleFactor = Frame->channel[c].scalefactors[b];
-                for (int sf = 0; sf < HCA_SUBFRAMES; sf++){
-                    float coeff = Frame->channel[c].spectra[sf][b];
-                    float ans = (coeff * QuantizerScalingTable[scaleFactor]);
-                    // Clamping.
-                    if(ans > 0.9999999f){
-                        ans = 0.9999999f;
-                    }else if(ans < -0.9999999f){
-                        ans = -0.9999999f;
-                    }
-                    scaledSpectra[sf] = scaleFactor == 0 ? 0 : ans;
-                }
-            }
-        }
-
-        CalculateHfrGroupAverages(Frame);
-        CalculateHfrScale(Frame);
-        CalculateFrameHeaderLength(Frame);
-        CalculateNoiseLevel(Frame);
-        CalculateEvaluationBoundary(Frame);
-        CalculateFrameResolutions(Frame);
-        QuantizeSpectra(Frame);
-        PackFrame(Frame, outfile);
     }
-    unsigned int outsize = Frame->frame_count*Frame->frame_size + (header_size);
-    free(Frame);
-    return Py_BuildValue("y#", hcaOut, outsize);
+
+    unsigned char *buffer = (unsigned char *)view.buf;
+    unsigned int length = view.len;
+    PyBuffer_Release(&view);
+
+    clHCA* hca = (clHCA*)malloc(sizeof(clHCA));
+
+    if(clHCA_DecodeHeader(hca, buffer, header_size) < 0)
+        return py_codec_err(-1);
+
+    hca->ciph_type = Crypt == 1 ? type : hca->ciph_type;
+
+    if(subkey){
+        keycode = keycode * ( ((uint64_t)subkey << 16u) | ((uint16_t)~subkey + 2u) );
+    }
+
+    cipher_init(hca->cipher_table, hca->ciph_type, keycode);
+
+    if(Crypt){
+        unsigned char out[256];
+        for(int i = 0; i < 256; i++)
+            out[hca->cipher_table[i]] = (unsigned char)i;
+        memcpy(hca->cipher_table, out, 256);
+    }
+
+    unsigned char *frames = buffer + header_size;
+
+    for(unsigned int i = 0; i < hca->frame_count; i++, frames+=hca->frame_size){
+        cipher_decrypt(hca->cipher_table, frames, hca->frame_size);
+        WriteShortBE(frames+hca->frame_size-2, crc16_checksum(frames, hca->frame_size-2));
+    }
+
+    Py_DECREF(buf);
+
+    type = Crypt == 1 ? type : 0;
+    CryptHeader(hca, buffer, header_size, type);
+
+    free(hca);
+
+    return Py_BuildValue("y#", buffer, length);
 }
 
-// code here is a mess.
+
 static PyObject* HcaDecode(PyObject* self, PyObject* args){
-    // Taken from Nyagamon's clHCA code.
-    stWAVEHeader wavRiff = { 'R','I','F','F',0,'W','A','V','E','f','m','t',' ',0x10,0,0,0,0,0,0 }; // Riff header.
-    stWAVEsmpl wavSmpl = { 's','m','p','l',0x3C,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0 }; // Smpl chunk.
-    stWAVEnote wavNote = { 'n','o','t','e',0,0 }; // HCA Comment.
-    stWAVEdata wavData = { 'd','a','t','a',0 }; // Sample out buffer.
+    PCM wav;
+    fmt *wavfmt = &wav.wav.chunks.WAVEfmt;
+    riff *wavriff = &wav.wav;
+    smpl *wavSmpl = &wav.wav.chunks.WAVEsmpl;
+    data *wavData = &wav.wav.chunks.WAVEdata;
 
     unsigned char *data;
     unsigned int data_size;
@@ -3352,55 +3350,39 @@ static PyObject* HcaDecode(PyObject* self, PyObject* args){
     if(!PyArg_ParseTuple(args, "y#IKH", &data, &data_size, &header_size, &keycode, &subkey)){
         return NULL;
     }
+
     clHCA* hca = (clHCA*)malloc(sizeof(clHCA));
+
     if(clHCA_DecodeHeader(hca, data, header_size) < 0){
         // header error.
-        return py_decode_err(-1);
+        return py_codec_err(-1);
     }
+
     // build wav header.
-    int mode = 16; // always 16 bits?
-    wavRiff.fmtType = (mode>0) ? 1 : 3;
-    wavRiff.fmtChannelCount = hca->channels;
-    wavRiff.fmtBitCount = (mode>0) ? mode : 32;
-    wavRiff.fmtSamplingRate = hca->sample_rate;
-    wavRiff.fmtSamplingSize = wavRiff.fmtBitCount / 8 * wavRiff.fmtChannelCount;
-    wavRiff.fmtSamplesPerSec = wavRiff.fmtSamplingRate*wavRiff.fmtSamplingSize;
+    wavfmt->Channels = hca->channels;
+    wavfmt->SampleRate = hca->sample_rate;
+    wavfmt->BlockAlign = wavfmt->Channels * 2; // 16bits
 
     // set smpl chunk looping info.
     if(hca->loop_flag){
-        // wavSmpl.samplePeriod = (unsigned int)(1 / (double)wavRiff.fmtSamplingRate * 1000000000); // Nyagamon used this, seems to have no use tho.
-        wavSmpl.loop_Start = hca->loop_start_frame * 0x80 * 8 + hca->encoder_padding;
-        wavSmpl.loop_End = (hca->loop_end_frame + 1) * 0x80 * 8 - 1;
-        wavSmpl.loop_PlayCount = (hca->loop_start_delay == 0x80) ? 0 : hca->loop_start_delay;
+        wav.wav.chunks.Looping = 1;
+        wavSmpl->Loops = new smplloop[1];
+        wavSmpl->Loops[0].Start = hca->loop_start_frame * HCA_SAMPLES_PER_FRAME + hca->loop_start_delay - hca->encoder_delay;
+        wavSmpl->Loops[0].End = hca->loop_end_frame * HCA_SAMPLES_PER_FRAME + (HCA_SAMPLES_PER_FRAME - hca->loop_end_padding) - hca->encoder_delay;
     }
-    // Wav note if HCA has a comment. Although we could just discard it.
-    if(hca->comment_len){
-        wavNote.noteSize = 4 + hca->comment_len + 1;
-        if (wavNote.noteSize & 3){ // no clue why is this here.
-            wavNote.noteSize += 4 - (wavNote.noteSize & 3);
-        }
-    }
-    wavData.dataSize = hca->frame_count * 0x80 * 8 * wavRiff.fmtSamplingSize;
-    wavRiff.riffSize = 0x24 + ((hca->loop_flag) ? sizeof(wavSmpl) : 0) + (hca->comment_len ? 8 + wavNote.noteSize : 0) + sizeof(wavData) + wavData.dataSize;
+
+    wavData->size = (hca->frame_count * HCA_SAMPLES_PER_FRAME - hca->encoder_delay - hca->encoder_padding) * hca->channels * sizeof(short); // 16bits = 4 bytes
+    wavriff->size = 0x24 + ((hca->loop_flag) ? 0x3C+8 : 0) + sizeof(wavData) + wavData->size;
     data += header_size;
     if(subkey){
         keycode = keycode * ( ((uint64_t)subkey << 16u) | ((uint16_t)~subkey + 2u) );
     }
     clHCA_SetKey(hca, keycode);
     unsigned char *buf = new unsigned char [hca->frame_size];
-    signed short *outbuf = new signed short [wavRiff.riffSize]; // wav bytes.
-    memcpy(outbuf, &wavRiff, sizeof(stWAVEHeader));outbuf+=(sizeof(stWAVEHeader)/2);
-    if(hca->loop_flag){
-        memcpy(outbuf, &wavSmpl, sizeof(stWAVEsmpl));
-        outbuf+=(sizeof(stWAVEsmpl)/2);
-    }
-    if(hca->comment_len){
-        memcpy(outbuf, &wavNote, sizeof(stWAVEnote));
-        outbuf+=(sizeof(stWAVEnote)/2);
-        memcpy(outbuf, hca->comment, hca->comment_len);
-        outbuf+=(hca->comment_len/2);
-    }
-    memcpy(outbuf, &wavData, sizeof(stWAVEdata));outbuf+=(sizeof(stWAVEdata)/2);
+    unsigned char *wavebuf = wav.GetWaveBuffer(wavData->size/wavfmt->BlockAlign, wavfmt->Channels, wavfmt->SampleRate, wav.wav.chunks.Looping); // wav bytes.
+    signed short *outbuf = wav.PCM_16;
+    short *tempbuf = new short[HCA_SAMPLES_PER_FRAME * hca->channels];
+    memset(tempbuf, 0, HCA_SAMPLES_PER_FRAME * hca->channels * sizeof(short));
     int res = 0;
     memset(buf, 0, hca->frame_size);
     int count = 0;
@@ -3409,11 +3391,46 @@ static PyObject* HcaDecode(PyObject* self, PyObject* args){
         res = clHCA_DecodeBlock(hca, buf, hca->frame_size);
         if(res < 0){
             // decode error. most likely wrong key.
-            return py_decode_err(-2);
+            return py_codec_err(-2);
+        }
+        if(hca->encoder_delay){
+            if(HCA_SAMPLES_PER_FRAME > hca->encoder_delay)
+                hca->encoder_delay = 0;
+            if(hca->encoder_delay)
+                hca->encoder_delay -= HCA_SAMPLES_PER_FRAME;
+            continue;
         }
         clHCA_ReadSamples16(hca, outbuf);
     }
-    outbuf -= (wavRiff.riffSize/2);
     free(hca);
-    return Py_BuildValue("y#", outbuf, wavRiff.riffSize);
+    return Py_BuildValue("y#", wavebuf, wavriff->size+8);
+}
+
+static PyObject* HcaEncode(PyObject* self, PyObject* args){
+    Py_buffer *pydata;
+    unsigned int force_nolooping;
+    if(!PyArg_ParseTuple(args, "y*I", &pydata, &force_nolooping)){
+        return NULL;
+    }
+    unsigned char *data = (unsigned char *)pydata;
+    PCM w;
+    clHCA hca;
+    char res = w.LoadDirect(data);
+    if(res < 0){
+        PyErr_SetString(PyExc_ValueError, PCMErrorStrings[res]);
+        return (PyObject *)NULL;
+    }
+    hca.loop_flag = w.wav.chunks.Looping && !force_nolooping;
+    res = initHCAEncode(w, hca, High);
+    if(res < 0){
+        return py_codec_err(-3);
+    }
+    unsigned char *HcaBuffer = new unsigned char[hca.header_size + hca.frame_count * hca.frame_size];
+    memset(HcaBuffer, 0, hca.header_size + hca.frame_count * hca.frame_size);
+    Encode(hca, w, HcaBuffer+hca.header_size);
+    if(HcaErrorCode < 0){
+        return py_codec_err(-4);
+    }
+    PackHeader(hca, HcaBuffer);
+    return Py_BuildValue("y#", HcaBuffer, hca.header_size + hca.frame_count * hca.frame_size);
 }

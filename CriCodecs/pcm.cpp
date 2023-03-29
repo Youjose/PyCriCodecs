@@ -13,7 +13,10 @@
 */
 
 /* Includes */
+#define PY_SSIZE_T_CLEAN
+#pragma once
 #include <Python.h>
+#include <iostream>
 #include "IO.cpp"
 
 static const char* PCMErrorStrings[] = {
@@ -29,10 +32,10 @@ static const char* PCMErrorStrings[] = {
     "Filesize is too low to be viable for loading." // -10
 };
 
-void PyPCMSetError(char ErrorCode){
-    ErrorCode = std::abs(ErrorCode);
-    PyErr_SetString(PyExc_ValueError, PCMErrorStrings[ErrorCode]);
-}
+// void PyPCMSetError(char ErrorCode){
+//     ErrorCode = std::abs(ErrorCode);
+//     PyErr_SetString(PyExc_ValueError, PCMErrorStrings[ErrorCode]);
+// }
 
 // Some of those might be wrong, the format is not clear.
 
@@ -162,7 +165,7 @@ struct GUID{
     unsigned short guid2;
     unsigned short guid3;
     unsigned long long guid4;
-    void loadGUID(unsigned char *data){
+    inline void loadGUID(unsigned char *data){
         guid1 = ReadUnsignedIntLE(data+0);
         guid2 = ReadUnsignedShortLE(data+4);
         guid3 = ReadUnsignedShortLE(data+6);
@@ -183,7 +186,7 @@ struct fmt{
     unsigned short ValidBitsPerSample;
     unsigned int ChannelMask;
     GUID SubFormat;
-    char loadFMT(unsigned char *data){
+    inline char loadFMT(unsigned char *data){
         fmt                     = ReadUnsignedIntLE(data+0);
         size                    = ReadUnsignedIntLE(data+4);
         if(size < 16 || fmt != FMT)
@@ -215,7 +218,7 @@ struct smplloop{
     unsigned int End;
     unsigned int Fraction;
     unsigned int PlayCount;
-    void loadLoop(unsigned char *data){
+    inline void loadLoop(unsigned char *data){
         CuePointID = ReadUnsignedIntLE(data+0 );
         Type       = ReadUnsignedIntLE(data+4 );
         Start      = ReadUnsignedIntLE(data+8 );
@@ -261,6 +264,14 @@ struct smpl{
         if(SamplerDataSize > 0)
             SamplerData = data+44+NumberofSampleLoops*sizeof(smplloop);
         return 0;
+    }
+    inline void WriteSMPL(unsigned char *data){
+        WriteIntLE(data+0, SMPL);
+        WriteIntLE(data+4, 0x3C);
+        memset(data+8, 0, 0x3C);
+        WriteIntLE(data+0x24, 1); // 1 Loop
+        WriteIntLE(data+0x34, Loops[0].Start);
+        WriteIntLE(data+0x38, Loops[0].End);
     }
 };
 
@@ -342,10 +353,11 @@ struct riff{
      * @param Channels Number of channels given the PCM.
      * @param SampleRate Sampling Rate.
      */
-    void writeRIFF(unsigned char* data, unsigned int Channels, unsigned int SampleRate){
+    inline void writeRIFF(unsigned char* data, unsigned int Channels, unsigned int SampleRate){
         riff = RIFF;
         wave = WAVE;
         const unsigned int SampleSize = 0x02;
+        unsigned int Position = 36;
         WriteIntLE(data+0 , riff);
         WriteIntLE(data+4 , size);
         WriteIntLE(data+8 , wave);
@@ -357,12 +369,15 @@ struct riff{
         WriteIntLE(data+28, SampleSize * Channels * SampleRate); // AverageSamplesPerSecond
         WriteShortLE(data+32, SampleSize * Channels);            // Block Align.
         WriteShortLE(data+34, 0x10);                             // BitDepth
-        WriteIntLE(data+36, DATA);
-        WriteIntLE(data+40, size - (44 - 8));
+        if(chunks.Looping){
+            chunks.WAVEsmpl.WriteSMPL(data+36);
+            Position = 104;
+        }
+        WriteIntLE(data+Position, DATA);
+        WriteIntLE(data+Position+4, chunks.WAVEdata.size);
         chunks.WAVEfmt.loadFMT(data+12);
         chunks.WAVEdata.data = DATA;
-        chunks.WAVEdata.size = size - (44 - 8);
-        chunks.WAVEdata.DataBuffer = data + 44;
+        chunks.WAVEdata.DataBuffer = data + Position + 8;
     }
 };
 
@@ -420,7 +435,7 @@ struct PCM{
      * @param PCMTarget Target Array of Integer PCM Data.
      * @param TargetBitDepth Bit Depth of the wanted PCM data type.
      */
-    template <typename T, typename A> void Float_to_PCM(T *&PCMSource, A *&PCMTarget, unsigned int TargetBitDepth){
+    template <typename T, typename A> inline void Float_to_PCM(T *&PCMSource, A *&PCMTarget, unsigned int TargetBitDepth){
         unsigned int MidPoint = TargetBitDepth <= 8 ? (1 << TargetBitDepth) - 1 : ((unsigned long long)1 << (TargetBitDepth - 1)) - 1;
         for(unsigned int i = 0; i < ColumnSize; i++){
             int value = PCMSource[i] * MidPoint;
@@ -437,7 +452,7 @@ struct PCM{
      * @param PCMTarget Target Array of Float PCM data.
      * @param BitDepth Bit Depth of the source PCM data.
      */
-    template <typename T, typename A> void PCM_to_Float(T *&PCMSource, A *&PCMTarget, unsigned int BitDepth){
+    template <typename T, typename A> inline void PCM_to_Float(T *&PCMSource, A *&PCMTarget, unsigned int BitDepth){
         unsigned int MidPoint = BitDepth <= 8 ? (1 << BitDepth) - 1 : ((unsigned long long)1 << (BitDepth - 1)) - 1;
         for(unsigned int i = 0; i < ColumnSize; i++){
             A value = (A)(BitDepth <= 8 ? PCMSource[i] - MidPoint : PCMSource[i]) / MidPoint;
@@ -453,7 +468,7 @@ struct PCM{
      * @param PCMTarget Target Array of Unsigned Char PCM data.
      * @param BitDepth Bit Depth of the source PCM data.
      */
-    template <typename T> void PCM_to_PCM8(T *&PCMSource, unsigned char *&PCMTarget, unsigned int BitDepth){
+    template <typename T> inline void PCM_to_PCM8(T *&PCMSource, unsigned char *&PCMTarget, unsigned int BitDepth){
         if(BitDepth <= 8)
             return;
         const unsigned int MidPoint = 0x80; // (1 << (8 - 1))
@@ -470,7 +485,7 @@ struct PCM{
      * @param PCMTarget Source Array of Short PCM data.
      * @param BitDepth Bit Depth of the source PCM data.
      */
-    template <typename T> void PCM_to_PCM16(T *&PCMSource, short *&PCMTarget, unsigned int BitDepth){
+    template <typename T> inline void PCM_to_PCM16(T *&PCMSource, short *&PCMTarget, unsigned int BitDepth){
         if(BitDepth <= 16)
             return;
         unsigned int SampleSizeInBits = BitDepth - 16;
@@ -511,11 +526,12 @@ struct PCM{
         return PCM_16;
     }
 
-    unsigned char*& GetWaveBuffer(unsigned int SampleCount,  unsigned int Channels, unsigned int SampleRate){
-        wav.size = 44 + SampleCount * Channels * sizeof(short);
+    unsigned char*& GetWaveBuffer(unsigned int SampleCount,  unsigned int Channels, unsigned int SampleRate, bool Looping){
+        unsigned int header_size = Looping ? 0x70 : 0x2C;
+        wav.size = header_size + SampleCount * Channels * sizeof(short);
         WAVEBuffer = new unsigned char[wav.size];
         wav.size -= 8;
-        PCM_16 = (short *)(WAVEBuffer+44);
+        PCM_16 = (short *)(WAVEBuffer+header_size);
         wav.writeRIFF(WAVEBuffer, Channels, SampleRate);
         return WAVEBuffer;
     }

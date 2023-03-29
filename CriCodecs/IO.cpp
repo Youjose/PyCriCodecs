@@ -68,21 +68,28 @@ void BitReader::AlignPosition(int multiple){
 }
 
 int BitReader::PeekInt(int BitCount){
+    unsigned long long Remaining = GetBitsRemaining();
+    if(BitCount == 32 && Remaining >= 32)
+        return ReadIntBE(Buffer);
+    else if(BitCount == 16 && Remaining >= 16)
+        return ReadShortBE(Buffer);
+    else if(BitCount == 8 && Remaining >= 8)
+        return *Buffer;
     int ByteIndex = Position / 8;
     int BitIndex = Position % 8;
-    if (BitCount <= 9 && GetBitsRemaining() >= 16){
+    if (BitCount <= 9 && Remaining >= 16){
         int value = Buffer[ByteIndex] << 8 | Buffer[ByteIndex + 1];
         value &= 0xFFFF >> BitIndex;
         value >>= 16 - BitCount - BitIndex;
         return value;
     }
-    if (BitCount <= 17 && GetBitsRemaining() >= 24){
+    if (BitCount <= 17 && Remaining >= 24){
         int value = Buffer[ByteIndex] << 16 | Buffer[ByteIndex + 1] << 8 | Buffer[ByteIndex + 2];
         value &= 0xFFFFFF >> BitIndex;
         value >>= 24 - BitCount - BitIndex;
         return value;
     }
-    if (BitCount <= 25 && GetBitsRemaining() >= 32){
+    if (BitCount <= 25 && Remaining >= 32){
         int value = Buffer[ByteIndex] << 24 | Buffer[ByteIndex + 1] << 16 | Buffer[ByteIndex + 2] << 8 | Buffer[ByteIndex + 3];
         value &= (int)(0xFFFFFFFF >> BitIndex);
         value >>= 32 - BitCount - BitIndex;
@@ -121,25 +128,23 @@ unsigned long long BitWriter::GetBitsRemaining(){
 }
 
 void BitWriter::Write(int value, int BitCount){
-    if (BitCount < 0 || BitCount > 32){
+    unsigned long long Remaining = GetBitsRemaining();
+    unsigned int ByteIndex = Position / 8;
+    unsigned int BitIndex = Position % 8;
+    if(BitCount < 0 || BitCount > 32)
         return;
-    }
-    if (BitCount > GetBitsRemaining()){
+    else if(BitCount > Remaining)
         return;
-    }
-    int ByteIndex = Position / 8;
-    int BitIndex = Position % 8;
-
-    if (BitCount <= 9 && GetBitsRemaining() >= 16){
+    if(BitCount <= 9 && GetBitsRemaining() >= 16){
         unsigned int outValue = ((value << (16 - BitCount)) & 0xFFFF) >> BitIndex;
         Buffer[ByteIndex] |= (unsigned char)(outValue >> 8);
         Buffer[ByteIndex + 1] = (unsigned char)outValue;
-    }else if (BitCount <= 17 && GetBitsRemaining() >= 24){
+    }else if(BitCount <= 17 && GetBitsRemaining() >= 24){
         int outValue = ((value << (24 - BitCount)) & 0xFFFFFF) >> BitIndex;
         Buffer[ByteIndex] |= (unsigned char)(outValue >> 16);
         Buffer[ByteIndex + 1] = (unsigned char)(outValue >> 8);
         Buffer[ByteIndex + 2] = (unsigned char)outValue;
-    }else if (BitCount <= 25 && GetBitsRemaining() >= 32){
+    }else if(BitCount <= 25 && GetBitsRemaining() >= 32){
         unsigned int outValue = (unsigned int)(((value << (32 - BitCount)) & 0xFFFFFFFF) >> BitIndex);
         Buffer[ByteIndex] |= (unsigned char)(outValue >> 24);
         Buffer[ByteIndex + 1] = (unsigned char)(outValue >> 16);

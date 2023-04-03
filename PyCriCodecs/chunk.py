@@ -51,7 +51,7 @@ class VideoType(Enum):
 # I saw some devs swap the unsigned/signed indexes. So I am not sure what's correct or not.
 # In my own experience, swapping those results in an incorrect signed values (should be unsigned) in ACB's/CPK's.
 # If someone were to change this, they must change 'stringtypes' function in UTF/UTFBuilder classes.
-class UTFTypeValues(IntFlag):
+class UTFTypeValues(Enum):
     uchar  = 0
     char   = 1
     ushort = 2

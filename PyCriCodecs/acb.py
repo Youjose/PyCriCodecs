@@ -142,19 +142,24 @@ class ACB(UTF):
         """ Extracts audio files in an AWB/ACB without preserving filenames. """
         if dirname:
             os.makedirs(dirname, exist_ok=True)
-        filename = 1
-        if decode:
-            for i in self.awb.getfiles():
-                hca = HCA(i, key=key, subkey=self.awb.subkey).decode()
-                open(os.path.join(dirname, str(filename)+".wav"), "wb").write(hca)
-                filename+=1
-        else:
-            if self.payload[0]['WaveformTable'][filename]['EncodeType'][1] == 2: # As far as I saw, this is HCA.
-                open(os.path.join(dirname, str(filename)+".hca"), "wb").write(i)
-                filename += 1
+        filename = 0
+        for i in self.awb.getfiles():
+            Extension: str = self.get_extension(self.payload[0]['WaveformTable'][filename]['EncodeType'][1])
+            if decode and Extension == ".hca":
+                    hca = HCA(i, key=key, subkey=self.awb.subkey).decode()
+                    open(os.path.join(dirname, str(filename)+".wav"), "wb").write(hca)
+                    filename += 1
             else:
-                open(os.path.join(dirname, str(filename)), "wb").write(i)
+                open(os.path.join(dirname, f"{filename}{Extension}"), "wb").write(i)
                 filename += 1
+    
+    def get_extension(self, EncodeType: int) -> str:
+        if EncodeType == 2:
+            return ".hca"
+        elif EncodeType == 19:
+            return ".mp4"
+        else:
+            return ""
 
 
 # TODO Have to finish correct ACB extracting first.

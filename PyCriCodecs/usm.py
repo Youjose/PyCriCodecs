@@ -25,7 +25,7 @@ class USM:
     stream: BinaryIO
     __fileinfo: list
     CRIDObj: UTF
-    output: dict
+    output: dict[str, bytes]
     size: int
     codec: int
     demuxed: bool

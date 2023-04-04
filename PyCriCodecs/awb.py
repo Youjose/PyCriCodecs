@@ -8,7 +8,7 @@ from .hca import HCA
 # for AFS2 only.
 class AWB:
     """ Use this class to return any AWB data with the getfiles function. """
-    __slots__ = ["stream", "numfiles", "align", "subkey", "version", "ids", "ofs", "filename", "headersize"]
+    __slots__ = ["stream", "numfiles", "align", "subkey", "version", "ids", "ofs", "filename", "headersize", "id_alignment"]
     stream: BinaryIO
     numfiles: int
     align: int
@@ -18,6 +18,7 @@ class AWB:
     ofs: list
     filename: str
     headersize: int
+    id_alignment: int
 
     def __init__(self, stream) -> None:
         if type(stream) == str:
@@ -30,7 +31,7 @@ class AWB:
     
     def readheader(self):
         # Reads header.
-        magic, self.version, intsize, unk06, self.numfiles, self.align, self.subkey = AWBChunkHeader.unpack(
+        magic, self.version, offset_intsize, id_intsize, self.numfiles, self.align, self.subkey = AWBChunkHeader.unpack(
             self.stream.read(AWBChunkHeader.size)
         )
         if magic != b'AFS2':
@@ -39,13 +40,13 @@ class AWB:
         # Reads data in the header.
         self.ids = list()
         self.ofs = list()
-        for i in iter_unpack("<H", self.stream.read(2*self.numfiles)):
+        for i in iter_unpack(f"<{self.stringtypes(id_intsize)}", self.stream.read(id_intsize*self.numfiles)):
             self.ids.append(i[0])
-        for i in iter_unpack("<"+self.stringtypes(intsize), self.stream.read(intsize*(self.numfiles+1))):
+        for i in iter_unpack(f"<{self.stringtypes(offset_intsize)}", self.stream.read(offset_intsize*(self.numfiles+1))):
             self.ofs.append(i[0] if i[0] % self.align == 0 else (i[0] + (self.align - (i[0] % self.align))))
         
         # Seeks to files offset.
-        self.headersize = 16 + (intsize*(self.numfiles+1)) + (2*self.numfiles)
+        self.headersize = 16 + (offset_intsize*(self.numfiles+1)) + (id_intsize*self.numfiles)
         if self.headersize % self.align != 0:
             self.headersize = self.headersize + (self.align - (self.headersize % self.align))
         self.stream.seek(self.headersize, 0)

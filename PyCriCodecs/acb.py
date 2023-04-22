@@ -154,13 +154,26 @@ class ACB(UTF):
                 filename += 1
     
     def get_extension(self, EncodeType: int) -> str:
-        if EncodeType == 2:
+        if EncodeType == 0 or EncodeType == 3:
+            return ".adx" # Maybe 0 is ahx?
+        elif EncodeType == 2 or EncodeType == 6:
             return ".hca"
+        elif EncodeType == 7 or EncodeType == 10:
+            return ".vag"
+        elif EncodeType == 8:
+            return ".at3"
+        elif EncodeType == 9:
+            return ".bcwav"
+        elif EncodeType == 11 or EncodeType == 18:
+            return ".at9"
+        elif EncodeType == 12:
+            return ".xma"
+        elif EncodeType == 13 or EncodeType == 4 or EncodeType == 5:
+            return ".dsp"
         elif EncodeType == 19:
-            return ".mp4"
+            return ".m4a"
         else:
             return ""
-
 
 # TODO Have to finish correct ACB extracting first.
 class ACBBuilder(UTFBuilder):

@@ -115,7 +115,7 @@ class CPK:
                 os.makedirs(dirname, exist_ok=True)
             else:
                 dirname = ""
-            for i in range(files):
+            for i in sorted(toctableH['ID']+toctableL['ID']):
                 if i in toctableH['ID']:
                     idx = toctableH['ID'].index(i)
                     if toctableH['ExtractSize'][idx] > toctableH['FileSize'][idx]:
@@ -166,10 +166,10 @@ class CPK:
             elif filename in toctableH['ID']:
                 idxg = toctableH['ID'].index(filename)
             else:
-                raise ValueError(f"Given ID does not exist in the given CPK. ID must be smaller than {files}.")
+                raise ValueError("Given ID does not exist in the given CPK.")
             self.stream.seek(offset, 0)
             realOffset = offset
-            for i in range(files):
+            for i in sorted(toctableH['ID']+toctableL['ID']):
                 if i != filename:
                     if i in toctableH["ID"]:
                         idx = toctableH['ID'].index(i)

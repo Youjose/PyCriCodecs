@@ -214,7 +214,7 @@ class CPKBuilder:
                 "ETOCdata", "compress", "EnabledPackedSize", "init_toc_len"]
     CpkMode: int 
     # CPK mode dictates (at least from what I saw) the use of filenames in TOC or the use of
-    # ITOC without any filenames (Use of indexes only, will be sorted).
+    # ITOC without any filenames (Use of ID's only, will be sorted).
     # CPK mode of 0 = Use of ITOC only, CPK mode = 1, use of TOC, ITOC and optionally ETOC?
     Tver: str
     # Seems to be CPKMaker/CPKDLL version, I will put in one of the few ones I found as default.
@@ -238,6 +238,7 @@ class CPKBuilder:
 
     def __init__(self, dirname: str, outfile: str, CpkMode: int = 1, Tver: str = False, encrypt: bool = False, encoding: str = "utf-8", compress: bool = False) -> None:
         self.CpkMode = CpkMode
+        self.compress = False
         if not Tver:
             # Some default ones I found with the matching CpkMode, hope they are good enough for all cases.
             if self.CpkMode == 0:
@@ -702,8 +703,11 @@ class CPKBuilder:
                 )
             return UTFBuilder(payload, encrypt=self.encrypt, encoding=self.encoding, table_name="CpkExtendId").parse()
         else:
-            files = sorted(os.listdir(self.dirname), key=int)
-            self.files = files
+            try:
+                files = sorted(os.listdir(self.dirname), key=int)
+            except:
+                raise ValueError("CpkMode of 0 requires filenames to be integers.")
+            self.files = [os.path.join(self.dirname, i) for i in files]
             if len(files) == 0:
                 raise ValueError("No files are present in the given directory.")
             elif len(files) > 0xFFFF:
@@ -711,8 +715,8 @@ class CPKBuilder:
             self.fileslen = len(files)
             datal = []
             datah = []
-            for i in range(len(files)):
-                sz = os.stat(os.path.join(self.dirname, files[i])).st_size
+            for i in files:
+                sz = os.stat(os.path.join(self.dirname, i)).st_size
                 self.EnabledDataSize += sz
                 if sz % 0x800 != 0:
                     self.ContentSize += sz + (0x800 - sz % 0x800)
@@ -720,14 +724,14 @@ class CPKBuilder:
                     self.ContentSize += sz
                 if sz > 0xFFFF:
                     dicth = {
-                        "ID": (UTFTypeValues.ushort, i),
+                        "ID": (UTFTypeValues.ushort, int(i)),
                         "FileSize": (UTFTypeValues.uint, sz),
                         "ExtractSize": (UTFTypeValues.uint, sz)
                     }
                     datah.append(dicth)
                 else:
                     dictl = {
-                        "ID": (UTFTypeValues.ushort, i),
+                        "ID": (UTFTypeValues.ushort, int(i)),
                         "FileSize": (UTFTypeValues.ushort, sz),
                         "ExtractSize": (UTFTypeValues.ushort, sz)
                     }

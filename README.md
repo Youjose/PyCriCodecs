@@ -100,7 +100,7 @@ usmObj.get_metadata() # Not for the user specifically, but if you want to look a
 # Needs at least a video to be able to build one USM file, you can add audio pretty easily too.
 usmObj = USMBuilder("filename.ivf", "filename.wav", key=0xKEYGOESINHERE, audio_codec="adx", encryptAudio=True) # Basic USM
 # You can add a list of audio paths/filenames as well instead of filenames, and that will be added into audio streams in order.
-usmObj.parse() # Due to bad code, this is heavy on performance and will take some seconds based of the input files.
+usmObj.build() # Due to bad code, this is heavy on performance and will take some seconds based of the input files.
 usmbytes = usmObj.get_usm() # Will return the USM file as bytes. 
 ```
 ##### For ACB or AWB extraction:

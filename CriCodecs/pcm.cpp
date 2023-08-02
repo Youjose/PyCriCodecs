@@ -32,10 +32,10 @@ static const char* PCMErrorStrings[] = {
     "Filesize is too low to be viable for loading." // -10
 };
 
-// void PyPCMSetError(char ErrorCode){
-//     ErrorCode = std::abs(ErrorCode);
-//     PyErr_SetString(PyExc_ValueError, PCMErrorStrings[ErrorCode]);
-// }
+void PyPCMSetError(char ErrorCode){
+    ErrorCode = std::abs(ErrorCode);
+    PyErr_SetString(PyExc_ValueError, PCMErrorStrings[ErrorCode - 1]);
+}
 
 // Some of those might be wrong, the format is not clear.
 

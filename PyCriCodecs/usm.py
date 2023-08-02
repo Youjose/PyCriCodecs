@@ -495,7 +495,7 @@ class USMBuilder:
     
     def build(self) -> bytes:
         if not self.ivfObj:
-            raise NotImplementedError("Loaded USM is  not supported yet.") # saved with get_usm()
+            raise NotImplementedError("Loaded USM is not supported yet.") # saved with get_usm()
         if self.audio:
             self.prepare_SFA()
         self.prepare_SFV()

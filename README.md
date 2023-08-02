@@ -24,17 +24,19 @@ Building:
 
 Encoding:
 - HCA (HCA Version 2.0)
-- ADX (All versions, any blocksize, any HighPass Frequence, All encoding versions)
-
-With more planned coming soon.
+- ADX (All versions, any bitdepth, any blocksize, any HighPass Frequence, All encoding versions)
 
 ## Installation and Usage
 To install run
 ```
 python setup.py install
 ```
+or alternatively
+```
+pip install .
+```
 
-Note: all libs here are standardized to take either a filename/path or bytes/bytearray, so you can swap both.
+Note: all libs (except ADX) here are standardized to take either a filename/path or bytes/bytearray, so you can swap both.
 
 Also, for audio related codecs, the looping input and output is defined in the metadata, the WAV file will not loop, but it will have a "smpl" chunk in the header, same if you want to encode a looping HCA or an ADX, the WAV must have a smpl chunk.
 
@@ -46,12 +48,12 @@ Otherwise it will loop normally.
 ```python
 from PyCriCodecs import *
 # Decoding:
-AdxObj = ADX("sample.adx") # Specify filename or adx bytes.
-wavfilebytes = AdxObj.decode() # Decode will return a bytearray containing decoded ADX data as a wav file.
+adx_data = open("path_to_adx_file.adx", "rb").read()
+wavfilebytes = ADX.decode(adx_data) # Decode will return a bytearray containing decoded ADX data as a wav file.
 
 # Encoding:
-WavObj = ADX("sample.wav") # Wav file or wav file bytes, any works.
-adxbytes = WavObj.encode() # Returns an ADX file as bytes, check the wiki for more options.
+wav_data = open("path_to_wav_file.wav", "rb").read()
+adxbytes = ADX.encode(wav_data) # Returns an ADX file as bytes, check the wiki for more options.
 ```
 ##### For HCA decoding and encoding:
 ```python
@@ -127,11 +129,10 @@ Check the [Wiki](https://github.com/LittleChungi/PyCriCodecs/wiki/Docs-and-Thoug
 - Add correct ACB extraction.
 
 # Credits
-- [vgmstream](https://github.com/vgmstream/vgmstream) for HCA code and some of ADX decoding code.
-- [VGAudio](https://github.com/Thealexbarney/VGAudio) for some help about ADX Encoding version 4, and HCA encoding.
+- [vgmstream](https://github.com/vgmstream/vgmstream) for HCA code.
+- [VGAudio](https://github.com/Thealexbarney/VGAudio) for ADX codec, and HCA encoding, both of which I ported into C++ but modified the ADX lib greatly.
 - [K0lb3](https://github.com/K0lb3) for helping a lot with python and Cpython, as well as helping me writing some of the code.
 - [bnnm](https://github.com/bnnm) for his various contributions on audio formats, helped me a lot with adding ADX and HCA support.
-- [Isaac Lozano](https://github.com/Isaac-Lozano) and his [radx](https://github.com/Isaac-Lozano/radx) (WAV -> ADX) library of which I ported into C++.
 - [Nyagamon](https://github.com/Nyagamon) for a lot of what he did for criware formats.
 - [donmai](https://github.com/donmai-me) and his [writeup](https://listed.to/@donmai/24921/criware-s-usm-format-part-1) of CriWare's UTF format.
 - 9th for also helping me with some python knowledge.

@@ -128,7 +128,7 @@ Check the [Wiki](https://github.com/LittleChungi/PyCriCodecs/wiki/Docs-and-Thoug
 - Add ACB building.
 - Add correct ACB extraction.
 
-### Current Known Bugs
+### Currently Known Bugs
 - USM Building is not stable, and currently does not work at all because I changed the ADX api.
 - Looping HCA audio decoding is not working correctly. Normal HCA decoding works fine however.
 - Not Important, and might not fix: ADX encoding and decoding at higher bitdepths (11-15) adds popping noise.

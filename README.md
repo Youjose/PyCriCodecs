@@ -3,7 +3,7 @@ Python frontend with a C++ backend for managing Criware formats.
 Although for some tasks, python is used purely.
 
 ## Supporting
-I am running this on Python 3.9, although other earlier versions might work
+I am running this on Python 3.11, although other earlier versions might work
 
 
 So far this lib supports in terms of:
@@ -49,7 +49,7 @@ Otherwise it will loop normally.
 from PyCriCodecs import *
 # Decoding:
 adx_data = open("path_to_adx_file.adx", "rb").read()
-wavfilebytes = ADX.decode(adx_data) # Decode will return a bytearray containing decoded ADX data as a wav file.
+wavfilebytes = ADX.decode(adx_data) # Decode will return bytes object containing decoded ADX data as a wav file.
 
 # Encoding:
 wav_data = open("path_to_wav_file.wav", "rb").read()

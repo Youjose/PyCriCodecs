@@ -73,7 +73,7 @@ int clHCA_DecodeBlock(clHCA *, unsigned char *data, unsigned int size);
 /* Extracts signed and clipped 16 bit samples into sample buffer.
  * May be called after clHCA_DecodeBlock, and will return the same data until
  * next decode. Buffer must be at least (samplesPerBlock*channels) long. */
-void clHCA_ReadSamples16(clHCA *, signed short *&outSamples);
+void clHCA_ReadSamples16(clHCA *, signed short *outSamples);
 
 /* Sets a 64 bit encryption key, to properly decode blocks. This may be called
  * multiple times to change the key, before or after clHCA_DecodeHeader.

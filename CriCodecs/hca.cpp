@@ -336,7 +336,7 @@ int clHCA_getInfo(clHCA* hca, clHCA_stInfo *info) {
 }
 
 //HCADecoder_DecodeBlockInt32
-void clHCA_ReadSamples16(clHCA* hca, signed short *&samples) {
+void clHCA_ReadSamples16(clHCA* hca, signed short *samples) {
     const float scale_f = 32768.0f;
     float f;
     signed int s;
@@ -3373,34 +3373,80 @@ static PyObject* HcaDecode(PyObject* self, PyObject* args){
 
     wavData->size = (hca->frame_count * HCA_SAMPLES_PER_FRAME - hca->encoder_delay - hca->encoder_padding) * hca->channels * sizeof(short); // 16bits = 4 bytes
     wavriff->size = 0x24 + ((hca->loop_flag) ? 0x3C+8 : 0) + sizeof(wavData) + wavData->size;
+    
     data += header_size;
+    
     if(subkey){
         keycode = keycode * ( ((uint64_t)subkey << 16u) | ((uint16_t)~subkey + 2u) );
     }
     clHCA_SetKey(hca, keycode);
+    
     unsigned char *buf = new unsigned char [hca->frame_size];
+    memset(buf, 0, hca->frame_size);
+    
     unsigned char *wavebuf = wav.GetWaveBuffer(wavData->size/wavfmt->BlockAlign, wavfmt->Channels, wavfmt->SampleRate, wav.wav.chunks.Looping); // wav bytes.
     signed short *outbuf = wav.PCM_16;
-    short *tempbuf = new short[HCA_SAMPLES_PER_FRAME * hca->channels];
-    memset(tempbuf, 0, HCA_SAMPLES_PER_FRAME * hca->channels * sizeof(short));
-    int res = 0;
-    memset(buf, 0, hca->frame_size);
-    int count = 0;
-    for(unsigned int i = hca->frame_count*hca->frame_size; i > 0; i -= hca->frame_size, data += hca->frame_size){
-        memcpy(buf, data, hca->frame_size);
-        res = clHCA_DecodeBlock(hca, buf, hca->frame_size);
-        if(res < 0){
-            // decode error. most likely wrong key.
-            return py_codec_err(-2);
+    
+    const unsigned int samples_to_do = (wavData->size >> 1) / hca->channels;
+    unsigned int samples_filled = 0;
+    unsigned int samples_to_discard = hca->encoder_delay;
+    int samples_done = 0;
+    unsigned int samples_consumed = 0;
+    unsigned int current_block = 0;
+    signed short *sample_buffer = new signed short[hca->channels * HCA_SAMPLES_PER_FRAME];
+    memset(sample_buffer, 0, hca->channels * HCA_SAMPLES_PER_FRAME * sizeof(short));
+
+    while (samples_done < samples_to_do) {
+
+        if (samples_filled) {
+            int samples_to_get = samples_filled;
+
+            if (samples_to_discard) {
+                /* discard samples for looping */
+                if (samples_to_get > samples_to_discard)
+                    samples_to_get = samples_to_discard;
+                samples_to_discard -= samples_to_get;
+            }else {
+                /* get max samples and copy */
+                if (samples_to_get > samples_to_do - samples_done)
+                    samples_to_get = samples_to_do - samples_done;
+
+                memcpy(outbuf + samples_done*hca->channels,
+                       sample_buffer + samples_consumed*hca->channels,
+                       samples_to_get*hca->channels * sizeof(short));
+                samples_done += samples_to_get;
+            }
+
+            /* mark consumed samples */
+            samples_consumed += samples_to_get;
+            samples_filled -= samples_to_get;
         }
-        if(hca->encoder_delay){
-            if(HCA_SAMPLES_PER_FRAME > hca->encoder_delay)
-                hca->encoder_delay = 0;
-            if(hca->encoder_delay)
-                hca->encoder_delay -= HCA_SAMPLES_PER_FRAME;
-            continue;
+        else {
+            /* EOF/error */
+            if (current_block >= hca->frame_count) {
+                memset(outbuf, 0, (samples_to_do - samples_done) * hca->channels * sizeof(short));
+                break;
+            }
+
+            /* read frame */
+            memcpy(buf, data, hca->frame_size);
+            data += hca->frame_size;
+
+            current_block++;
+
+            /* decode frame */
+            int res = clHCA_DecodeBlock(hca, buf, hca->frame_size);
+            if(res < 0){
+                // decode error. most likely wrong key.
+                return py_codec_err(-2);
+            }
+
+            /* extract samples */
+            clHCA_ReadSamples16(hca, sample_buffer);
+
+            samples_consumed = 0;
+            samples_filled += HCA_SAMPLES_PER_FRAME;
         }
-        clHCA_ReadSamples16(hca, outbuf);
     }
     free(hca);
     return Py_BuildValue("y#", wavebuf, wavriff->size+8);

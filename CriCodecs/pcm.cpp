@@ -526,7 +526,7 @@ struct PCM{
         return PCM_16;
     }
 
-    unsigned char*& GetWaveBuffer(unsigned int SampleCount,  unsigned int Channels, unsigned int SampleRate, bool Looping){
+    unsigned char*& GetWaveBuffer(unsigned int SampleCount, unsigned int Channels, unsigned int SampleRate, bool Looping){
         unsigned int header_size = Looping ? 0x70 : 0x2C;
         wav.size = header_size + SampleCount * Channels * sizeof(short);
         WAVEBuffer = new unsigned char[wav.size];

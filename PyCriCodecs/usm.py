@@ -454,14 +454,12 @@ class USMBuilder:
         if self.audio_codec == "adx":
             if type(audio) == list:
                 for track in audio:
-                    adxObj = ADX(track)
-                    if adxObj.filetype == "wav":
-                        adxObj.encode(AdxVersion=4, Encoding=3, force_not_looping=True)
+                    wav_bytes = open(track, "rb").read()
+                    adxObj = ADX.encode(wav_bytes, AdxVersion=4, Encoding=3, force_not_looping=True)
                     self.streams.append(adxObj)
             else:
-                adxObj = ADX(audio)
-                if adxObj.filetype == "wav":
-                    adxObj.encode(AdxVersion=4, Encoding=3, force_not_looping=True)
+                wav_bytes = open(audio, "rb").read()
+                adxObj = ADX.encode(wav_bytes, AdxVersion=4, Encoding=3, force_not_looping=True)
                 self.streams.append(adxObj)
         elif self.audio_codec == "hca":
             if type(audio) == list:
@@ -481,9 +479,8 @@ class USMBuilder:
     def append_stream(self, audio):
         assert type(audio) != list
         if self.audio_codec == "adx":
-            adxObj = ADX(audio)
-            if adxObj.filetype == "wav":
-                adxObj.encode(AdxVersion=4, Encoding=3, force_not_looping=True)
+            wav_bytes = open(audio, "rb").read()
+            adxObj = ADX.encode(wav_bytes, AdxVersion=4, Encoding=3, force_not_looping=True)
             self.streams.append(adxObj)
         elif self.audio_codec == "hca":
             hcaObj = HCA(audio, self.key)

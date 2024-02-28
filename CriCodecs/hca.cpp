@@ -2323,7 +2323,7 @@ void CalculateHeaderSize(clHCA &hca){
 void GetChannelTypes(clHCA &hca, channel_type_t *types){
     int channelsPerTrack = hca.channels / hca.track_count;
     if(hca.stereo_band_count == 0 || channelsPerTrack == 1){
-        memset(types, DISCRETE, 8);
+        memset(types, DISCRETE, 8 * sizeof(channel_type_t));
         return;
     }
 
@@ -2395,8 +2395,7 @@ void GetChannelTypes(clHCA &hca, channel_type_t *types){
             types[7] = STEREO_SECONDARY;
             break;
         default: 
-            types = new channel_type_t[8];
-            memset(types, DISCRETE, 8);
+            memset(types, DISCRETE, 8 * sizeof(channel_type_t));
             break;
     }
 }
@@ -3097,11 +3096,13 @@ void Encode(clHCA &hca, PCM &pcm, unsigned char *HcaBuffer){
         SamplesToEncode = std::min(SampleCount - i * HCA_SAMPLES_PER_FRAME, (unsigned int)HCA_SAMPLES_PER_FRAME) * hca.channels;
         HcaEncode(hca, PcmBuffer+PcmPosition, HcaBuffer+HcaPosition, framesOutput, SamplesProcessed, SamplesToEncode, PostAudio, PostAudioLengthPerChannel, FramesProcessed, LoopStartSample, LoopEndSample, PcmAudio);
         if(HcaErrorCode < 0)
-            return;
+            break;
         HcaPosition += hca.frame_size * framesOutput;
         FrameIndex += framesOutput;
         framesOutput = 0;
     }
+    delete[] PostAudio;
+    delete[] PcmAudio;
 }
 
 void PackHeader(clHCA &hca, unsigned char* HcaBuffer){
@@ -3449,7 +3450,9 @@ static PyObject* HcaDecode(PyObject* self, PyObject* args){
         }
     }
     free(hca);
-    return Py_BuildValue("y#", wavebuf, wavriff->size+8);
+    delete[] buf;
+    delete[] sample_buffer;
+    return Py_BuildValue("y#", wavebuf, wavriff->size+8); // wavbuf will be deleted by the PCM module.
 }
 
 static PyObject* HcaEncode(PyObject* self, PyObject* args){
@@ -3478,5 +3481,7 @@ static PyObject* HcaEncode(PyObject* self, PyObject* args){
         return py_codec_err(-4);
     }
     PackHeader(hca, HcaBuffer);
-    return Py_BuildValue("y#", HcaBuffer, hca.header_size + hca.frame_count * hca.frame_size);
+    PyObject* ret_val = Py_BuildValue("y#", HcaBuffer, hca.header_size + hca.frame_count * hca.frame_size);
+    delete[] HcaBuffer;
+    return ret_val;
 }

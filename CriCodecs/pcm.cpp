@@ -160,19 +160,6 @@ template <typename T> T Clamp(T Value, T Limit) {
     return Value;
 }
 
-struct GUID{
-    unsigned int guid1;
-    unsigned short guid2;
-    unsigned short guid3;
-    unsigned long long guid4;
-    inline void loadGUID(unsigned char *data){
-        guid1 = ReadUnsignedIntLE(data+0);
-        guid2 = ReadUnsignedShortLE(data+4);
-        guid3 = ReadUnsignedShortLE(data+6);
-        guid4 = ReadUnsignedLongLongLE(data+8);
-    }
-};
-
 struct fmt{
     unsigned int fmt;
     unsigned int size;
@@ -229,7 +216,7 @@ struct smplloop{
 };
 
 struct smpl{
-    unsigned int smpl;
+    unsigned int smpl_magic;
     unsigned int size;
     unsigned int Manufacturer;
     unsigned int Product;
@@ -242,10 +229,18 @@ struct smpl{
     unsigned int SamplerDataSize;
     unsigned char *SamplerData;
     smplloop *Loops;
+    smpl(){
+        Loops = NULL;
+    }
+    ~smpl(){
+        puts("SMPL WENT OUT OF SCOPE TEST");
+        if(Loops != NULL)
+            delete[] Loops;
+    }
     char loadSMPL(unsigned char *data){
-        smpl                = ReadUnsignedIntLE(data+0 );
+        smpl_magic          = ReadUnsignedIntLE(data+0 );
         size                = ReadUnsignedIntLE(data+4 );
-        if(size < 36 || smpl != SMPL)
+        if(size < 36 || smpl_magic != SMPL)
             return -4;
         Manufacturer        = ReadUnsignedIntLE(data+8 );
         Product             = ReadUnsignedIntLE(data+12);
@@ -390,9 +385,30 @@ struct PCM{
     float         *PCM_IEEE_32; /* 32 float bits */
     double        *PCM_IEEE_64; /* 64 float bits */
     unsigned int ColumnSize;
+    bool converted;
     riff wav;
+
+    PCM(){
+        WAVEBuffer = NULL;
+        PCM_8 = NULL;
+        PCM_16 = NULL;
+        PCM_24 = NULL;
+        PCM_32 = NULL;
+        PCM_IEEE_32 = NULL;
+        PCM_IEEE_64 = NULL;
+        wav = {};
+        converted = false;
+    }
+
+    ~PCM(){
+        if(WAVEBuffer != NULL)
+            delete[] WAVEBuffer;
+        if(PCM_16 != NULL && converted)
+            delete[] PCM_16;
+    }
+
     char load(){
-        wav = *new riff;
+        wav = {};
         char res = wav.loadRIFF(WAVEBuffer);
         if(res < 0)
             return res;
@@ -510,13 +526,14 @@ struct PCM{
      * 
      * @return short* Array of PCM data.
      */
-    short*& Get_PCM16(){
+    short* Get_PCM16(){
         unsigned int BitDepth = wav.chunks.WAVEfmt.CompressionMode == WAVE_FORMAT_EXTENSIBLE ? wav.chunks.WAVEfmt.ValidBitsPerSample : wav.chunks.WAVEfmt.BitDepth;
         unsigned int SampleSize = wav.chunks.WAVEfmt.BlockAlign / wav.chunks.WAVEfmt.Channels;
         if(BitDepth > 8 && BitDepth <= 16 && SampleSize == 2)
             return PCM_16;
         unsigned int CompressionMode = wav.chunks.WAVEfmt.CompressionMode == WAVE_FORMAT_EXTENSIBLE ? wav.chunks.WAVEfmt.SubFormat.guid1 : wav.chunks.WAVEfmt.CompressionMode;
         PCM_16 = new short[ColumnSize];
+        converted = true;
         if(BitDepth <= 8)
             PCM8_to_PCM16(BitDepth);
         else if(CompressionMode == WAVE_FORMAT_IEEE_FLOAT)
@@ -526,7 +543,7 @@ struct PCM{
         return PCM_16;
     }
 
-    unsigned char*& GetWaveBuffer(unsigned int SampleCount, unsigned int Channels, unsigned int SampleRate, bool Looping){
+    unsigned char* GetWaveBuffer(unsigned int SampleCount, unsigned int Channels, unsigned int SampleRate, bool Looping){
         unsigned int header_size = Looping ? 0x70 : 0x2C;
         wav.size = header_size + SampleCount * Channels * sizeof(short);
         WAVEBuffer = new unsigned char[wav.size];
@@ -552,7 +569,8 @@ struct PCM{
         return load();
     }
 
-    char LoadDirect(unsigned char*& Buffer){
+    /* the given buffer will be called by delete[] after the object distructs. */
+    char LoadDirect(unsigned char* Buffer){
         WAVEBuffer = Buffer;
         return load();
     }

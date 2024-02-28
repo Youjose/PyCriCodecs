@@ -62,3 +62,16 @@ struct BitWriter{
     void AlignPosition(int multiple);
     void WriteFallback(int value, int BitCount);
 };
+
+struct GUID{
+    unsigned int guid1;
+    unsigned short guid2;
+    unsigned short guid3;
+    unsigned long long guid4;
+    inline void loadGUID(const unsigned char *data){
+        guid1 = ReadUnsignedIntLE(data+0);
+        guid2 = ReadUnsignedShortLE(data+4);
+        guid3 = ReadUnsignedShortLE(data+6);
+        guid4 = ReadUnsignedLongLongLE(data+8);
+    }
+};

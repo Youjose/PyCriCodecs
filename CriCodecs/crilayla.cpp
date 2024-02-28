@@ -7,9 +7,7 @@
     Taken from wmltogether's fork of CriPakTools.
     Python wrapper by me.
 
-	Note: I have no idea how this compression technique works, by the looks of it, it really is
-	compute expensive and rather inefficient. If this failes for any kind of file, report to me and I will try
-	to rewrite this code.
+	Note: I have no idea how this compression technique works. I just made the wrapper.
 */
 #define PY_SSIZE_T_CLEAN
 #pragma once
@@ -106,7 +104,7 @@ unsigned char* layla_decomp(unsigned char* data, crilayla_header header){
 	memcpy(tbuf, (src+header.compressed_size), 256);
 	memcpy(dst, tbuf, 256);
 	llcp_dec(src, header.compressed_size, dst+256, header.decompress_size);
-
+    delete[] src;
 	return dst;
 }
 
@@ -202,7 +200,15 @@ PyObject* CriLaylaDecompress(PyObject* self, PyObject* d){
 	unsigned char *data = (unsigned char *)PyBytes_AsString(d);
 	crilayla_header header = *(crilayla_header*)data;
 	unsigned char *out = layla_decomp((data+16), header);
-	return Py_BuildValue("y#", out, header.decompress_size+256);
+    PyObject *outObj = Py_BuildValue("y#", out, header.decompress_size+256);
+    delete[] out;
+	return outObj;
+}
+
+unsigned char* CriLaylaDecompress(unsigned char* d){
+	crilayla_header header = *(crilayla_header*)d;
+	unsigned char *out = layla_decomp((d+16), header);
+	return out;
 }
 
 PyObject* CriLaylaCompress(PyObject* self, PyObject* args){
@@ -214,5 +220,7 @@ PyObject* CriLaylaCompress(PyObject* self, PyObject* args){
     unsigned char *buf = new unsigned char[data_size];
     memset(buf, 0, data_size);
     layla_comp(buf, &data_size, data, data_size);
-	return Py_BuildValue("y#", buf, data_size);
+	PyObject* bufObj = Py_BuildValue("y#", buf, data_size);
+    delete[] buf;
+    return bufObj;
 }

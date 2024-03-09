@@ -233,7 +233,6 @@ struct smpl{
         Loops = NULL;
     }
     ~smpl(){
-        puts("SMPL WENT OUT OF SCOPE TEST");
         if(Loops != NULL)
             delete[] Loops;
     }

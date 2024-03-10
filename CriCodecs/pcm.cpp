@@ -385,6 +385,7 @@ struct PCM{
     double        *PCM_IEEE_64; /* 64 float bits */
     unsigned int ColumnSize;
     bool converted;
+    bool loaded;
     riff wav;
 
     PCM(){
@@ -397,10 +398,11 @@ struct PCM{
         PCM_IEEE_64 = NULL;
         wav = {};
         converted = false;
+        loaded = false;
     }
 
     ~PCM(){
-        if(WAVEBuffer != NULL)
+        if(WAVEBuffer != NULL && !loaded)
             delete[] WAVEBuffer;
         if(PCM_16 != NULL && converted)
             delete[] PCM_16;
@@ -543,6 +545,7 @@ struct PCM{
     }
 
     unsigned char* GetWaveBuffer(unsigned int SampleCount, unsigned int Channels, unsigned int SampleRate, bool Looping){
+        loaded = false;
         unsigned int header_size = Looping ? 0x70 : 0x2C;
         wav.size = header_size + SampleCount * Channels * sizeof(short);
         WAVEBuffer = new unsigned char[wav.size];
@@ -554,6 +557,7 @@ struct PCM{
 
     /* This function should not be used for files over 2GB in size. */
     char LoadFromFile(const char* Filename){
+        loaded = false;
         FILE* fp = fopen(Filename, "rb");
         fseek(fp, 0, 2);
         long long size = ftell(fp);
@@ -568,8 +572,8 @@ struct PCM{
         return load();
     }
 
-    /* the given buffer will be called by delete[] after the object distructs. */
     char LoadDirect(unsigned char* Buffer){
+        loaded = true;
         WAVEBuffer = Buffer;
         return load();
     }

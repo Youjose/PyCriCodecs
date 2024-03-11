@@ -1,5 +1,5 @@
 from struct import Struct
-from enum import Enum, IntFlag
+from enum import Enum
 
 UTFChunkHeader = Struct(">4sIIIIIHHI")
 USMChunkHeader = Struct(">4sIBBHBBBBIIII")
@@ -64,3 +64,10 @@ class UTFTypeValues(Enum):
     double = 9 # Does not seem to exist.
     string = 10
     bytes  = 11
+
+class CriHcaQuality(Enum):
+    Highest = 0
+    High    = 1
+    Middle  = 2
+    Low     = 3
+    Lowest  = 5

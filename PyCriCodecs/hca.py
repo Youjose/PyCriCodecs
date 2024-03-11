@@ -5,7 +5,7 @@ from typing import BinaryIO
 from array import array
 import CriCodecs
 
-from .chunk import HCAType
+from .chunk import HCAType, CriHcaQuality
 
 HcaHeaderStruct = Struct(">4sHH")
 HcaFmtHeaderStruct = Struct(">4sIIHH")
@@ -252,7 +252,7 @@ class HCA:
         self.hcastream.seek(0)
         return bytes(self.wavbytes)
     
-    def encode(self, force_not_looping: bool = False, encrypt: bool = False, keyless: bool = False) -> bytes:
+    def encode(self, force_not_looping: bool = False, encrypt: bool = False, keyless: bool = False, quality_level: CriHcaQuality = CriHcaQuality.High) -> bytes:
         if self.filetype == "hca":
             raise ValueError("Input type for encoding must be a WAV file.")
         if force_not_looping == False:
@@ -261,8 +261,10 @@ class HCA:
             force_not_looping = 1
         else:
             raise ValueError("Forcing the encoder to not loop is by either False or True.")
+        if quality_level not in list(CriHcaQuality):
+            raise ValueError("Chosen quality level is not valid or is not the appropiate enumeration value.")
         self.stream.seek(0)
-        self.hcabytes = CriCodecs.HcaEncode(self.stream.read(), force_not_looping)
+        self.hcabytes = CriCodecs.HcaEncode(self.stream.read(), force_not_looping, quality_level.value)
         self.hcastream = BytesIO(self.hcabytes)
         self.Pyparse_header()
         if encrypt:

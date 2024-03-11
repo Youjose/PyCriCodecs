@@ -2226,8 +2226,8 @@ unsigned int CalculateBitrate(clHCA &hca, CriHcaQuality quality){
             break;
     }
     unsigned int bitrate = pcmBitrate / compressionRatio;
-    if(bitrate < 0)
-        bitrate = 0;
+    if(bitrate < minBitrate)
+        bitrate = minBitrate;
     else if(bitrate > maxBitrate)
         bitrate = maxBitrate;
     return bitrate;
@@ -2235,7 +2235,7 @@ unsigned int CalculateBitrate(clHCA &hca, CriHcaQuality quality){
 
 void CalculateBandCounts(clHCA &hca, unsigned int bitrate, unsigned int cutoffFrequency){
     hca.frame_size = bitrate * 1024 / hca.sample_rate / 8;
-    unsigned int numGroups = 0;\
+    unsigned int numGroups = 0;
     unsigned int pcmBitrate = hca.sample_rate * hca.channels * 16;
     unsigned int hfrRatio;
     unsigned int cutoffRatio;
@@ -2251,9 +2251,9 @@ void CalculateBandCounts(clHCA &hca, unsigned int bitrate, unsigned int cutoffFr
     if(bitrate < pcmBitrate / cutoffRatio)
         cutoffFrequency = std::min(cutoffFrequency, cutoffRatio * bitrate / (32 * hca.channels));
 
-    unsigned int totalBandCount = (unsigned int)round(cutoffFrequency * 256.0 / hca.sample_rate);
+    unsigned int totalBandCount = (unsigned int)round((double)cutoffFrequency * 256.0 / hca.sample_rate);
 
-    unsigned int hfrStartBand = (unsigned int)std::min(totalBandCount, (unsigned int)round((hfrRatio * bitrate * 128.0) / pcmBitrate));
+    unsigned int hfrStartBand = (unsigned int)std::min(totalBandCount, (unsigned int)round(((double)hfrRatio * bitrate * 128.0) / pcmBitrate));
     unsigned int stereoStartBand = hfrRatio == 6 ? hfrStartBand : (hfrStartBand + 1) / 2;
 
     unsigned int hfrBandCount = totalBandCount - hfrStartBand;
@@ -2423,7 +2423,7 @@ char initHCAEncode(PCM &wave, clHCA &hca, CriHcaQuality quality){
         hca.track_count = 1;
         hca.sample_rate = FMTChunk.SampleRate;
         hca.sample_count_per_channel = wave.ColumnSize / FMTChunk.Channels;
-        hca.min_resolution = 1;
+        hca.min_resolution = 1; // in >=v3 this can be 0. 
         hca.max_resolution = 15;
         hca.encoder_delay = HCA_SAMPLES_PER_SUBFRAME;
     }
@@ -3458,7 +3458,8 @@ static PyObject* HcaDecode(PyObject* self, PyObject* args){
 static PyObject* HcaEncode(PyObject* self, PyObject* args){
     Py_buffer *pydata;
     unsigned int force_nolooping;
-    if(!PyArg_ParseTuple(args, "y*I", &pydata, &force_nolooping)){
+    unsigned int quality;
+    if(!PyArg_ParseTuple(args, "y*II", &pydata, &force_nolooping, &quality)){
         return NULL;
     }
     unsigned char *data = (unsigned char *)pydata;
@@ -3470,7 +3471,7 @@ static PyObject* HcaEncode(PyObject* self, PyObject* args){
         return (PyObject *)NULL;
     }
     hca.loop_flag = w.wav.chunks.Looping && !force_nolooping;
-    res = initHCAEncode(w, hca, High);
+    res = initHCAEncode(w, hca, (CriHcaQuality)quality);
     if(res < 0){
         return py_codec_err(-3);
     }

@@ -2272,7 +2272,7 @@ void CalculateBandCounts(clHCA &hca, unsigned int bitrate, unsigned int cutoffFr
 void CalculateHfrValues(clHCA &hca){
     if (hca.bands_per_hfr_group <= 0)
         return;
-    hca.HfrBandCount = hca.total_band_count - hca.base_band_count - hca.base_band_count;
+    hca.HfrBandCount = hca.total_band_count - hca.base_band_count - hca.stereo_band_count;
     hca.hfr_group_count = DivideByRoundUp(hca.HfrBandCount, hca.bands_per_hfr_group);
 }
 
@@ -3035,19 +3035,20 @@ void EncodeMainAudio(clHCA &hca, short *pcm, unsigned char *HcaBuffer, unsigned 
 void EncodePostAudio(clHCA &hca, short* PcmAudio, unsigned char* HcaBuffer, unsigned int &framesOutput, unsigned int &FramesProcessed, short *PostAudio, unsigned int PostAudioLengthPerChannel){
     unsigned int postPos = 0;
     unsigned int remaining = hca.PostSamples;
+    unsigned int PostAudioFramesOutput = framesOutput;
 
     while(postPos < remaining){
         unsigned int toCopy = std::min((long long)HCA_SAMPLES_PER_FRAME - hca.BufferPosition, (long long)remaining - postPos);
         memcpy(PcmAudio+hca.BufferPosition*hca.channels, PostAudio+postPos*hca.channels, toCopy*hca.channels*sizeof(short));
         hca.BufferPosition += toCopy;
         postPos += toCopy;
-        framesOutput = OutputFrame(framesOutput, HcaBuffer+hca.frame_size*framesOutput, FramesProcessed, hca, PcmAudio);
+        framesOutput = OutputFrame(framesOutput, HcaBuffer+hca.frame_size*(framesOutput - PostAudioFramesOutput), FramesProcessed, hca, PcmAudio);
     }
 
     while(FramesProcessed < hca.frame_count){
         memset(PcmAudio+hca.BufferPosition*hca.channels, 0, (HCA_SAMPLES_PER_FRAME - hca.BufferPosition) * hca.channels * sizeof(short));
         hca.BufferPosition = HCA_SAMPLES_PER_FRAME;
-        framesOutput = OutputFrame(framesOutput, HcaBuffer+hca.frame_size*framesOutput, FramesProcessed, hca, PcmAudio);
+        framesOutput = OutputFrame(framesOutput, HcaBuffer+hca.frame_size*(framesOutput - PostAudioFramesOutput), FramesProcessed, hca, PcmAudio);
     }
 }
 

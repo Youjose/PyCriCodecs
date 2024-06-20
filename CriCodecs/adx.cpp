@@ -110,12 +110,19 @@ struct Loop{
     unsigned short AlignmentSamples;
     unsigned short LoopCount;
     ADXLoop *Loops;
+    Loop(){
+        Loops = NULL;
+    }
+    ~Loop(){
+        if(Loops != NULL)
+            delete[] Loops;
+    }
     char loadLoops(unsigned char* data, unsigned short &DataOffset, unsigned int &BaseOffset){
         AlignmentSamples = ReadUnsignedShortBE(data+0);
         LoopCount        = ReadUnsignedShortBE(data+2);
         if(!LoopCount)
             return 0;
-        else if(BaseOffset + 4 + (LoopCount * sizeof(ADXLoop)) <= DataOffset - 2)
+        else if(BaseOffset + 4 + (LoopCount * sizeof(ADXLoop)) >= DataOffset - 2)
             return -8;
         Loops = new ADXLoop[LoopCount];
         for(unsigned int i = 0, offset = 4; i < LoopCount; i++, offset+=sizeof(ADXLoop))
@@ -266,6 +273,7 @@ struct ChannelFrame{
         History.Previous2 = Original2;
         for(unsigned int i = 0; i < SamplesPerBlock; i++)
             WriteBits(Samples[i]);
+        delete[] Samples;
     }
 };
 
@@ -278,10 +286,20 @@ struct ADX{
     unsigned int SamplesPerBlock;
     int *Coefficients;
     ChannelFrame *Channels;
+    ADPCMHistory *History;
     short *PCMData;
     unsigned int size;
+    ADX(){
+        Coefficients = NULL;
+        Channels = NULL;
+        History = NULL;
+    }
+    ~ADX(){
+        if(Coefficients != NULL) delete[] Coefficients;
+        if(Channels != NULL) delete[] Channels;
+        if(History != NULL) delete[] History;
+    }
     char loadHeader(unsigned char* data){
-        ADPCMHistory *History;
         unsigned int BaseOffset  = sizeof(ADXHeader);
         Header.loadHeader(data);
 
@@ -367,10 +385,18 @@ struct ADX{
             return AdxErrorCode;
         
         unsigned int BaseOffset = Header.DataOffset + 4;
-        unsigned int Blocks     = Header.SampleCount / SamplesPerBlock;
+        unsigned int Blocks     = ceilf((float)Header.SampleCount / (float)SamplesPerBlock);
         unsigned int HeaderSize = 44;
         BitReader Reader;
         CalculateCoefficients(Coefficients, Header.HighpassFrequency, Header.SampleRate);
+
+        if(Looping){
+            wav.wav.chunks.Looping = 1;
+            wav.wav.chunks.WAVEsmpl.Loops = new smplloop[1]; // Could be LoopPoints.LoopCount, but not really logical and the PCM module doesn't support it.
+            wav.wav.chunks.WAVEsmpl.Loops[0].Start = LoopPoints.Loops[0].LoopStartSample;
+            wav.wav.chunks.WAVEsmpl.Loops[0].End = LoopPoints.Loops[0].LoopEndSample;
+        }
+        wav.wav.chunks.WAVEdata.size = Header.SampleCount * Header.Channels * sizeof(short);
         wav.GetWaveBuffer(Header.SampleCount, Header.Channels, Header.SampleRate, Looping);
         PCMData = wav.PCM_16;
 
@@ -421,12 +447,14 @@ struct ADX{
         BitsPerBlock = DataBlockSize * 8;
         SamplesPerBlock = BitsPerBlock / BitDepth;
         unsigned int SamplesPerChannel = SampleCount / ChannelCount, Frames, Blocks, HeaderSize;
+        bool own = false;
 
         if(SamplesPerChannel % SamplesPerBlock != 0){
             unsigned int SamplesNeeded = GetNextMultiple(SamplesPerChannel, DataBlockSize) * ChannelCount;
             SamplesPerChannel = SamplesNeeded / ChannelCount;
             Frames = SamplesPerChannel / SamplesPerBlock;
             PCMData = new short[SamplesNeeded];
+            own = true;
             memcpy(PCMData, PCMMain.Get_PCM16(), SampleCount * sizeof(short));
             memset(PCMData+SampleCount, 0, (SamplesNeeded-SampleCount) * sizeof(short));
         }else{
@@ -454,7 +482,7 @@ struct ADX{
 
         Blocks = Frames * ChannelCount;
         HeaderSize = sizeof(ADXHeader) + 6; /* 6 is CRIString length. */
-        if(AdxVersion == 0x04 || AdxVersion == 0x5)
+        if(AdxVersion == 0x04 || AdxVersion == 0x05)
             HeaderSize += (Header.Channels > 1 ? sizeof(ADPCMHistory) * Header.Channels : sizeof(ADPCMHistory) * 2);
         if(Looping)
             HeaderSize += 4 + PCMMain.wav.chunks.WAVEsmpl.NumberofSampleLoops * sizeof(ADXLoop);
@@ -476,6 +504,8 @@ struct ADX{
         memset(AdxData+BlocksOffset, 0, BlockSize);
         WriteShortBE(AdxData+BlocksOffset+0, 0x8001);
         WriteShortBE(AdxData+BlocksOffset+2, BlockSize - 4);
+        
+        if(own) delete[] PCMData;
         return 0;
     }
     unsigned char* GetADX(PCM &PCMMain, unsigned int BitDepth = 4, unsigned int BlockSize = 0x12, unsigned int EncodingMode = 3, unsigned short HighpassFrequency = 500, unsigned int Filter = 0, unsigned int AdxVersion = 4, bool ForceNoLooping = 0){
@@ -483,10 +513,8 @@ struct ADX{
         AdxErrorCode = Encode(PCMMain, ADXData, BitDepth, BlockSize, EncodingMode, HighpassFrequency, Filter, AdxVersion, ForceNoLooping);
         return ADXData;
     }
-    PCM GetWAVE(unsigned char* data){
-        PCM PCMObject;
+    void GetWAVE(unsigned char* data, PCM &PCMObject){
         AdxErrorCode = Decode(data, PCMObject);
-        return PCMObject;
     }
 };
 
@@ -523,7 +551,7 @@ static PyObject* AdxDecode(PyObject* self, PyObject* args){
     unsigned char* data = (unsigned char *)PyBytes_AsString(args);
     ADX adx;
     PCM wav;
-    wav = adx.GetWAVE(data);
+    adx.GetWAVE(data, wav);
     if(AdxErrorCode){
         PyAdxSetError(AdxErrorCode);
         return NULL;

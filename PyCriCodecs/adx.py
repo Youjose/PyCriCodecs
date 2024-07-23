@@ -1,7 +1,7 @@
 import CriCodecs
 
 class ADX:
-    """ADX Modules for decoding and encoding ADX files, pass the either `adx file` or `wav file` in bytes to either `decode` or `encode` respectively."""  
+    """ADX Module for decoding and encoding ADX files, pass the either `adx file` or `wav file` in bytes to either `decode` or `encode` respectively."""  
     
     # Decodes ADX to WAV.
     def decode(data: bytes) -> bytes:

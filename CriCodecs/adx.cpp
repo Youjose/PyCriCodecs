@@ -91,17 +91,16 @@ struct ADXLoop{
         LoopEndSample   = ReadUnsignedIntBE(data+12);
         LoopEndByte     = ReadUnsignedIntBE(data+16);
     }
-    void writeLoop(unsigned char* data, unsigned int AlignmentSamples, smplloop Loop, unsigned int BlockSize, unsigned int Index, unsigned int Channels, unsigned int HeaderSize){
-        unsigned int DataBlockSize = BlockSize - 2;
+    void writeLoop(unsigned char* data, unsigned int AlignmentSamples, smplloop Loop, unsigned int BlockSize, unsigned int Index, unsigned int Channels, unsigned int HeaderSize, unsigned int SamplesPerFrame){
         unsigned int start = Loop.Start + AlignmentSamples;
-        unsigned int end   = Loop.End   + AlignmentSamples;
-        start = ((start - (start % (DataBlockSize * Channels))) / (DataBlockSize * Channels)) * BlockSize * Channels + HeaderSize + (start % (DataBlockSize * Channels)) * Channels;
-        end   = ((end   - (end   % (DataBlockSize * Channels))) / (DataBlockSize * Channels)) * BlockSize * Channels + HeaderSize + (end   % (DataBlockSize * Channels)) * Channels;
+        unsigned int end   = Loop.End + AlignmentSamples;
+        start = HeaderSize + ((start / SamplesPerFrame) * BlockSize) * Channels;
+        end   = HeaderSize + GetNextMultiple(((end / SamplesPerFrame) * BlockSize + (end % SamplesPerFrame) / BlockSize), BlockSize) * Channels;
         WriteShortBE(data+0, Index);
         WriteShortBE(data+2, 1); /* Enable all loops. */
         WriteIntBE(data+4, Loop.Start + AlignmentSamples);
-        WriteIntBE(data+8, Loop.End   + AlignmentSamples);
-        WriteIntBE(data+12, start);
+        WriteIntBE(data+8, start);
+        WriteIntBE(data+12, Loop.End  + AlignmentSamples);
         WriteIntBE(data+16, end);
     }
 };
@@ -129,19 +128,16 @@ struct Loop{
             Loops[i].loadLoop(data+offset);
         return 0;
     }
-    void writeLoops(unsigned char* data, unsigned int NumberOfLoops, unsigned int ChannelCount, smpl &PCMsmpl, unsigned int BlockSize, unsigned int HeaderSize){
+    void writeLoops(unsigned char* data, unsigned int NumberOfLoops, unsigned int ChannelCount, smpl &PCMsmpl, unsigned int BlockSize, unsigned int SamplesPerFrame, unsigned int HeaderSize){
         LoopCount = NumberOfLoops;
         unsigned int start = PCMsmpl.Loops[0].Start;
         unsigned int SamplesInFrame = (BlockSize - 2) * 2;
-        if(start % SamplesInFrame == 0)
-            AlignmentSamples = start;
-        else
-            AlignmentSamples = start + (SamplesInFrame - start % SamplesInFrame) - start;
+        AlignmentSamples = GetNextMultiple(start, ChannelCount == 1 ? SamplesInFrame * 2 : SamplesInFrame);
         WriteShortBE(data+0, AlignmentSamples);
         WriteShortBE(data+2, LoopCount);
         Loops = new ADXLoop[LoopCount]; /* From what I've seen, ADX doesn't support more than one loop, but this code is already generic as is, so I will allow more customizability. */
         for(unsigned int i = 0, offset = 4; i < LoopCount; i++, offset+=sizeof(ADXLoop)){
-            Loops[i].writeLoop(data+offset, AlignmentSamples, PCMsmpl.Loops[i], BlockSize, i, ChannelCount, HeaderSize);
+            Loops[i].writeLoop(data+offset, AlignmentSamples, PCMsmpl.Loops[i], BlockSize, i, ChannelCount, HeaderSize, SamplesPerFrame);
         }
     }
 };
@@ -363,6 +359,8 @@ struct ADX{
     void writeHeader(unsigned char*& AdxData, unsigned int HeaderSize, PCM &PCMMain, unsigned int BitDepth, unsigned int BlockSize, unsigned int EncodingMode, unsigned short HighpassFrequency, unsigned int SamplesPerChannel, unsigned int AdxVersion){
         Header.writeHeader(AdxData, HeaderSize-4, EncodingMode, BlockSize, BitDepth, PCMMain.wav.chunks.WAVEfmt.Channels, PCMMain.wav.chunks.WAVEfmt.SampleRate, SamplesPerChannel, EncodingMode == 2 ? 0 : HighpassFrequency, AdxVersion, 0);
         unsigned int BaseOffset = sizeof(ADXHeader);
+        unsigned int FrameSizeBytes = (BlockSize - 2) * 8;
+        unsigned int SamplesPerFrame = FrameSizeBytes / BitDepth;
 
         if(AdxVersion == 0x04 || AdxVersion == 0x05){
             WriteIntBE(AdxData+BaseOffset, 0); /* Padding */
@@ -372,7 +370,7 @@ struct ADX{
         }
 
         if(Looping){
-            LoopPoints.writeLoops(AdxData+BaseOffset, PCMMain.wav.chunks.WAVEsmpl.NumberofSampleLoops, PCMMain.wav.chunks.WAVEfmt.Channels, PCMMain.wav.chunks.WAVEsmpl, BlockSize, HeaderSize);
+            LoopPoints.writeLoops(AdxData+BaseOffset, PCMMain.wav.chunks.WAVEsmpl.NumberofSampleLoops, PCMMain.wav.chunks.WAVEfmt.Channels, PCMMain.wav.chunks.WAVEsmpl, BlockSize, SamplesPerFrame, HeaderSize);
             BaseOffset += 4 + (sizeof(ADXLoop) * PCMMain.wav.chunks.WAVEsmpl.NumberofSampleLoops);
         }
 
@@ -451,8 +449,7 @@ struct ADX{
 
         if(SamplesPerChannel % SamplesPerBlock != 0){
             unsigned int SamplesNeeded = GetNextMultiple(SamplesPerChannel, DataBlockSize) * ChannelCount;
-            SamplesPerChannel = SamplesNeeded / ChannelCount;
-            Frames = SamplesPerChannel / SamplesPerBlock;
+            Frames = (SamplesNeeded / ChannelCount) / SamplesPerBlock;
             PCMData = new short[SamplesNeeded];
             own = true;
             memcpy(PCMData, PCMMain.Get_PCM16(), SampleCount * sizeof(short));
@@ -461,7 +458,6 @@ struct ADX{
             PCMData = PCMMain.Get_PCM16();
             Frames = SamplesPerChannel / SamplesPerBlock;
         }
-
         Coefficients = new int[2];
         if(EncodingMode == 2){
             Coefficients[0] = (int)StaticCoefficients[Filter * 2 + 0];

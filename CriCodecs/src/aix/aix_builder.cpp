@@ -319,11 +319,15 @@ std::expected<std::vector<uint8_t>, AixError> Aix::build(std::span<const AixBuil
     }
 
     std::vector<uint8_t> output(first_segment_offset, 0);
-    std::copy(aixf_magic.begin(), aixf_magic.end(), output.begin());
-    write_be<uint32_t>(output.data() + 0x04, first_segment_offset - 8u);
-    write_be<uint32_t>(output.data() + 0x08, supported_version);
-    write_be<uint32_t>(output.data() + 0x0C, expected_header_size);
-    write_be<uint16_t>(output.data() + 0x18, static_cast<uint16_t>(prepared_segments.size()));
+    write_be(output.data(), detail::AixHeader{
+        .magic = aixf_magic.be_value(),
+        .data_size = first_segment_offset - 8u,
+        .version = supported_version,
+        .header_size = expected_header_size,
+        .reserved_10 = {},
+        .segment_count = static_cast<uint16_t>(prepared_segments.size()),
+        .reserved_1a = {},
+    });
 
     const auto& first_layer = prepared_segments.front().front();
     const size_t first_size = first_payload_size(first_layer);
@@ -362,10 +366,12 @@ std::expected<std::vector<uint8_t>, AixError> Aix::build(std::span<const AixBuil
         }
         const size_t entry_offset = fixed_header_size + segment_index * segment_entry_size;
         const auto& header = prepared_segments[segment_index].front().header;
-        write_be<uint32_t>(output.data() + entry_offset + 0x00, segment_offset);
-        write_be<uint32_t>(output.data() + entry_offset + 0x04, *segment_size);
-        write_be<uint32_t>(output.data() + entry_offset + 0x08, header.sample_count);
-        write_be<uint32_t>(output.data() + entry_offset + 0x0C, header.sample_rate);
+        write_be(output.data() + entry_offset, AixSegment{
+            segment_offset,
+            *segment_size,
+            static_cast<int32_t>(header.sample_count),
+            static_cast<int32_t>(header.sample_rate),
+        });
     }
 
     return output;

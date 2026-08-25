@@ -16,7 +16,6 @@
 #include <expected>
 #include <variant>
 #include <optional>
-#include <bit>
 #include <concepts>
 #include <utility>
 
@@ -175,15 +174,7 @@ public:
         }
         if (!field) return std::unexpected(field.error());
 
-        if constexpr (std::same_as<T, uint8_t> || std::same_as<T, int8_t>) {
-            return static_cast<T>((*field)[0]);
-        } else if constexpr (std::same_as<T, float>) {
-            return std::bit_cast<float>(io::read_be<uint32_t>(field->data()));
-        } else if constexpr (std::same_as<T, double>) {
-            return std::bit_cast<double>(io::read_be<uint64_t>(field->data()));
-        } else {
-            return io::read_be<T>(field->data());
-        }
+        return io::read_be<T>(field->data());
     }
     
     template<typename T>

@@ -337,7 +337,7 @@ std::expected<void, std::string> SfdContainer::parse() {
     m_streams.clear();
     m_header_summary.reset();
 
-    const auto data = m_reader.data();
+    const auto data = m_source.bytes;
     if (data.size() < pack_start_code.size()) {
         return std::unexpected("SFD data is too small");
     }
@@ -383,7 +383,7 @@ std::expected<void, std::string> SfdContainer::parse() {
             return std::unexpected("SFD packet size field extends past the source size");
         }
 
-        const uint16_t packet_size = m_reader.read_be_at<uint16_t>(offset + 4);
+        const uint16_t packet_size = io::read_be<uint16_t>(data.data() + offset + 4);
         const size_t packet_payload_offset = offset + 6;
         const size_t packet_end = packet_payload_offset + packet_size;
         if (packet_end > data.size()) {

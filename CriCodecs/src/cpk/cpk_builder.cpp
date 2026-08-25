@@ -105,9 +105,8 @@ uint32_t cpk_crc32(std::span<const uint8_t> data, uint32_t seed) noexcept {
 } // namespace
 
 std::expected<std::vector<uint8_t>, std::string> Cpk::save() {
-    if (!m_dirty && m_reader.is_open()) {
-        const auto data = m_reader.data();
-        return std::vector<uint8_t>(data.begin(), data.end());
+    if (!m_dirty && !m_source.empty()) {
+        return std::vector<uint8_t>(m_source.bytes.begin(), m_source.bytes.end());
     }
     return save_impl(false);
 }
@@ -124,7 +123,7 @@ std::expected<std::vector<uint8_t>, std::string> Cpk::save_impl(bool encrypt_utf
     if (auto result = rebuild_state(encrypt_utf_chunks); !result) {
         return std::unexpected(result.error());
     }
-    return m_owned_archive_bytes;
+    return std::vector<uint8_t>(m_source.bytes.begin(), m_source.bytes.end());
 }
 
 std::expected<void, std::string> Cpk::rebuild_state(bool encrypt_utf_chunks) {
@@ -145,12 +144,8 @@ std::expected<void, std::string> Cpk::rebuild_state(bool encrypt_utf_chunks) {
         return std::unexpected(archive.error());
     }
 
-    m_owned_archive_bytes = std::move(*archive);
+    m_source = io::SourceView::from_owned(std::move(*archive));
     m_source_path.clear();
-    m_reader = io::reader{};
-    if (auto result = m_reader.open(std::span<const uint8_t>(m_owned_archive_bytes)); !result) {
-        return std::unexpected(std::string(result.error()));
-    }
     if (auto result = parse(); !result) {
         return std::unexpected(result.error());
     }
@@ -159,13 +154,13 @@ std::expected<void, std::string> Cpk::rebuild_state(bool encrypt_utf_chunks) {
 }
 
 std::expected<void, std::string> Cpk::save_to_file(const std::filesystem::path& output_path) {
-    if (m_dirty || !m_reader.is_open()) {
+    if (m_dirty || m_source.empty()) {
         if (auto result = rebuild_state(false); !result) {
             return std::unexpected(result.error());
         }
     }
 
-    if (auto result = io::write_file_bytes(output_path, m_reader.data(), "CPK build failed"); !result) {
+    if (auto result = io::write_file_bytes(output_path, m_source.bytes, "CPK build failed"); !result) {
         return result;
     }
 

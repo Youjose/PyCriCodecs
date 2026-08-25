@@ -164,12 +164,42 @@ function(cricodecs_add_library target_name)
     endif()
 
     add_library(${target_name} ${cricodecs_sources})
+
+    # Some source files intentionally use the same names in separate anonymous
+    # namespaces. Keep those files as normal translation units when a developer
+    # enables CMake unity builds; this preserves their existing scope semantics
+    # while allowing the rest of the target to use unity compilation.
+    set(cricodecs_unity_safe_exclusions
+        ${CRICODECS_REPO_ROOT}/CriCodecs/src/adx/adx_decoder.cpp
+        ${CRICODECS_REPO_ROOT}/CriCodecs/src/adx/adx_encoder.cpp
+        ${CRICODECS_REPO_ROOT}/CriCodecs/src/acb/acb_builder.cpp
+        ${CRICODECS_REPO_ROOT}/CriCodecs/src/acb/acb_container.cpp
+        ${CRICODECS_REPO_ROOT}/CriCodecs/src/aix/aix_builder.cpp
+        ${CRICODECS_REPO_ROOT}/CriCodecs/src/aix/aix_reader.cpp
+        ${CRICODECS_REPO_ROOT}/CriCodecs/src/cpk/cpk_builder.cpp
+        ${CRICODECS_REPO_ROOT}/CriCodecs/src/cpk/cpk_reader.cpp
+        ${CRICODECS_REPO_ROOT}/CriCodecs/src/cvm/cvm_builder.cpp
+        ${CRICODECS_REPO_ROOT}/CriCodecs/src/cvm/cvm_key_recovery.cpp
+        ${CRICODECS_REPO_ROOT}/CriCodecs/src/cvm/cvm_reader.cpp
+        ${CRICODECS_REPO_ROOT}/CriCodecs/src/sfd/sfd_builder.cpp
+        ${CRICODECS_REPO_ROOT}/CriCodecs/src/sfd/sfd_reader.cpp
+        ${CRICODECS_REPO_ROOT}/CriCodecs/src/usm/usm_adx_key_recovery.cpp
+        ${CRICODECS_REPO_ROOT}/CriCodecs/src/usm/usm_crypto.cpp
+        ${CRICODECS_REPO_ROOT}/CriCodecs/src/usm/usm_key_recovery.cpp
+    )
+    set_source_files_properties(
+        ${cricodecs_unity_safe_exclusions}
+        PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON
+    )
     if(target_name STREQUAL "CriCodecs" AND NOT TARGET CriCodecs::CriCodecs)
         add_library(CriCodecs::CriCodecs ALIAS ${target_name})
     endif()
 
     find_package(Threads REQUIRED)
-    target_compile_features(${target_name} PUBLIC cxx_std_23)
+    target_compile_features(${target_name} PUBLIC cxx_std_26)
+    target_compile_options(${target_name} PUBLIC
+        $<$<COMPILE_LANG_AND_ID:CXX,GNU>:-freflection>
+    )
 
     if(CRICODECS_ENABLE_PCH)
         target_precompile_headers(${target_name} PRIVATE

@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "cvm_key_recovery.hpp"
+#include "../utilities/io_reader.hpp"
 
 namespace cricodecs::cvm {
 
@@ -231,8 +232,7 @@ private:
         std::optional<std::vector<uint8_t>> owned_bytes;
     };
 
-    std::span<const uint8_t> m_source;
-    std::vector<uint8_t> m_owned_source;
+    io::SourceView m_source;
     std::filesystem::path m_source_path;
     std::string m_disc_name;
     std::string m_recording_date_text;
@@ -250,6 +250,10 @@ private:
         std::filesystem::path source_path,
         std::optional<CvmKey> key
     );
+    [[nodiscard]] static std::expected<CvmContainer, std::string> load_source(
+        io::SourceView source,
+        std::filesystem::path source_path,
+        std::optional<CvmKey> key);
     [[nodiscard]] static std::expected<CvmContainer, std::string> load_path(
         const std::filesystem::path& path,
         std::optional<CvmKey> key

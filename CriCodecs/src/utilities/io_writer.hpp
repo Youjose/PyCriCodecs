@@ -46,19 +46,27 @@ public:
     std::expected<void, const char*> write(std::span<const uint8_t> data);
     std::expected<void, const char*> flush();
 
-    template<EndianSwappable T>
-    void write_le(T value) noexcept {
+    template<std::endian Order, EndianSwappable T>
+    void write(const T& value) noexcept {
         std::array<uint8_t, sizeof(T)> bytes;
-        io::write_le<T>(bytes.data(), value);
+        io::write_struct<Order>(bytes.data(), value);
         write_to_buffer(bytes.data(), bytes.size());
     }
 
-    template<EndianSwappable T>
-    void write_be(T value) noexcept {
-        std::array<uint8_t, sizeof(T)> bytes;
-        io::write_be<T>(bytes.data(), value);
-        write_to_buffer(bytes.data(), bytes.size());
+    template<std::endian Order, EndianSwappable T>
+    void write(std::span<const T> values) noexcept {
+        if (values.empty()) return;
+        if constexpr (Order == std::endian::native) {
+            write_to_buffer(reinterpret_cast<const uint8_t*>(values.data()), values.size_bytes());
+        } else {
+            for (const auto& value : values) write<Order>(value);
+        }
     }
+
+    template<EndianSwappable T> void write_le(const T& value) noexcept { write<std::endian::little>(value); }
+    template<EndianSwappable T> void write_be(const T& value) noexcept { write<std::endian::big>(value); }
+    template<EndianSwappable T> void write_le(std::span<const T> values) noexcept { write<std::endian::little>(values); }
+    template<EndianSwappable T> void write_be(std::span<const T> values) noexcept { write<std::endian::big>(values); }
 
     void write_bytes(std::span<const uint8_t> data) noexcept {
         write_to_buffer(data.data(), data.size());

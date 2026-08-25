@@ -13,8 +13,6 @@
 #include <limits>
 #include <cmath>
 #include <cstring>
-#include <memory>
-#include <type_traits>
 #include <utility>
 
 namespace cricodecs::wav {
@@ -29,32 +27,6 @@ namespace cricodecs::wav {
     static constexpr uint16_t WAVE_FORMAT_PCM        = 0x0001;
     static constexpr uint16_t WAVE_FORMAT_IEEE_FLOAT = 0x0003;
     static constexpr uint16_t WAVE_FORMAT_EXTENSIBLE = 0xFFFE;
-    static constexpr uint32_t PCM_FORMAT_SIZE = 16;
-
-    [[nodiscard]] constexpr size_t storage_bytes_for_bits(uint16_t bits) noexcept {
-        return (static_cast<size_t>(bits) + 7) / 8;
-    }
-
-    [[nodiscard]] constexpr bool checked_range(size_t offset, size_t size, size_t limit) noexcept {
-        return offset <= limit && size <= limit - offset;
-    }
-
-    [[nodiscard]] std::span<const uint8_t> bounded_subspan(
-        std::span<const uint8_t> bytes, size_t offset, size_t size) noexcept
-    {
-        return checked_range(offset, size, bytes.size()) ? bytes.subspan(offset, size) : std::span<const uint8_t>{};
-    }
-
-    template <typename T>
-    [[nodiscard]] T read_le_unaligned(const uint8_t* data) noexcept {
-        if constexpr (std::is_same_v<T, float>) {
-            return std::bit_cast<float>(io::read_le<uint32_t>(data));
-        } else if constexpr (std::is_same_v<T, double>) {
-            return std::bit_cast<double>(io::read_le<uint64_t>(data));
-        } else {
-            return io::read_le<T>(data);
-        }
-    }
 
     [[nodiscard]] constexpr int16_t float_to_pcm16(double sample) noexcept {
         if (!std::isfinite(sample)) {
@@ -112,18 +84,18 @@ namespace cricodecs::wav {
         [[nodiscard]] int16_t operator()(const uint8_t* sample) const noexcept {
             switch (encoding) {
             case PcmEncoding::unsigned_8: return pcm8_to_pcm16(*sample, valid_bits);
-            case PcmEncoding::signed_16: return read_le_unaligned<int16_t>(sample);
-            case PcmEncoding::signed_24: return signed_pcm_to_pcm16(read_le_unaligned<io::Int24>(sample), valid_bits);
-            case PcmEncoding::signed_32: return signed_pcm_to_pcm16(read_le_unaligned<int32_t>(sample), valid_bits);
-            case PcmEncoding::float_32: return float_to_pcm16(read_le_unaligned<float>(sample));
-            case PcmEncoding::float_64: return float_to_pcm16(read_le_unaligned<double>(sample));
+            case PcmEncoding::signed_16: return io::read_le<int16_t>(sample);
+            case PcmEncoding::signed_24: return signed_pcm_to_pcm16(io::read_le<io::Int24>(sample), valid_bits);
+            case PcmEncoding::signed_32: return signed_pcm_to_pcm16(io::read_le<int32_t>(sample), valid_bits);
+            case PcmEncoding::float_32: return float_to_pcm16(io::read_le<float>(sample));
+            case PcmEncoding::float_64: return float_to_pcm16(io::read_le<double>(sample));
             }
             std::unreachable();
         }
     };
 
     [[nodiscard]] std::expected<PcmDecoder, std::string> make_pcm_decoder(PcmFormat format) {
-        const size_t sample_bytes = storage_bytes_for_bits(format.storage_bits);
+        const size_t sample_bytes = util::divide_round_up(format.storage_bits, 8u);
         if (format.compression == WAVE_FORMAT_IEEE_FLOAT) {
             if (format.storage_bits == 32) {
                 return PcmDecoder{PcmEncoding::float_32, sample_bytes, format.valid_bits};
@@ -172,15 +144,19 @@ namespace cricodecs::wav {
         }
 
         if (!loops.empty()) {
-            if (loops.size() > (std::numeric_limits<uint32_t>::max() - 36) / 24) {
+            if (loops.size() >
+                (std::numeric_limits<uint32_t>::max() - sizeof(SamplerChunkHeader)) / sizeof(SampleLoop)) {
                 return std::unexpected(std::string("WAV write failed: too many sample loops"));
             }
-            layout.smpl_size = 36 + static_cast<uint32_t>(loops.size()) * 24;
+            layout.smpl_size = static_cast<uint32_t>(
+                sizeof(SamplerChunkHeader) + loops.size() * sizeof(SampleLoop));
         }
 
-        uint64_t riff_size = 4ull + (8ull + PCM_FORMAT_SIZE) + (8ull + layout.data_size);
+        uint64_t riff_size = sizeof(uint32_t) +
+            (sizeof(ChunkHeader) + sizeof(WavFormatHeader)) +
+            (sizeof(ChunkHeader) + layout.data_size);
         if (!loops.empty()) {
-            riff_size += 8ull + layout.smpl_size;
+            riff_size += sizeof(ChunkHeader) + layout.smpl_size;
         }
         if (riff_size > std::numeric_limits<uint32_t>::max()) {
             return std::unexpected(std::string("WAV write failed: PCM data is too large for RIFF WAVE"));
@@ -190,55 +166,30 @@ namespace cricodecs::wav {
         return layout;
     }
 
-    template <typename WriteU16, typename WriteU32>
-    void emit_wave_header(
-        WriteU16&& write_u16,
-        WriteU32&& write_u32,
+    uint8_t* emit_wave_header(
+        uint8_t* output,
         const WavWriteLayout& layout,
         uint32_t sample_rate,
         uint16_t channels,
         std::span<const SampleLoop> loops)
     {
-        write_u32(RIFF_MAGIC);
-        write_u32(layout.riff_size);
-        write_u32(WAVE_MAGIC);
-
-        write_u32(FMT_MAGIC);
+        output = io::write_le(output, RiffHeader{RIFF_MAGIC, layout.riff_size, WAVE_MAGIC});
         const auto block_align = static_cast<uint16_t>(channels * sizeof(int16_t));
-        write_u32(PCM_FORMAT_SIZE);
-        write_u16(WAVE_FORMAT_PCM);
-        write_u16(channels);
-        write_u32(sample_rate);
-        write_u32(sample_rate * block_align);
-        write_u16(block_align);
-        write_u16(16);
+        output = io::write_le(output, ChunkHeader{FMT_MAGIC, static_cast<uint32_t>(sizeof(WavFormatHeader))});
+        output = io::write_le(output, WavFormatHeader{
+            WAVE_FORMAT_PCM, channels, sample_rate, sample_rate * block_align, block_align, 16,
+        });
 
         if (!loops.empty()) {
-            write_u32(SMPL_MAGIC);
-            write_u32(layout.smpl_size);
-
-            write_u32(0);
-            write_u32(0);
-            write_u32(sample_rate > 0 ? 1000000000 / sample_rate : 0);
-            write_u32(60);
-            write_u32(0);
-            write_u32(0);
-            write_u32(0);
-            write_u32(static_cast<uint32_t>(loops.size()));
-            write_u32(0);
-
-            for (const auto& loop : loops) {
-                write_u32(loop.cue_point_id);
-                write_u32(loop.type);
-                write_u32(loop.start);
-                write_u32(loop.end);
-                write_u32(loop.fraction);
-                write_u32(loop.play_count);
-            }
+            output = io::write_le(output, ChunkHeader{SMPL_MAGIC, layout.smpl_size});
+            output = io::write_le(output, SamplerChunkHeader{
+                {0, 0, 1000000000 / sample_rate, 60, 0, 0, 0},
+                static_cast<uint32_t>(loops.size()), 0,
+            });
+            output = io::write_le(output, loops);
         }
 
-        write_u32(DATA_MAGIC);
-        write_u32(layout.data_size);
+        return io::write_le(output, ChunkHeader{DATA_MAGIC, layout.data_size});
     }
 
     void emit_wave(
@@ -249,19 +200,9 @@ namespace cricodecs::wav {
         uint16_t channels,
         std::span<const SampleLoop> loops)
     {
-        size_t offset = 0;
-        emit_wave_header(
-            [&](uint16_t value) {
-                io::write_le<uint16_t>(output.data() + offset, value);
-                offset += sizeof(value);
-            },
-            [&](uint32_t value) {
-                io::write_le<uint32_t>(output.data() + offset, value);
-                offset += sizeof(value);
-            },
-            layout, sample_rate, channels, loops);
+        auto* position = emit_wave_header(output.data(), layout, sample_rate, channels, loops);
         if (!pcm_data.empty()) {
-            std::memcpy(output.data() + offset, pcm_data.data(), pcm_data.size_bytes());
+            std::memcpy(position, pcm_data.data(), pcm_data.size_bytes());
         }
     }
 
@@ -355,23 +296,23 @@ namespace cricodecs::wav {
                 [bits = decoder->valid_bits](const uint8_t* src) { return pcm8_to_pcm16(*src, bits); });
         case PcmEncoding::signed_16:
             return convert_pcm_payload(source, target, frame_count, channels, block_align, 2,
-                [](const uint8_t* src) { return read_le_unaligned<int16_t>(src); });
+                [](const uint8_t* src) { return io::read_le<int16_t>(src); });
         case PcmEncoding::signed_24:
             return convert_pcm_payload(source, target, frame_count, channels, block_align, 3,
                 [bits = decoder->valid_bits](const uint8_t* src) {
-                    return signed_pcm_to_pcm16(read_le_unaligned<io::Int24>(src), bits);
+                    return signed_pcm_to_pcm16(io::read_le<io::Int24>(src), bits);
                 });
         case PcmEncoding::signed_32:
             return convert_pcm_payload(source, target, frame_count, channels, block_align, 4,
                 [bits = decoder->valid_bits](const uint8_t* src) {
-                    return signed_pcm_to_pcm16(read_le_unaligned<int32_t>(src), bits);
+                    return signed_pcm_to_pcm16(io::read_le<int32_t>(src), bits);
                 });
         case PcmEncoding::float_32:
             return convert_pcm_payload(source, target, frame_count, channels, block_align, 4,
-                [](const uint8_t* src) { return float_to_pcm16(read_le_unaligned<float>(src)); });
+                [](const uint8_t* src) { return float_to_pcm16(io::read_le<float>(src)); });
         case PcmEncoding::float_64:
             return convert_pcm_payload(source, target, frame_count, channels, block_align, 8,
-                [](const uint8_t* src) { return float_to_pcm16(read_le_unaligned<double>(src)); });
+                [](const uint8_t* src) { return float_to_pcm16(io::read_le<double>(src)); });
         }
         std::unreachable();
     }
@@ -381,24 +322,21 @@ namespace cricodecs::wav {
     }
 
     std::expected<void, std::string> WavContainer::load(const std::filesystem::path& path) {
-        auto bytes = io::read_file_bytes(path, "WAV load failed");
-        if (!bytes) {
-            return std::unexpected(bytes.error());
+        auto source = io::SourceView::from_file(path);
+        if (!source) {
+            return std::unexpected(
+                "WAV load failed: failed to open " + path.string() + " (" + source.error() + ")");
         }
-
-        auto res = load(std::move(*bytes));
-        if (!res) {
-            return res;
-        }
+        m_source = std::move(*source);
+        m_source_path.clear();
+        if (auto result = parse_headers(); !result) return result;
         m_source_path = path;
         return {};
     }
 
     std::expected<void, std::string> WavContainer::load(std::vector<uint8_t>&& data) {
         m_source_path.clear();
-        auto owner = std::make_shared<std::vector<uint8_t>>(std::move(data));
-        const std::span<const uint8_t> bytes(*owner);
-        m_source = io::SourceView(bytes, std::move(owner));
+        m_source = io::SourceView::from_owned(std::move(data));
         return parse_headers();
     }
 
@@ -407,62 +345,50 @@ namespace cricodecs::wav {
     }
 
     std::expected<void, std::string> WavContainer::parse_headers() {
-        io::reader reader;
-        if (!reader.open(m_source) || reader.size() < 12) {
-            return std::unexpected(std::string("WAV parse failed: invalid RIFF/WAVE header"));
-        }
-
         m_pcm_offset = 0;
         m_pcm_size = 0;
         m_format = {};
         m_sampler = {};
         m_cues.clear();
         m_pcm16_cache.reset();
+
+        io::reader reader;
+        if (!reader.open(m_source) || reader.size() < 12) {
+            return std::unexpected(std::string("WAV parse failed: invalid RIFF/WAVE header"));
+        }
         
-        if (reader.read_le<uint32_t>() != RIFF_MAGIC) return std::unexpected(std::string("WAV parse failed: invalid RIFF/WAVE header"));
-        const uint32_t full_size = reader.read_le<uint32_t>();
-        if (reader.read_le<uint32_t>() != WAVE_MAGIC) return std::unexpected(std::string("WAV parse failed: invalid RIFF/WAVE header"));
+        const auto riff = reader.read_le<RiffHeader>();
+        if (riff.signature != RIFF_MAGIC || riff.format != WAVE_MAGIC) {
+            return std::unexpected(std::string("WAV parse failed: invalid RIFF/WAVE header"));
+        }
 
         size_t sum_size = 4;
         bool has_fmt = false;
 
-        while (sum_size < full_size && reader.remaining() >= 8) {
+        while (sum_size < riff.size && reader.remaining() >= sizeof(ChunkHeader)) {
             const size_t chunk_start = reader.tell();
-            const uint32_t sig = reader.read_le<uint32_t>();
-            const uint32_t size = reader.read_le<uint32_t>();
+            const auto chunk = reader.read_le<ChunkHeader>();
             
             const size_t data_offset = reader.tell();
-            size_t total_chunk_size = static_cast<size_t>(size) + 8;
+            size_t total_chunk_size = static_cast<size_t>(chunk.size) + sizeof(ChunkHeader);
             
-            if ((size & 1) && (total_chunk_size + sum_size + 1 <= full_size)) {
+            if ((chunk.size & 1) && (total_chunk_size + sum_size + 1 <= riff.size)) {
                 total_chunk_size += 1;
             }
 
-            if (!checked_range(data_offset, size, reader.size())) {
+            if (chunk.size > reader.remaining()) {
                 return std::unexpected(std::string("WAV I/O failed"));
             }
 
-            switch (sig) {
+            switch (chunk.signature) {
             case FMT_MAGIC: {
-                if (size < 16) return std::unexpected(std::string("WAV parse failed: invalid format data"));
-                
-                m_format.compression_mode = reader.read_le<uint16_t>();
-                m_format.channels = reader.read_le<uint16_t>();
-                m_format.sample_rate = reader.read_le<uint32_t>();
-                m_format.avg_bytes_per_sec = reader.read_le<uint32_t>();
-                m_format.block_align = reader.read_le<uint16_t>();
-                m_format.bit_depth = reader.read_le<uint16_t>();
+                if (chunk.size < sizeof(WavFormatHeader)) return std::unexpected(std::string("WAV parse failed: invalid format data"));
+                static_cast<WavFormatHeader&>(m_format) = reader.read_le<WavFormatHeader>();
                 
                 if (m_format.compression_mode == WAVE_FORMAT_EXTENSIBLE) {
-                    if (size < 40) return std::unexpected(std::string("WAV parse failed: invalid format data"));
-                    m_format.extension_size = reader.read_le<uint16_t>();
+                    if (chunk.size < sizeof(WavFormatHeader) + sizeof(WavFormatExtension)) return std::unexpected(std::string("WAV parse failed: invalid format data"));
+                    static_cast<WavFormatExtension&>(m_format) = reader.read_le<WavFormatExtension>();
                     if (m_format.extension_size < 22) return std::unexpected(std::string("WAV parse failed: invalid format data"));
-                    m_format.valid_bits_per_sample = reader.read_le<uint16_t>();
-                    m_format.channel_mask = reader.read_le<uint32_t>();
-                    m_format.sub_format.Data1 = reader.read_le<uint32_t>();
-                    m_format.sub_format.Data2 = reader.read_le<uint16_t>();
-                    m_format.sub_format.Data3 = reader.read_le<uint16_t>();
-                    m_format.sub_format.Data4 = reader.read_le<uint64_t>();
 
                     if (m_format.sub_format.Data1 != WAVE_FORMAT_PCM && 
                         m_format.sub_format.Data1 != WAVE_FORMAT_EXTENSIBLE && 
@@ -480,58 +406,34 @@ namespace cricodecs::wav {
                 break;
             }
             case SMPL_MAGIC: {
-                if (size < 36) return std::unexpected(std::string("WAV parse failed: invalid smpl loop data"));
+                if (chunk.size < sizeof(SamplerChunkHeader)) return std::unexpected(std::string("WAV parse failed: invalid smpl loop data"));
+                const auto sampler = reader.read_le<SamplerChunkHeader>();
+                static_cast<SamplerHeader&>(m_sampler) = sampler.sampler;
                 
-                m_sampler.manufacturer = reader.read_le<uint32_t>();
-                m_sampler.product = reader.read_le<uint32_t>();
-                m_sampler.sample_period = reader.read_le<uint32_t>();
-                m_sampler.midi_unity_note = reader.read_le<uint32_t>();
-                m_sampler.midi_pitch_fraction = reader.read_le<uint32_t>();
-                m_sampler.smpte_format = reader.read_le<uint32_t>();
-                m_sampler.smpte_offset = reader.read_le<uint32_t>();
-                uint32_t num_loops = reader.read_le<uint32_t>();
-                uint32_t sampler_data_size = reader.read_le<uint32_t>();
-                
-                const uint64_t expected_size = 36ull + static_cast<uint64_t>(num_loops) * 24ull + sampler_data_size;
-                if (size < expected_size) return std::unexpected(std::string("WAV parse failed: invalid smpl loop data"));
+                const uint64_t expected_size = sizeof(SamplerChunkHeader) +
+                    static_cast<uint64_t>(sampler.loop_count) * sizeof(SampleLoop) + sampler.sampler_data_size;
+                if (chunk.size < expected_size) return std::unexpected(std::string("WAV parse failed: invalid smpl loop data"));
 
-                for (uint32_t i = 0; i < num_loops; ++i) {
-                    SampleLoop loop;
-                    loop.cue_point_id = reader.read_le<uint32_t>();
-                    loop.type = reader.read_le<uint32_t>();
-                    loop.start = reader.read_le<uint32_t>();
-                    loop.end = reader.read_le<uint32_t>();
-                    loop.fraction = reader.read_le<uint32_t>();
-                    loop.play_count = reader.read_le<uint32_t>();
-                    m_sampler.loops.push_back(loop);
-                }
-                if (sampler_data_size > 0) {
-                    auto data_span = reader.read_bytes(sampler_data_size);
+                m_sampler.loops.resize(sampler.loop_count);
+                reader.read_le(std::span{m_sampler.loops});
+                if (sampler.sampler_data_size > 0) {
+                    auto data_span = reader.read_bytes(sampler.sampler_data_size);
                     m_sampler.sampler_data.assign(data_span.begin(), data_span.end());
                 }
                 break;
             }
             case DATA_MAGIC: {
                 m_pcm_offset = data_offset;
-                m_pcm_size = size;
+                m_pcm_size = chunk.size;
                 break;
             }
             case CUE_MAGIC: {
-                if (size < 4) return std::unexpected(std::string("WAV parse failed: invalid format data"));
+                if (chunk.size < 4) return std::unexpected(std::string("WAV parse failed: invalid format data"));
                 uint32_t num_cues = reader.read_le<uint32_t>();
-                const uint64_t expected_size = 4ull + static_cast<uint64_t>(num_cues) * 24ull;
-                if (size < expected_size) return std::unexpected(std::string("WAV parse failed: invalid format data"));
-                
-                for (uint32_t i = 0; i < num_cues; ++i) {
-                    CuePoint cp;
-                    cp.name = reader.read_le<uint32_t>();
-                    cp.position = reader.read_le<uint32_t>();
-                    cp.chunk_id = reader.read_le<uint32_t>();
-                    cp.chunk_start = reader.read_le<uint32_t>();
-                    cp.block_start = reader.read_le<uint32_t>();
-                    cp.sample_offset = reader.read_le<uint32_t>();
-                    m_cues.push_back(cp);
-                }
+                const uint64_t expected_size = sizeof(num_cues) + static_cast<uint64_t>(num_cues) * sizeof(CuePoint);
+                if (chunk.size < expected_size) return std::unexpected(std::string("WAV parse failed: invalid format data"));
+                m_cues.resize(num_cues);
+                reader.read_le(std::span{m_cues});
                 break;
             }
             default:
@@ -540,7 +442,7 @@ namespace cricodecs::wav {
 
             sum_size += total_chunk_size;
             
-            if (sum_size > full_size) return std::unexpected(std::string("WAV parse failed: chunk table exceeds RIFF size"));
+            if (sum_size > riff.size) return std::unexpected(std::string("WAV parse failed: chunk table exceeds RIFF size"));
             
             reader.seek(chunk_start + total_chunk_size);
         }
@@ -569,7 +471,7 @@ namespace cricodecs::wav {
         }
 
         const auto pcm = pcm_format(m_format);
-        const size_t storage_bytes = storage_bytes_for_bits(pcm.storage_bits);
+        const size_t storage_bytes = util::divide_round_up(pcm.storage_bits, 8u);
         if (storage_bytes == 0 || storage_bytes > 8 ||
             m_format.block_align < m_format.channels * storage_bytes ||
             pcm.valid_bits == 0) {
@@ -616,8 +518,8 @@ namespace cricodecs::wav {
 
         const size_t offset = (index / m_format.channels) * m_format.block_align +
             (index % m_format.channels) * decoder->sample_bytes;
-        const auto pcm = bounded_subspan(m_source, m_pcm_offset, m_pcm_size);
-        if (!checked_range(offset, decoder->sample_bytes, pcm.size())) {
+        const auto pcm = m_source.subspan(m_pcm_offset, m_pcm_size);
+        if (offset > pcm.size() || decoder->sample_bytes > pcm.size() - offset) {
             return std::unexpected(std::string("WAV read failed: PCM data is out of bounds"));
         }
         return (*decoder)(pcm.data() + offset);
@@ -637,10 +539,7 @@ namespace cricodecs::wav {
         }
 
         const size_t total_samples = frames * m_format.channels;
-        const auto pcm_bytes = bounded_subspan(m_source, m_pcm_offset, m_pcm_size);
-        if (pcm_bytes.size() != m_pcm_size) {
-            return std::unexpected(std::string("WAV read failed: PCM data is out of bounds"));
-        }
+        const auto pcm_bytes = m_source.subspan(m_pcm_offset, m_pcm_size);
 
         m_pcm16_cache.emplace(total_samples);
 
@@ -716,35 +615,9 @@ namespace cricodecs::wav {
         uint16_t channels,
         std::span<const SampleLoop> loops)
     {
-        auto layout = make_write_layout(pcm_data, sample_rate, channels, loops);
-        if (!layout) {
-            return std::unexpected(layout.error());
-        }
-
-        io::writer writer;
-        auto open_res = writer.open(std::filesystem::path(path));
-        if (!open_res) {
-            return std::unexpected(std::string("WAV write failed: could not open output file"));
-        }
-
-        emit_wave_header(
-            [&](uint16_t value) { writer.write_le<uint16_t>(value); },
-            [&](uint32_t value) { writer.write_le<uint32_t>(value); },
-            *layout,
-            sample_rate,
-            channels,
-            loops
-        );
-        if (auto written = writer.write(pcm_data.data(), pcm_data.size_bytes()); !written) {
-            return std::unexpected(std::string("WAV write failed"));
-        }
-
-        auto close_res = writer.close();
-        if (!close_res) {
-            return std::unexpected(std::string("WAV write failed"));
-        }
-
-        return {};
+        return build_bytes(pcm_data, sample_rate, channels, loops).and_then([&](const auto& bytes) {
+            return io::write_file_bytes(path, bytes, "WAV write failed");
+        });
     }
 
 }

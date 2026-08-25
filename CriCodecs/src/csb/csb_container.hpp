@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "../utf/utf_table.hpp"
+#include "../utilities/io_reader.hpp"
 #include "../utilities/text_encoding.hpp"
 
 namespace cricodecs::csb {
@@ -150,8 +151,7 @@ public:
     [[nodiscard]] std::expected<void, std::string> set_element_streamed(uint32_t index, bool streamed);
 
 private:
-    std::span<const uint8_t> m_source;
-    std::vector<uint8_t> m_owned_source;
+    io::SourceView m_source;
     std::filesystem::path m_source_path;
     utf::UtfTable m_header;
     utf::UtfTable m_sound_element;
@@ -162,6 +162,9 @@ private:
     std::vector<uint32_t> m_embedded_indices;
 
     [[nodiscard]] std::expected<void, std::string> parse();
+    [[nodiscard]] static std::expected<CsbContainer, std::string> load_source(
+        io::SourceView source,
+        const text::EncodingOptions& encoding);
     [[nodiscard]] std::expected<void, std::string> parse_sections();
     [[nodiscard]] std::expected<void, std::string> parse_sound_elements();
 

@@ -120,17 +120,25 @@ std::expected<AcbContainer, std::string> AcbContainer::load(
     std::span<const uint8_t> data,
     const text::EncodingOptions& encoding
 ) {
-    return load(std::vector<uint8_t>(data.begin(), data.end()), encoding);
+    return load_source(
+        io::SourceView::from_owned(std::vector<uint8_t>(data.begin(), data.end())),
+        encoding);
 }
 
 std::expected<AcbContainer, std::string> AcbContainer::load(
     std::vector<uint8_t>&& data,
     const text::EncodingOptions& encoding
 ) {
+    return load_source(io::SourceView::from_owned(std::move(data)), encoding);
+}
+
+std::expected<AcbContainer, std::string> AcbContainer::load_source(
+    io::SourceView source,
+    const text::EncodingOptions& encoding
+) {
     AcbContainer acb;
     acb.m_encoding = encoding;
-    acb.m_owned_source = std::move(data);
-    acb.m_source = acb.m_owned_source;
+    acb.m_source = std::move(source);
 
     if (auto result = acb.finish_load_from_source(); !result) {
         return std::unexpected(result.error());
@@ -142,21 +150,19 @@ std::expected<AcbContainer, std::string> AcbContainer::load(
     const std::filesystem::path& path,
     const text::EncodingOptions& encoding
 ) {
-    auto bytes = io::read_file_bytes(path, "ACB load failed");
-    if (!bytes) {
-        return std::unexpected(bytes.error());
+    auto source = io::SourceView::from_file(path);
+    if (!source) {
+        return std::unexpected("ACB load failed: " + path.string() + " (" + source.error() + ")");
     }
-
-    auto acb = load(std::move(*bytes), encoding);
-    if (!acb) {
-        return std::unexpected(acb.error());
-    }
-    acb->m_source_path = path;
-    return acb;
+    return load_source(std::move(*source), encoding)
+        .transform([&](AcbContainer acb) {
+            acb.m_source_path = path;
+            return acb;
+        });
 }
 
 std::expected<void, std::string> AcbContainer::finish_load_from_source() {
-    auto header = UtfTable::load(m_source);
+    auto header = UtfTable::load(m_source.bytes);
     if (!header) {
         return std::unexpected("ACB load failed: " + header.error());
     }
@@ -170,7 +176,7 @@ std::expected<void, std::string> AcbContainer::finish_load_from_source() {
     }
     preload_waveforms();
 
-    auto graph = AcbCueGraph::load(m_source, m_encoding);
+    auto graph = AcbCueGraph::load(m_source.bytes, m_encoding);
     if (!graph) {
         return std::unexpected("ACB cue graph load failed: " + graph.error());
     }

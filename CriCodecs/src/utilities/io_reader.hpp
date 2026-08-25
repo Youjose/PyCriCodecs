@@ -39,6 +39,11 @@ struct SourceView {
     SourceView(std::span<const uint8_t> bytes, Owner owner = {})
         : bytes(bytes), owner(std::move(owner)) {}
 
+    [[nodiscard]] static SourceView from_owned(std::vector<uint8_t> bytes);
+    [[nodiscard]] static std::expected<SourceView, const char*> from_file(
+        const std::filesystem::path& path,
+        access_pattern pattern = access_pattern::sequential);
+
     [[nodiscard]] const uint8_t* data() const noexcept { return bytes.data(); }
     [[nodiscard]] size_t size() const noexcept { return bytes.size(); }
     [[nodiscard]] bool empty() const noexcept { return bytes.empty(); }
@@ -240,22 +245,26 @@ public:
         m_cursor += n > available ? available : n;
     }
 
-    // These are the fast-path: no std::expected overhead, return T{} on OOB
-    template<EndianSwappable T>
-    T read_le() noexcept {
+    // Fast path: single reads return T{} and span reads do nothing on OOB.
+    template<std::endian Order, EndianSwappable T>
+    T read() noexcept {
         if (remaining() < sizeof(T)) return T{};
-        T val = io::read_le<T>(m_data_ptr + m_cursor);
+        T val = io::read_struct<Order, T>(m_data_ptr + m_cursor);
         m_cursor += sizeof(T);
         return val;
     }
 
-    template<EndianSwappable T>
-    T read_be() noexcept {
-        if (remaining() < sizeof(T)) return T{};
-        T val = io::read_be<T>(m_data_ptr + m_cursor);
-        m_cursor += sizeof(T);
-        return val;
+    template<std::endian Order, EndianSwappable T>
+    void read(std::span<T> values) noexcept {
+        if (remaining() < values.size_bytes()) return;
+        io::read_structs<Order>(m_data_ptr + m_cursor, values);
+        m_cursor += values.size_bytes();
     }
+
+    template<EndianSwappable T> T read_le() noexcept { return read<std::endian::little, T>(); }
+    template<EndianSwappable T> T read_be() noexcept { return read<std::endian::big, T>(); }
+    template<EndianSwappable T> void read_le(std::span<T> values) noexcept { read<std::endian::little>(values); }
+    template<EndianSwappable T> void read_be(std::span<T> values) noexcept { read<std::endian::big>(values); }
 
     template<EndianSwappable T>
     T read_le_at(size_t offset) const noexcept {
@@ -320,6 +329,24 @@ private:
     size_t m_cursor = 0;
     bool m_has_external_source = false;  // true when bound to caller-owned memory, including empty spans
 };
+
+inline SourceView SourceView::from_owned(std::vector<uint8_t> bytes) {
+    auto storage = std::make_shared<const std::vector<uint8_t>>(std::move(bytes));
+    const std::span<const uint8_t> view(*storage);
+    return SourceView(view, std::move(storage));
+}
+
+inline std::expected<SourceView, const char*> SourceView::from_file(
+    const std::filesystem::path& path,
+    access_pattern pattern)
+{
+    auto source = std::make_shared<reader>();
+    if (auto result = source->open(path, pattern); !result) {
+        return std::unexpected(result.error());
+    }
+    const auto view = source->data();
+    return SourceView(view, std::move(source));
+}
 
 [[nodiscard]] inline std::expected<std::vector<uint8_t>, std::string> read_file_bytes(
     const std::filesystem::path& path,

@@ -8,6 +8,7 @@
  */
 
 #include "utf_table.hpp"
+#include "utf_format.hpp"
 
 #include "../utilities/io_endian.hpp"
 #include "../utilities/flat_unordered_map.hpp"
@@ -337,16 +338,18 @@ std::vector<uint8_t> UtfTable::build() const {
     std::vector<uint8_t> output(padded_size, 0);
     uint8_t* buf = output.data();
 
-    write_be<uint32_t>(buf + 0x00, MAGIC_UTF);
-    write_be<uint32_t>(buf + 0x04, padded_size - 0x08);
-    write_be<uint16_t>(buf + 0x08, m_version);
-    write_be<uint16_t>(buf + 0x0A, static_cast<uint16_t>(rows_offset - 0x08));
-    write_be<uint32_t>(buf + 0x0C, strings_offset - 0x08);
-    write_be<uint32_t>(buf + 0x10, data_offset - 0x08);
-    write_be<uint32_t>(buf + 0x14, table_name_offset);
-    write_be<uint16_t>(buf + 0x18, static_cast<uint16_t>(m_columns.size()));
-    write_be<uint16_t>(buf + 0x1A, static_cast<uint16_t>(header_row_width));
-    write_be<uint32_t>(buf + 0x1C, rows);
+    write_be(buf, detail::UtfHeader{
+        .magic = MAGIC_UTF,
+        .table_size = padded_size - 0x08,
+        .version = m_version,
+        .rows_offset = static_cast<uint16_t>(rows_offset - 0x08),
+        .strings_offset = strings_offset - 0x08,
+        .data_offset = data_offset - 0x08,
+        .name_offset = table_name_offset,
+        .column_count = static_cast<uint16_t>(m_columns.size()),
+        .row_width = static_cast<uint16_t>(header_row_width),
+        .row_count = rows,
+    });
 
     auto write_value = [&](uint8_t* dst, const Value& val) {
         std::visit([&](auto&& v) {

@@ -32,6 +32,16 @@ constexpr uint32_t hca_magic = io::FourCC{"HCA\0"}.be_value();
 constexpr size_t directory_entry_size = 0x30;
 constexpr size_t directory_name_size = 0x20;
 
+struct AfsHeader {
+    uint32_t magic;
+    uint32_t entry_count;
+};
+
+struct AfsRange {
+    uint32_t offset;
+    uint32_t size;
+};
+
 [[nodiscard]] inline AfsEntryType detect_entry_type(std::span<const uint8_t> source, uint32_t offset, uint32_t size) {
     if (offset > source.size() || size > source.size() - offset || size < sizeof(uint32_t)) {
         return AfsEntryType::unknown;
@@ -59,23 +69,23 @@ constexpr size_t directory_name_size = 0x20;
 }
 
 [[nodiscard]] inline uint32_t first_present_source_offset(std::span<const uint8_t> source) {
-    if (source.size() < 8 || !std::equal(afs_magic.begin(), afs_magic.end(), source.begin())) {
+    if (source.size() < sizeof(AfsHeader)) {
         return 0;
     }
 
-    const uint32_t entry_count = read_le<uint32_t>(source.data() + 0x04);
-    const uint64_t table_end = 0x08ull + static_cast<uint64_t>(entry_count) * 0x08ull;
+    const auto header = read_le<AfsHeader>(source.data());
+    if (header.magic != afs_magic.le_value()) return 0;
+
+    const uint64_t table_end = sizeof(AfsHeader) +
+        static_cast<uint64_t>(header.entry_count) * sizeof(AfsRange);
     if (table_end > source.size()) {
         return 0;
     }
 
-    for (uint32_t index = 0; index < entry_count; ++index) {
-        const size_t entry_offset = 0x08u + static_cast<size_t>(index) * 0x08u;
-        const uint32_t offset = read_le<uint32_t>(source.data() + entry_offset + 0x00);
-        const uint32_t size = read_le<uint32_t>(source.data() + entry_offset + 0x04);
-        if (offset != 0 || size != 0) {
-            return offset;
-        }
+    const auto* entries = source.data() + sizeof(AfsHeader);
+    for (uint32_t index = 0; index < header.entry_count; ++index) {
+        const auto entry = read_le<AfsRange>(entries + index * sizeof(AfsRange));
+        if (entry.offset != 0 || entry.size != 0) return entry.offset;
     }
 
     return 0;

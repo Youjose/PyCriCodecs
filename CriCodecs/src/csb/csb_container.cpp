@@ -27,7 +27,7 @@ std::filesystem::path CsbStreamInfo::suggested_path() const {
 }
 
 std::expected<std::vector<uint8_t>, std::string> CsbContainer::save() const {
-    return std::vector<uint8_t>(m_source.begin(), m_source.end());
+    return std::vector<uint8_t>(m_source.bytes.begin(), m_source.bytes.end());
 }
 
 std::expected<void, std::string> CsbContainer::save_to_file(const std::filesystem::path& output_path) const {
@@ -45,7 +45,7 @@ std::expected<void, std::string> CsbContainer::save_to_file(const std::filesyste
     if (auto result = writer.open(output_path); !result) {
         return std::unexpected("CSB save failed: could not open output file: " + output_path.string());
     }
-    if (auto result = writer.write(m_source); !result) {
+    if (auto result = writer.write(m_source.bytes); !result) {
         return std::unexpected("CSB save failed: could not write output file: " + output_path.string());
     }
     if (auto result = writer.close(); !result) {

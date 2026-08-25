@@ -24,6 +24,33 @@ namespace cricodecs::wav {
         uint64_t Data4;
     };
 
+    struct RiffHeader {
+        uint32_t signature;
+        uint32_t size;
+        uint32_t format;
+    };
+
+    struct ChunkHeader {
+        uint32_t signature;
+        uint32_t size;
+    };
+
+    struct WavFormatHeader {
+        uint16_t compression_mode;
+        uint16_t channels;
+        uint32_t sample_rate;
+        uint32_t avg_bytes_per_sec;
+        uint16_t block_align;
+        uint16_t bit_depth;
+    };
+
+    struct WavFormatExtension {
+        uint16_t extension_size;
+        uint16_t valid_bits_per_sample;
+        uint32_t channel_mask;
+        GUID sub_format;
+    };
+
     struct SampleLoop {
         uint32_t cue_point_id;
         uint32_t type;
@@ -42,7 +69,7 @@ namespace cricodecs::wav {
         uint32_t sample_offset;
     };
 
-    struct SamplerChunk {
+    struct SamplerHeader {
         uint32_t manufacturer;
         uint32_t product;
         uint32_t sample_period;
@@ -50,22 +77,20 @@ namespace cricodecs::wav {
         uint32_t midi_pitch_fraction;
         uint32_t smpte_format;
         uint32_t smpte_offset;
+    };
+
+    struct SamplerChunkHeader {
+        SamplerHeader sampler;
+        uint32_t loop_count;
+        uint32_t sampler_data_size;
+    };
+
+    struct SamplerChunk : SamplerHeader {
         std::vector<SampleLoop> loops;
         std::vector<uint8_t> sampler_data;
     };
 
-    struct WavFormat {
-        uint16_t compression_mode;
-        uint16_t channels;
-        uint32_t sample_rate;
-        uint32_t avg_bytes_per_sec;
-        uint16_t block_align;
-        uint16_t bit_depth;
-        uint16_t extension_size;
-        uint16_t valid_bits_per_sample;
-        uint32_t channel_mask;
-        GUID sub_format;
-    };
+    struct WavFormat : WavFormatHeader, WavFormatExtension {};
 
     class WavContainer {
     public:

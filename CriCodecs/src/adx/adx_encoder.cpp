@@ -118,15 +118,19 @@ using io::append_be;
         std::span<const AdxLoop> loops,
         const AdxLoopLayout& layout
     ) {
-        append_be<uint16_t>(buffer, 0x8000u);
-        append_be<uint16_t>(buffer, static_cast<uint16_t>(stored_data_offset));
-        buffer.insert(buffer.end(), {
-            config.encoding_mode, config.block_size, config.bit_depth, config.channels});
-        append_be<uint32_t>(buffer, config.sample_rate);
-        append_be<uint32_t>(buffer, samples_per_channel);
-        append_be<uint16_t>(buffer, config.highpass_freq);
-        buffer.push_back(config.version);
-        buffer.push_back(config.encryption_type);
+        append_be(buffer, AdxHeader{
+            .signature = 0x8000u,
+            .data_offset = static_cast<uint16_t>(stored_data_offset),
+            .encoding_mode = config.encoding_mode,
+            .block_size = config.block_size,
+            .bit_depth = config.bit_depth,
+            .channels = config.channels,
+            .sample_rate = config.sample_rate,
+            .sample_count = samples_per_channel,
+            .highpass_freq = config.highpass_freq,
+            .version = config.version,
+            .flags = config.encryption_type,
+        });
 
         if (config.version == 4) {
             const size_t history_count = config.channels > 1 ? config.channels : 2;
@@ -142,14 +146,16 @@ using io::append_be;
                 const uint32_t start_sample = loop.start_sample + layout.alignment_samples;
                 const uint32_t end_sample = loop.end_sample + layout.alignment_samples;
                 const uint32_t frame_bytes = ADX_FRAME_BYTES * config.channels;
-                append_be<uint16_t>(buffer, loop.index);
-                append_be<uint16_t>(buffer, loop.type == 0 ? 1 : loop.type);
-                append_be<uint32_t>(buffer, start_sample);
-                append_be<uint32_t>(buffer, audio_offset +
-                    divide_round_up(start_sample, ADX_SAMPLES_PER_BLOCK) * frame_bytes);
-                append_be<uint32_t>(buffer, end_sample);
-                append_be<uint32_t>(buffer, audio_offset +
-                    divide_round_up(end_sample, ADX_SAMPLES_PER_BLOCK) * frame_bytes);
+                append_be(buffer, AdxLoop{
+                    .index = loop.index,
+                    .type = loop.type == 0 ? uint16_t{1} : loop.type,
+                    .start_sample = start_sample,
+                    .start_byte = audio_offset +
+                        divide_round_up(start_sample, ADX_SAMPLES_PER_BLOCK) * frame_bytes,
+                    .end_sample = end_sample,
+                    .end_byte = audio_offset +
+                        divide_round_up(end_sample, ADX_SAMPLES_PER_BLOCK) * frame_bytes,
+                });
             }
         }
 
@@ -207,20 +213,32 @@ using io::append_be;
         };
 
         int32_t minimum = 0, maximum = 0;
+        const auto update_residual_bounds = [&](int16_t current_sample,
+                                                int16_t hist1,
+                                                int16_t hist2) {
+            const int32_t sample =
+                ((static_cast<int32_t>(current_sample) << 12) -
+                 coeffs[0] * hist1 - coeffs[1] * hist2) >> 12;
+            minimum = std::min(minimum, sample);
+            maximum = std::max(maximum, sample);
+        };
         const auto find_residual_bounds = [&](auto read_sample) {
             int16_t hist1 = history.prev1;
             int16_t hist2 = history.prev2;
             for (uint32_t i = 0; i < samples_per_block; ++i) {
                 const int16_t current_sample = read_sample(i);
-                int32_t sample = (((int32_t)current_sample << 12) - coeffs[0] * hist1 - coeffs[1] * hist2) >> 12;
-                if (sample < minimum) minimum = sample;
-                else if (sample > maximum) maximum = sample;
+                update_residual_bounds(current_sample, hist1, hist2);
                 hist2 = hist1;
                 hist1 = current_sample;
             }
         };
         if (full_block) {
-            find_residual_bounds(read_full_sample);
+            update_residual_bounds(read_full_sample(0), history.prev1, history.prev2);
+            update_residual_bounds(read_full_sample(1), read_full_sample(0), history.prev1);
+            for (uint32_t i = 2; i < samples_per_block; ++i) {
+                update_residual_bounds(
+                    read_full_sample(i), read_full_sample(i - 1), read_full_sample(i - 2));
+            }
         } else {
             find_residual_bounds(read_padded_sample);
         }

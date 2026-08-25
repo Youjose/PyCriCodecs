@@ -362,10 +362,17 @@ std::expected<CvmContainer, std::string> CvmContainer::load_owned(
     std::filesystem::path source_path,
     std::optional<CvmKey> key
 ) {
+    return load_source(io::SourceView::from_owned(std::move(data)), std::move(source_path), key);
+}
+
+std::expected<CvmContainer, std::string> CvmContainer::load_source(
+    io::SourceView source,
+    std::filesystem::path source_path,
+    std::optional<CvmKey> key
+) {
     CvmContainer container;
-    container.m_owned_source = std::move(data);
+    container.m_source = std::move(source);
     container.m_source_path = std::move(source_path);
-    container.m_source = container.m_owned_source;
     if (auto parsed = container.parse(key); !parsed) {
         return std::unexpected(parsed.error());
     }
@@ -376,11 +383,11 @@ std::expected<CvmContainer, std::string> CvmContainer::load_path(
     const std::filesystem::path& path,
     std::optional<CvmKey> key
 ) {
-    auto bytes = io::read_file_bytes(path, "CVM load failed");
-    if (!bytes) {
-        return std::unexpected(bytes.error());
+    auto source = io::SourceView::from_file(path);
+    if (!source) {
+        return std::unexpected("CVM load failed: " + path.string() + " (" + source.error() + ")");
     }
-    return load_owned(std::move(*bytes), path, key);
+    return load_source(std::move(*source), path, key);
 }
 
 std::expected<CvmContainer, std::string> CvmContainer::load(std::span<const uint8_t> data, std::string_view key) {
@@ -443,10 +450,10 @@ std::expected<void, std::string> CvmContainer::parse(std::optional<CvmKey> key) 
         return std::unexpected("CVM sector table exceeds the CVMH chunk");
     }
 
-    m_header.sector_table.reserve(m_header.sector_table_entry_count);
-    for (uint32_t index = 0; index < m_header.sector_table_entry_count; ++index) {
-        m_header.sector_table.push_back(read_be<uint32_t>(m_source.data() + sector_table_offset + static_cast<size_t>(index) * sizeof(uint32_t)));
-    }
+    m_header.sector_table.resize(m_header.sector_table_entry_count);
+    io::read_structs<std::endian::big>(
+        m_source.data() + sector_table_offset,
+        std::span(m_header.sector_table));
 
     if (m_header.total_size != m_source.size()) {
         return std::unexpected("CVM total size field does not match the source size");
@@ -485,11 +492,12 @@ std::expected<void, std::string> CvmContainer::parse(std::optional<CvmKey> key) 
             }
             key = *recovered_key;
         }
-        auto toc_result = decrypt_scrambled_toc_in_place(m_owned_source, iso_offset, *key);
+        std::vector<uint8_t> decrypted(m_source.begin(), m_source.end());
+        auto toc_result = decrypt_scrambled_toc_in_place(decrypted, iso_offset, *key);
         if (!toc_result) {
             return std::unexpected(toc_result.error());
         }
-        m_source = m_owned_source;
+        m_source = io::SourceView::from_owned(std::move(decrypted));
     }
 
     auto pvd_ok = validate_primary_volume_descriptor(m_source, iso_offset);

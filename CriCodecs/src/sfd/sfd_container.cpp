@@ -83,15 +83,14 @@ std::filesystem::path SfdStream::suggested_path(bool include_index_prefix) const
 
 std::expected<SfdContainer, std::string> SfdContainer::load(const std::filesystem::path& path) {
     SfdContainer container;
-    if (auto result = container.m_reader.open(path); !result) {
+    auto source = io::SourceView::from_file(path);
+    if (!source) {
         return std::unexpected("SFD load failed: could not open input: " + path.string());
     }
 
+    container.m_source = std::move(*source);
     container.m_source_path = path;
-    if (auto result = container.parse(); !result) {
-        return std::unexpected(result.error());
-    }
-    return container;
+    return container.parse().transform([&] { return std::move(container); });
 }
 
 std::expected<SfdContainer, std::string> SfdContainer::load(std::span<const uint8_t> data) {
@@ -100,14 +99,8 @@ std::expected<SfdContainer, std::string> SfdContainer::load(std::span<const uint
 
 std::expected<SfdContainer, std::string> SfdContainer::load(std::vector<uint8_t>&& data) {
     SfdContainer container;
-    container.m_owned_source = std::move(data);
-    if (auto result = container.m_reader.open(std::span<const uint8_t>(container.m_owned_source)); !result) {
-        return std::unexpected("SFD load failed: could not open memory buffer");
-    }
-    if (auto result = container.parse(); !result) {
-        return std::unexpected(result.error());
-    }
-    return container;
+    container.m_source = io::SourceView::from_owned(std::move(data));
+    return container.parse().transform([&] { return std::move(container); });
 }
 
 const SfdStream* SfdContainer::find_stream_by_id(uint8_t stream_id) const noexcept {
@@ -144,7 +137,7 @@ std::expected<std::vector<uint8_t>, std::string> SfdContainer::extract_stream(ui
     std::vector<uint8_t> bytes;
     bytes.reserve(static_cast<size_t>(stream.extracted_size));
 
-    const auto source = m_reader.data();
+    const auto source = m_source.bytes;
     for (const auto& chunk : stream.chunks) {
         const auto slice = source.subspan(static_cast<size_t>(chunk.source_offset), chunk.size);
         bytes.insert(bytes.end(), slice.begin(), slice.end());
@@ -154,12 +147,12 @@ std::expected<std::vector<uint8_t>, std::string> SfdContainer::extract_stream(ui
 }
 
 std::expected<std::vector<uint8_t>, std::string> SfdContainer::save() const {
-    const auto source = m_reader.data();
+    const auto source = m_source.bytes;
     return std::vector<uint8_t>(source.begin(), source.end());
 }
 
 std::expected<void, std::string> SfdContainer::save_to_file(const std::filesystem::path& output_path) const {
-    return detail::write_output_file(output_path, m_reader.data(), "SFD save");
+    return detail::write_output_file(output_path, m_source.bytes, "SFD save");
 }
 
 std::expected<void, std::string> SfdContainer::export_stream(
@@ -183,7 +176,7 @@ std::expected<void, std::string> SfdContainer::export_stream(
         return std::unexpected("SFD export failed: could not open output: " + output_path.string());
     }
 
-    const auto source = m_reader.data();
+    const auto source = m_source.bytes;
     const auto& stream = m_streams[index];
     for (const auto& chunk : stream.chunks) {
         if (auto result = writer.write(source.subspan(static_cast<size_t>(chunk.source_offset), chunk.size)); !result) {

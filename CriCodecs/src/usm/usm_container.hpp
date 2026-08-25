@@ -111,22 +111,9 @@ struct UsmChunkHeader {
     uint32_t reserved_1c = 0;
 
     [[nodiscard]] static UsmChunkHeader read(std::span<const uint8_t> source) noexcept {
-        UsmChunkHeader header;
-        if (source.size() < raw_header_size) {
-            return header;
-        }
-        header.magic = io::read_be<uint32_t>(source.data() + 0x00);
-        header.chunk_size = io::read_be<uint32_t>(source.data() + 0x04);
-        header.payload_offset = io::read_be<uint16_t>(source.data() + 0x08);
-        header.padding = io::read_be<uint16_t>(source.data() + 0x0A);
-        header.channel_no = source[0x0C];
-        header.reserved_0d = source[0x0D];
-        header.payload_type_and_flags = io::read_be<uint16_t>(source.data() + 0x0E);
-        header.frame_time = io::read_be<uint32_t>(source.data() + 0x10);
-        header.frame_rate = io::read_be<uint32_t>(source.data() + 0x14);
-        header.reserved_18 = io::read_be<uint32_t>(source.data() + 0x18);
-        header.reserved_1c = io::read_be<uint32_t>(source.data() + 0x1C);
-        return header;
+        return source.size() >= raw_header_size
+            ? io::read_be<UsmChunkHeader>(source.data())
+            : UsmChunkHeader{};
     }
 
     [[nodiscard]] uint32_t body_size() const noexcept {
@@ -410,18 +397,7 @@ struct UsmChunk {
     void append_to(std::vector<uint8_t>& bytes) const {
         const size_t header_offset = bytes.size();
         bytes.resize(header_offset + UsmChunkHeader::raw_header_size, 0);
-        auto* destination = bytes.data() + header_offset;
-        io::write_be<uint32_t>(destination + 0x00, header.magic);
-        io::write_be<uint32_t>(destination + 0x04, header.chunk_size);
-        io::write_be<uint16_t>(destination + 0x08, header.payload_offset);
-        io::write_be<uint16_t>(destination + 0x0A, header.padding);
-        destination[0x0C] = header.channel_no;
-        destination[0x0D] = header.reserved_0d;
-        io::write_be<uint16_t>(destination + 0x0E, header.payload_type_and_flags);
-        io::write_be<uint32_t>(destination + 0x10, header.frame_time);
-        io::write_be<uint32_t>(destination + 0x14, header.frame_rate);
-        io::write_be<uint32_t>(destination + 0x18, header.reserved_18);
-        io::write_be<uint32_t>(destination + 0x1C, header.reserved_1c);
+        io::write_be(bytes.data() + header_offset, header);
         bytes.insert(bytes.end(), payload.begin(), payload.end());
         if (padding.size() == header.padding) {
             bytes.insert(bytes.end(), padding.begin(), padding.end());
@@ -626,9 +602,8 @@ public:
 private:
     using PayloadVisitor = std::expected<void, std::string> (*)(void*, const UsmPayloadView&);
 
+    io::SourceView m_source;
     std::filesystem::path m_source_path;
-    std::vector<uint8_t> m_owned_source;
-    io::reader m_reader;
     std::string m_container_filename;
     utf::UtfTable m_crid_header;
     std::optional<SfshHeader> m_sfsh_header;

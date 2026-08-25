@@ -165,8 +165,6 @@ public:
 
 private:
     io::SourceView m_source;
-    io::reader m_reader;
-    std::vector<uint8_t> m_owned_source;
     std::filesystem::path m_source_path;
     std::vector<AfsEntry> m_entries;
     std::vector<std::optional<std::vector<uint8_t>>> m_payloads;

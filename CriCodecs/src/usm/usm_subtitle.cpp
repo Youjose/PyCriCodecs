@@ -9,7 +9,13 @@
 namespace cricodecs::usm {
 namespace {
 
-constexpr size_t sbt_record_header_size = 0x14;
+struct SbtRecordHeader {
+    uint32_t language_id;
+    uint32_t time_unit;
+    uint32_t start_time;
+    uint32_t duration;
+    uint32_t text_size;
+};
 
 [[nodiscard]] std::string format_srt_cues(std::span<const UsmSubtitleCue> cues);
 
@@ -358,40 +364,35 @@ std::expected<std::vector<UsmSubtitleCue>, std::string> parse_sbt_subtitles(std:
     std::vector<UsmSubtitleCue> cues;
     size_t offset = 0;
     while (offset < data.size()) {
-        if (data.size() - offset < sbt_record_header_size) {
+        if (data.size() - offset < sizeof(SbtRecordHeader)) {
             return std::unexpected("USM SBT parse failed: record header is truncated");
         }
 
-        const auto* record = data.data() + offset;
-        const auto language_id = io::read_le<uint32_t>(record + 0x00);
-        const auto time_unit = io::read_le<uint32_t>(record + 0x04);
-        const auto start_time = io::read_le<uint32_t>(record + 0x08);
-        const auto duration = io::read_le<uint32_t>(record + 0x0C);
-        const auto text_size = io::read_le<uint32_t>(record + 0x10);
-        offset += sbt_record_header_size;
+        const auto record = io::read_le<SbtRecordHeader>(data.data() + offset);
+        offset += sizeof(SbtRecordHeader);
 
-        if (time_unit == 0) {
+        if (record.time_unit == 0) {
             return std::unexpected("USM SBT parse failed: record has zero time unit");
         }
-        if (data.size() - offset < text_size) {
+        if (data.size() - offset < record.text_size) {
             return std::unexpected("USM SBT parse failed: record text is truncated");
         }
 
-        auto text_bytes = data.subspan(offset, text_size);
+        auto text_bytes = data.subspan(offset, record.text_size);
         uint32_t terminator_size = 0;
         while (!text_bytes.empty() && text_bytes.back() == 0) {
             text_bytes = text_bytes.first(text_bytes.size() - 1);
             ++terminator_size;
         }
         cues.push_back(UsmSubtitleCue{
-            .language_id = language_id,
-            .time_unit = time_unit,
-            .start_time = start_time,
-            .duration = duration,
+            .language_id = record.language_id,
+            .time_unit = record.time_unit,
+            .start_time = record.start_time,
+            .duration = record.duration,
             .text = std::string(text_bytes.begin(), text_bytes.end()),
             .terminator_size = terminator_size,
         });
-        offset += text_size;
+        offset += record.text_size;
     }
     return cues;
 }
@@ -414,13 +415,15 @@ std::expected<std::vector<uint8_t>, std::string> build_sbt_subtitles(std::span<c
 
         const auto offset = data.size();
         const auto text_size = cue.text.size() + cue.terminator_size;
-        data.resize(data.size() + sbt_record_header_size + text_size);
-        io::write_le<uint32_t>(data.data() + offset + 0x00, cue.language_id);
-        io::write_le<uint32_t>(data.data() + offset + 0x04, cue.time_unit);
-        io::write_le<uint32_t>(data.data() + offset + 0x08, cue.start_time);
-        io::write_le<uint32_t>(data.data() + offset + 0x0C, cue.duration);
-        io::write_le<uint32_t>(data.data() + offset + 0x10, static_cast<uint32_t>(text_size));
-        std::ranges::copy(cue.text, data.begin() + static_cast<std::ptrdiff_t>(offset + sbt_record_header_size));
+        data.resize(data.size() + sizeof(SbtRecordHeader) + text_size);
+        io::write_le(data.data() + offset, SbtRecordHeader{
+            cue.language_id,
+            cue.time_unit,
+            cue.start_time,
+            cue.duration,
+            static_cast<uint32_t>(text_size),
+        });
+        std::ranges::copy(cue.text, data.begin() + static_cast<std::ptrdiff_t>(offset + sizeof(SbtRecordHeader)));
     }
     return data;
 }

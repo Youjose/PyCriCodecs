@@ -117,11 +117,12 @@ std::optional<AixLoopInfo> infer_container_loop(std::span<const AixSegment> segm
 } // namespace
 
 std::expected<void, AixError> Aix::load(const std::filesystem::path& path) {
-    m_owned_bytes.clear();
-    m_source_path = path;
-    if (auto result = m_reader.open(path); !result) {
-        return std::unexpected("AIX load failed: could not open input: " + std::string(result.error()));
+    auto source = io::SourceView::from_file(path);
+    if (!source) {
+        return std::unexpected("AIX load failed: could not open input: " + std::string(source.error()));
     }
+    m_source = std::move(*source);
+    m_source_path = path;
     return parse();
 }
 
@@ -130,11 +131,8 @@ std::expected<void, AixError> Aix::load(std::span<const uint8_t> data) {
 }
 
 std::expected<void, AixError> Aix::load(std::vector<uint8_t>&& data) {
-    m_owned_bytes = std::move(data);
+    m_source = io::SourceView::from_owned(std::move(data));
     m_source_path.clear();
-    if (auto result = m_reader.open(std::span<const uint8_t>(m_owned_bytes.data(), m_owned_bytes.size())); !result) {
-        return std::unexpected("AIX load failed: could not open memory buffer: " + std::string(result.error()));
-    }
     return parse();
 }
 
@@ -148,27 +146,28 @@ std::expected<void, AixError> Aix::parse() {
     m_segment_payloads.clear();
     m_inferred_loop.reset();
 
-    const auto view = m_reader.data();
+    const auto view = m_source.bytes;
     if (view.size() < fixed_header_size) {
         return std::unexpected("AIX data is too small");
     }
-    if (!std::equal(aixf_magic.begin(), aixf_magic.end(), view.begin())) {
+    const auto header = read_be<detail::AixHeader>(view.data());
+    if (header.magic != aixf_magic.be_value()) {
         return std::unexpected("AIX parse failed: invalid magic");
     }
 
-    if (read_be<uint32_t>(view.data() + 0x08) != supported_version) {
+    if (header.version != supported_version) {
         return std::unexpected("AIX parse failed: unsupported version");
     }
-    if (read_be<uint32_t>(view.data() + 0x0C) != expected_header_size) {
+    if (header.header_size != expected_header_size) {
         return std::unexpected("AIX parse failed: unsupported header size");
     }
 
-    const uint32_t data_offset = read_be<uint32_t>(view.data() + 0x04) + 0x08u;
+    const uint32_t data_offset = header.data_size + 0x08u;
     if (data_offset > view.size()) {
         return std::unexpected("AIX data offset is out of bounds");
     }
 
-    const uint16_t segment_count = read_be<uint16_t>(view.data() + 0x18);
+    const uint16_t segment_count = header.segment_count;
     if (segment_count == 0 || segment_count > max_segments) {
         return std::unexpected("AIX segment count is invalid");
     }
@@ -178,26 +177,17 @@ std::expected<void, AixError> Aix::parse() {
         return std::unexpected("AIX segment table overlaps the stream data");
     }
 
-    std::vector<AixSegment> parsed_segments;
-    parsed_segments.reserve(segment_count);
-    for (uint16_t index = 0; index < segment_count; ++index) {
-        const size_t entry_offset = fixed_header_size + static_cast<size_t>(index) * segment_entry_size;
-
-        AixSegment segment{
-            .offset = read_be<uint32_t>(view.data() + entry_offset + 0x00),
-            .size = read_be<uint32_t>(view.data() + entry_offset + 0x04),
-            .sample_count = read_be<int32_t>(view.data() + entry_offset + 0x08),
-            .sample_rate = read_be<int32_t>(view.data() + entry_offset + 0x0C),
-        };
-
-        if (index > 0 && segment.sample_rate == 0) {
+    std::vector<AixSegment> parsed_segments(segment_count);
+    io::read_structs<std::endian::big>(
+        view.data() + fixed_header_size, std::span(parsed_segments));
+    for (size_t index = 0; index < parsed_segments.size(); ++index) {
+        auto& segment = parsed_segments[index];
+        if (index != 0 && segment.sample_rate == 0) {
             segment.sample_rate = parsed_segments.front().sample_rate;
         }
-        if (!parsed_segments.empty() && segment.sample_rate != parsed_segments.front().sample_rate) {
+        if (segment.sample_rate != parsed_segments.front().sample_rate) {
             return std::unexpected("AIX segments use mismatched sample rates");
         }
-
-        parsed_segments.push_back(segment);
     }
 
     if (!normalize_segment_offsets_for_padding(parsed_segments, view)) {
@@ -358,7 +348,7 @@ std::expected<std::vector<std::span<const uint8_t>>, AixError> Aix::layer_payloa
     }
 
     const auto& locations = m_segment_payloads[segment_index];
-    const auto view = m_reader.data();
+    const auto view = m_source.bytes;
 
     std::vector<std::span<const uint8_t>> payloads;
     payloads.reserve(locations.size() / std::max<size_t>(m_layers.size(), 1));

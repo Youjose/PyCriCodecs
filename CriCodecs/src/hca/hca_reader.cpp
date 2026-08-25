@@ -12,7 +12,6 @@
 #include "hca_format.hpp"
 #include "hca_tables.hpp"
 
-#include <bit>
 #include <limits>
 
 #include "../utilities/io_endian.hpp"
@@ -49,8 +48,7 @@ std::expected<HcaHeader, std::string> detail::parse_header(std::span<const uint8
         return std::unexpected(std::string("HCA parse failed: invalid HCA signature"));
     }
 
-    info.file.version = read_be<uint16_t>(data.data() + 4);
-    info.file.header_size = read_be<uint16_t>(data.data() + 6);
+    info.file = read_be<HcaFileChunk>(data.data() + 4);
     if (info.file.header_size < 8 || data.size() < info.file.header_size) {
         return std::unexpected(std::string("HCA parse failed: invalid header size"));
     }
@@ -121,24 +119,20 @@ std::expected<HcaHeader, std::string> detail::parse_header(std::span<const uint8
     }
 
     if (begin_chunk(reader, HCA_CHUNK_ID_VBR, 0x08)) {
-        info.vbr.max_frame_size = reader.read_be<uint16_t>();
-        info.vbr.noise_level = reader.read_be<uint16_t>();
+        info.vbr = reader.read_be<HcaVbrChunk>();
         if (!(info.codec.frame_size == 0 && info.vbr.max_frame_size > HCA_MIN_FRAME_SIZE && info.vbr.max_frame_size <= 0x1FF)) {
             return std::unexpected(std::string("HCA parse failed: invalid vbr chunk"));
         }
     }
 
     if (begin_chunk(reader, HCA_CHUNK_ID_ATH, 0x06)) {
-        info.ath.type = reader.read_be<uint16_t>();
+        info.ath = reader.read_be<HcaAthChunk>();
     } else {
         info.ath.type = detail::default_ath_enabled_for_missing_chunk(info.file.version) ? 1u : 0u;
     }
 
     if (begin_chunk(reader, HCA_CHUNK_ID_LOOP, 0x10)) {
-        info.loop.start_frame = reader.read_be<uint32_t>();
-        info.loop.end_frame = reader.read_be<uint32_t>();
-        info.loop.start_delay = reader.read_be<uint16_t>();
-        info.loop.end_padding = reader.read_be<uint16_t>();
+        info.loop = reader.read_be<HcaLoopChunk>();
         if (info.loop.start_frame > info.loop.end_frame ||
             info.loop.end_frame >= info.fmt.frame_count ||
             info.loop.start_delay >= HCA_SAMPLES_PER_FRAME ||
@@ -148,14 +142,14 @@ std::expected<HcaHeader, std::string> detail::parse_header(std::span<const uint8
     }
 
     if (begin_chunk(reader, HCA_CHUNK_ID_CIPH, 0x06)) {
-        info.cipher.type = reader.read_be<uint16_t>();
+        info.cipher = reader.read_be<HcaCipherChunk>();
         if (info.cipher.type != 0 && info.cipher.type != 1 && info.cipher.type != 56) {
             return std::unexpected(std::string("HCA parse failed: unsupported cipher type"));
         }
     }
 
     if (begin_chunk(reader, HCA_CHUNK_ID_RVA, 0x08)) {
-        info.rva.volume = std::bit_cast<float>(reader.read_be<uint32_t>());
+        info.rva = reader.read_be<HcaRvaChunk>();
     }
 
     if (begin_chunk(reader, HCA_CHUNK_ID_COMM, 0x05)) {

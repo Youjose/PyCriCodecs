@@ -52,23 +52,18 @@ std::expected<AfsContainer, std::string> AfsContainer::load(
 ) {
     AfsContainer container;
     container.m_source = io::SourceView(data, std::move(owner));
-    if (auto result = container.parse(); !result) {
-        return std::unexpected(result.error());
-    }
-    return container;
+    return container.parse().transform([&] { return std::move(container); });
 }
 
 std::expected<AfsContainer, std::string> AfsContainer::load(const std::filesystem::path& path) {
-    AfsContainer container;
-    if (auto result = container.m_reader.open(path); !result) {
-        return std::unexpected("AFS load failed: failed to open " + path.string() + " (" + result.error() + ")");
+    auto source = io::SourceView::from_file(path);
+    if (!source) {
+        return std::unexpected("AFS load failed: failed to open " + path.string() + " (" + source.error() + ")");
     }
-    container.m_source_path = path;
-    container.m_source = io::SourceView(container.m_reader.data());
-    if (auto result = container.parse(); !result) {
-        return std::unexpected(result.error());
-    }
-    return container;
+    return load(source->bytes, std::move(source->owner)).transform([&](AfsContainer container) {
+        container.m_source_path = path;
+        return container;
+    });
 }
 
 std::expected<void, std::string> AfsContainer::parse() {
@@ -80,31 +75,33 @@ std::expected<void, std::string> AfsContainer::parse() {
     m_emit_directory_table = false;
     m_alignment = DEFAULT_ALIGNMENT;
 
-    if (m_source.size() < 8) {
+    if (m_source.size() < sizeof(detail::AfsHeader)) {
         return std::unexpected("AFS data is too small");
     }
-    if (!std::equal(detail::afs_magic.begin(), detail::afs_magic.end(), m_source.begin())) {
+    const auto header = read_le<detail::AfsHeader>(m_source.data());
+    if (header.magic != detail::afs_magic.le_value()) {
         return std::unexpected("AFS parse failed: invalid magic");
     }
-
-    const uint32_t entry_count = read_le<uint32_t>(m_source.data() + 0x04);
+    const uint32_t entry_count = header.entry_count;
     if (entry_count == 0) {
         return std::unexpected("AFS entry count is invalid");
     }
 
-    const uint64_t table_end = 0x08ull + static_cast<uint64_t>(entry_count) * 0x08ull;
+    const uint64_t table_end = sizeof(detail::AfsHeader) +
+        static_cast<uint64_t>(entry_count) * sizeof(detail::AfsRange);
     if (table_end > m_source.size()) {
         return std::unexpected("AFS index table exceeds the source size");
     }
 
     m_entries.reserve(entry_count);
+    const auto* table = m_source.data() + sizeof(detail::AfsHeader);
     for (uint32_t index = 0; index < entry_count; ++index) {
-        const size_t entry_offset = 0x08u + static_cast<size_t>(index) * 0x08u;
+        const auto record = read_le<detail::AfsRange>(table + index * sizeof(detail::AfsRange));
 
         AfsEntry entry;
         entry.index = index;
-        entry.offset = read_le<uint32_t>(m_source.data() + entry_offset + 0x00);
-        entry.size = read_le<uint32_t>(m_source.data() + entry_offset + 0x04);
+        entry.offset = record.offset;
+        entry.size = record.size;
         entry.present = entry.offset != 0 || entry.size != 0;
 
         if (entry.present &&
@@ -117,8 +114,9 @@ std::expected<void, std::string> AfsContainer::parse() {
     }
 
     if (table_end + 0x08 <= m_source.size()) {
-        const uint32_t directory_offset = read_le<uint32_t>(m_source.data() + static_cast<size_t>(table_end) + 0x00);
-        const uint32_t directory_size = read_le<uint32_t>(m_source.data() + static_cast<size_t>(table_end) + 0x04);
+        const auto directory = read_le<detail::AfsRange>(m_source.data() + table_end);
+        const uint32_t directory_offset = directory.offset;
+        const uint32_t directory_size = directory.size;
 
         if (directory_offset != 0 && directory_size != 0 &&
             directory_offset <= m_source.size() &&

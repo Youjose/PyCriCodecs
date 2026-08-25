@@ -249,8 +249,7 @@ private:
     };
 
     std::filesystem::path m_source_path;
-    io::reader m_reader;
-    std::vector<uint8_t> m_owned_archive_bytes;
+    io::SourceView m_source;
 
     utf::UtfTable m_cpk_header;
     utf::UtfTable m_toc;

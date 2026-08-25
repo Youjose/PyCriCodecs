@@ -437,18 +437,19 @@ std::expected<std::vector<uint8_t>, std::string> AfsContainer::build() {
     }
 
     std::vector<uint8_t> output(static_cast<size_t>(total_size), 0);
-    std::copy(detail::afs_magic.begin(), detail::afs_magic.end(), output.begin());
-    io::write_le<uint32_t>(output.data() + 0x04, static_cast<uint32_t>(m_entries.size()));
+    io::write_le(output.data(), detail::AfsHeader{
+        .magic = detail::afs_magic.le_value(),
+        .entry_count = static_cast<uint32_t>(m_entries.size()),
+    });
 
     for (size_t index = 0; index < m_entries.size(); ++index) {
-        const size_t entry_offset = 0x08u + index * 0x08u;
-        io::write_le<uint32_t>(output.data() + entry_offset + 0x00, m_entries[index].offset);
-        io::write_le<uint32_t>(output.data() + entry_offset + 0x04, m_entries[index].size);
+        io::write_le(output.data() + sizeof(detail::AfsHeader) + index * sizeof(detail::AfsRange),
+            detail::AfsRange{m_entries[index].offset, m_entries[index].size});
     }
 
-    const size_t directory_info_offset = 0x08u + m_entries.size() * 0x08u;
-    io::write_le<uint32_t>(output.data() + directory_info_offset + 0x00, final_directory_offset);
-    io::write_le<uint32_t>(output.data() + directory_info_offset + 0x04, directory_size);
+    const size_t directory_info_offset = sizeof(detail::AfsHeader) + m_entries.size() * sizeof(detail::AfsRange);
+    io::write_le(output.data() + directory_info_offset,
+        detail::AfsRange{final_directory_offset, directory_size});
 
     for (size_t index = 0; index < m_entries.size(); ++index) {
         const auto& entry = m_entries[index];
@@ -486,8 +487,7 @@ std::expected<std::vector<uint8_t>, std::string> AfsContainer::build() {
         m_directory_table_size.reset();
     }
 
-    m_owned_source = output;
-    m_source = io::SourceView(std::span<const uint8_t>(m_owned_source), {});
+    m_source = io::SourceView::from_owned(output);
     const uint32_t first_payload_offset = detail::first_present_source_offset(m_source);
     if (first_payload_offset != 0) {
         m_first_payload_offset = first_payload_offset;
@@ -499,12 +499,9 @@ std::expected<std::vector<uint8_t>, std::string> AfsContainer::build() {
 }
 
 std::expected<void, std::string> AfsContainer::build_to_file(const std::filesystem::path& output_path) {
-    auto built = build();
-    if (!built) {
-        return std::unexpected(built.error());
-    }
-
-    return io::write_file_bytes(output_path, *built, "AFS build failed");
+    return build().and_then([&](const auto& bytes) {
+        return io::write_file_bytes(output_path, bytes, "AFS build failed");
+    });
 }
 
 std::expected<std::string, std::string> AfsContainer::build_file_id_header(

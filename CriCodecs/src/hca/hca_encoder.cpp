@@ -720,7 +720,8 @@ size_t write_dec_chunk(const HcaHeader& info, uint8_t* buffer, size_t position) 
 
 size_t write_ath_chunk(const HcaHeader& info, uint8_t* buffer, size_t position) {
     write_be<uint32_t>(buffer + position, HCA_CHUNK_ID_ATH);
-    write_be<uint16_t>(buffer + position + 4, detail::explicit_ath_type(info.file.version, info.ath.uses_curve()));
+    write_be(buffer + position + 4, HcaAthChunk{
+        detail::explicit_ath_type(info.file.version, info.ath.uses_curve())});
     return position + 6;
 }
 
@@ -728,8 +729,7 @@ void pack_header(const HcaHeader& info, uint8_t* buffer) {
     std::memset(buffer, 0, info.file.header_size);
 
     write_be<uint32_t>(buffer, HCA_CHUNK_ID_HCA);
-    write_be<uint16_t>(buffer + 4, info.file.version);
-    write_be<uint16_t>(buffer + 6, static_cast<uint16_t>(info.file.header_size));
+    write_be(buffer + 4, info.file);
 
     size_t position = write_format_chunk(info, buffer);
     if (detail::uses_dec_header(info.file.version)) {
@@ -744,15 +744,12 @@ void pack_header(const HcaHeader& info, uint8_t* buffer) {
 
     if (info.loop.enabled()) {
         write_be<uint32_t>(buffer + position, HCA_CHUNK_ID_LOOP);
-        write_be<uint32_t>(buffer + position + 4, info.loop.start_frame);
-        write_be<uint32_t>(buffer + position + 8, info.loop.end_frame);
-        write_be<uint16_t>(buffer + position + 12, info.loop.start_delay);
-        write_be<uint16_t>(buffer + position + 14, info.loop.end_padding);
+        write_be(buffer + position + 4, info.loop);
         position += 16;
     }
 
     write_be<uint32_t>(buffer + position, HCA_CHUNK_ID_CIPH);
-    write_be<uint16_t>(buffer + position + 4, info.cipher.type);
+    write_be(buffer + position + 4, info.cipher);
     position += 6;
 
     write_be<uint32_t>(buffer + position, HCA_CHUNK_ID_PAD);

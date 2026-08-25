@@ -7,6 +7,7 @@
  */
 
 #include "acx_container.hpp"
+#include "acx_format.hpp"
 
 #include "../utilities/io.hpp"
 
@@ -48,53 +49,51 @@ std::expected<AcxContainer, std::string> AcxContainer::load(
 ) {
     AcxContainer container;
     container.m_source = io::SourceView(data, std::move(owner));
-    if (auto result = container.parse(); !result) {
-        return std::unexpected(result.error());
-    }
-    return container;
+    return container.parse().transform([&] { return std::move(container); });
 }
 
 std::expected<AcxContainer, std::string> AcxContainer::load(const std::filesystem::path& path) {
-    AcxContainer container;
-    if (auto result = container.m_reader.open(path); !result) {
-        return std::unexpected("ACX load failed: failed to open " + path.string() + " (" + result.error() + ")");
+    auto source = io::SourceView::from_file(path);
+    if (!source) {
+        return std::unexpected("ACX load failed: failed to open " + path.string() + " (" + source.error() + ")");
     }
-    container.m_source_path = path;
-    container.m_source = io::SourceView(container.m_reader.data());
-    if (auto result = container.parse(); !result) {
-        return std::unexpected(result.error());
-    }
-    return container;
+    return load(source->bytes, std::move(source->owner)).transform([&](AcxContainer container) {
+        container.m_source_path = path;
+        return container;
+    });
 }
 
 std::expected<void, std::string> AcxContainer::parse() {
     m_entries.clear();
 
-    if (m_source.size() < 8) {
+    if (m_source.size() < sizeof(detail::AcxHeader)) {
         return std::unexpected("ACX data is too small");
     }
-    if (read_be<uint32_t>(m_source.data()) != 0) {
+    const auto header = read_be<detail::AcxHeader>(m_source.data());
+    if (header.marker != 0) {
         return std::unexpected("ACX parse failed: invalid header marker");
     }
 
-    const uint32_t entry_count = read_be<uint32_t>(m_source.data() + 0x04);
+    const uint32_t entry_count = header.entry_count;
     if (entry_count == 0 || entry_count > max_reasonable_entries) {
         return std::unexpected("ACX entry count is invalid");
     }
 
-    const uint64_t table_end = 0x08ull + static_cast<uint64_t>(entry_count) * 0x08ull;
+    const uint64_t table_end = sizeof(detail::AcxHeader) +
+        static_cast<uint64_t>(entry_count) * sizeof(detail::AcxRange);
     if (table_end > m_source.size()) {
         return std::unexpected("ACX table exceeds the source size");
     }
 
     m_entries.reserve(entry_count);
+    const auto* table = m_source.data() + sizeof(detail::AcxHeader);
     for (uint32_t index = 0; index < entry_count; ++index) {
-        const size_t entry_offset = 0x08u + static_cast<size_t>(index) * 0x08u;
+        const auto record = read_be<detail::AcxRange>(table + index * sizeof(detail::AcxRange));
 
         AcxEntry entry;
         entry.index = index;
-        entry.offset = read_be<uint32_t>(m_source.data() + entry_offset + 0x00);
-        entry.size = read_be<uint32_t>(m_source.data() + entry_offset + 0x04);
+        entry.offset = record.offset;
+        entry.size = record.size;
 
         if (entry.offset > m_source.size() || entry.size > m_source.size() - entry.offset) {
             return std::unexpected("ACX entry data is out of bounds");

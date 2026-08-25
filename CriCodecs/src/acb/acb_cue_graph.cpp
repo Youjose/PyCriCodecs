@@ -864,11 +864,8 @@ std::expected<AcbCueGraph, std::string> AcbCueGraph::load(
     const std::filesystem::path& path,
     const text::EncodingOptions& encoding
 ) {
-    auto bytes = io::read_file_bytes(path, "ACB cue graph load failed");
-    if (!bytes) {
-        return std::unexpected(bytes.error());
-    }
-    return load(*bytes, encoding);
+    return io::read_file_bytes(path, "ACB cue graph load failed").and_then(
+        [&](const auto& bytes) { return load(bytes, encoding); });
 }
 
 const AcbCue* AcbCueGraph::cue_by_id(uint32_t cue_id) const noexcept {

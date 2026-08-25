@@ -80,31 +80,33 @@ std::expected<CsbContainer, std::string> CsbContainer::load(
     const std::filesystem::path& path,
     const text::EncodingOptions& encoding
 ) {
-    auto bytes = io::read_file_bytes(path, "CSB load failed");
-    if (!bytes) {
-        return std::unexpected(bytes.error());
+    auto source = io::SourceView::from_file(path);
+    if (!source) {
+        return std::unexpected("CSB load failed: " + path.string() + " (" + source.error() + ")");
     }
-
-    auto csb = load(std::move(*bytes), encoding);
-    if (!csb) {
-        return std::unexpected(csb.error());
-    }
-
-    csb->m_source_path = path;
-    return csb;
+    return load_source(std::move(*source), encoding)
+        .transform([&](CsbContainer csb) {
+            csb.m_source_path = path;
+            return csb;
+        });
 }
 
 std::expected<CsbContainer, std::string> CsbContainer::load(
     std::vector<uint8_t>&& data,
     const text::EncodingOptions& encoding
 ) {
+    return load_source(io::SourceView::from_owned(std::move(data)), encoding);
+}
+
+std::expected<CsbContainer, std::string> CsbContainer::load_source(
+    io::SourceView source,
+    const text::EncodingOptions& encoding
+) {
     CsbContainer csb;
     csb.m_encoding = encoding;
-    csb.m_owned_source = std::move(data);
-    csb.m_source = std::span<const uint8_t>(csb.m_owned_source.data(), csb.m_owned_source.size());
-    csb.m_source_path.clear();
+    csb.m_source = std::move(source);
 
-    auto header = utf::UtfTable::load(csb.m_source);
+    auto header = utf::UtfTable::load(csb.m_source.bytes);
     if (!header) {
         return std::unexpected("CSB load failed: could not parse root table: " + header.error());
     }
@@ -126,7 +128,9 @@ std::expected<CsbContainer, std::string> CsbContainer::load(
     std::span<const uint8_t> data,
     const text::EncodingOptions& encoding
 ) {
-    return load(std::vector<uint8_t>(data.begin(), data.end()), encoding);
+    return load_source(
+        io::SourceView::from_owned(std::vector<uint8_t>(data.begin(), data.end())),
+        encoding);
 }
 
 std::expected<void, std::string> CsbContainer::parse() {

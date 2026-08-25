@@ -222,21 +222,10 @@ using cricodecs::util::divide_round_up;
 
         m_reader.seek(0);
 
-        m_header.signature = m_reader.read_be<uint16_t>();
+        m_header = m_reader.read_be<AdxHeader>();
         if (m_header.signature != ADX_SIGNATURE) {
             return std::unexpected(AdxError("Invalid ADX header: missing ADX signature"));
         }
-        
-        m_header.data_offset = m_reader.read_be<uint16_t>();
-        m_header.encoding_mode = m_reader.read_le<uint8_t>();
-        m_header.block_size = m_reader.read_le<uint8_t>();
-        m_header.bit_depth = m_reader.read_le<uint8_t>();
-        m_header.channels = m_reader.read_le<uint8_t>();
-        m_header.sample_rate = m_reader.read_be<uint32_t>();
-        m_header.sample_count = m_reader.read_be<uint32_t>();
-        m_header.highpass_freq = m_reader.read_be<uint16_t>();
-        m_header.version = m_reader.read_le<uint8_t>();
-        m_header.flags = m_reader.read_le<uint8_t>();
         
         if (m_header.data_offset < 2) {
             return std::unexpected(AdxError("Invalid ADX header: data offset is too small"));
@@ -295,12 +284,7 @@ using cricodecs::util::divide_round_up;
                 return std::unexpected(AdxError("ADX history block extends past the file"));
             }
             
-            for (auto& history : std::span(m_history).first(m_header.channels)) {
-                history = {
-                    .prev1 = m_reader.read_be<int16_t>(),
-                    .prev2 = m_reader.read_be<int16_t>(),
-                };
-            }
+            m_reader.read_be(std::span(m_history).first(m_header.channels));
             if (m_header.channels == 1) {
                 m_reader.skip(4);
             }
@@ -319,14 +303,7 @@ using cricodecs::util::divide_round_up;
                 }
                 
                 m_loops.resize(loop_count);
-                for (uint16_t i = 0; i < loop_count; ++i) {
-                    m_loops[i].index = m_reader.read_be<uint16_t>();
-                    m_loops[i].type = m_reader.read_be<uint16_t>();
-                    m_loops[i].start_sample = m_reader.read_be<uint32_t>();
-                    m_loops[i].start_byte = m_reader.read_be<uint32_t>();
-                    m_loops[i].end_sample = m_reader.read_be<uint32_t>();
-                    m_loops[i].end_byte = m_reader.read_be<uint32_t>();
-                }
+                m_reader.read_be(std::span(m_loops));
             }
         }
         

@@ -7,6 +7,7 @@
  */
 
 #include "acx_builder.hpp"
+#include "acx_format.hpp"
 
 #include <fstream>
 #include <limits>
@@ -150,13 +151,11 @@ std::expected<std::vector<uint8_t>, std::string> AcxBuilder::build(const AcxBuil
     }
 
     std::vector<uint8_t> built(static_cast<size_t>(layout->archive_size), 0);
-    write_be<uint32_t>(built.data(), 0);
-    write_be<uint32_t>(built.data() + 0x04, static_cast<uint32_t>(payloads.size()));
+    write_be(built.data(), detail::AcxHeader{0, static_cast<uint32_t>(payloads.size())});
 
     for (size_t index = 0; index < payloads.size(); ++index) {
-        const size_t table_offset = 0x08u + index * 0x08u;
-        write_be<uint32_t>(built.data() + table_offset + 0x00, layout->offsets[index]);
-        write_be<uint32_t>(built.data() + table_offset + 0x04, sizes[index]);
+        write_be(built.data() + sizeof(detail::AcxHeader) + index * sizeof(detail::AcxRange),
+            detail::AcxRange{layout->offsets[index], sizes[index]});
         std::ranges::copy(payloads[index], built.begin() + static_cast<size_t>(layout->offsets[index]));
     }
 
@@ -190,14 +189,12 @@ std::expected<void, std::string> AcxBuilder::build_to_file(
         return std::unexpected("ACX build failed: could not open output: " + output_path.string());
     }
 
-    output.write_be<uint32_t>(0);
-    output.write_be<uint32_t>(static_cast<uint32_t>(input.entries.size()));
+    output.write_be(detail::AcxHeader{0, static_cast<uint32_t>(input.entries.size())});
     for (size_t index = 0; index < input.entries.size(); ++index) {
-        output.write_be<uint32_t>(layout->offsets[index]);
-        output.write_be<uint32_t>(sizes[index]);
+        output.write_be(detail::AcxRange{layout->offsets[index], sizes[index]});
     }
 
-    const size_t table_size = 0x08u + input.entries.size() * 0x08u;
+    const size_t table_size = sizeof(detail::AcxHeader) + input.entries.size() * sizeof(detail::AcxRange);
     const uint64_t first_offset = layout->offsets.front();
     if (first_offset > table_size) {
         output.write_zeros(static_cast<size_t>(first_offset - table_size));

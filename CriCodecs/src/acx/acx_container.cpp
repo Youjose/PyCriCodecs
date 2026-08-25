@@ -53,12 +53,9 @@ AcxContainer::copy_payloads() const {
 }
 
 std::expected<void, std::string> AcxContainer::save_to_file(const std::filesystem::path& output_path) const {
-    auto bytes = rebuild();
-    if (!bytes) {
-        return std::unexpected(bytes.error());
-    }
-
-    return io::write_file_bytes(output_path, *bytes, "ACX save failed");
+    return rebuild().and_then([&](const auto& bytes) {
+        return io::write_file_bytes(output_path, bytes, "ACX save failed");
+    });
 }
 
 std::expected<void, std::string> AcxContainer::replace_payloads(std::vector<std::vector<uint8_t>> payloads) {
@@ -67,8 +64,7 @@ std::expected<void, std::string> AcxContainer::replace_payloads(std::vector<std:
         return std::unexpected(bytes.error());
     }
 
-    m_owned_source = std::move(*bytes);
-    m_source = io::SourceView(std::span<const uint8_t>(m_owned_source), {});
+    m_source = io::SourceView::from_owned(std::move(*bytes));
     return parse();
 }
 

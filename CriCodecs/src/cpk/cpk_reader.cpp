@@ -329,12 +329,12 @@ Cpk Cpk::create(const CpkOptions& options) {
 }
 
 std::expected<void, std::string> Cpk::load_from_path(const std::filesystem::path& path) {
-    m_source_path = path;
-    m_reader = io::reader{};
-    m_owned_archive_bytes.clear();
-    if (auto result = m_reader.open(path); !result) {
-        return std::unexpected(std::string(result.error()));
+    auto source = io::SourceView::from_file(path);
+    if (!source) {
+        return std::unexpected(std::string(source.error()));
     }
+    m_source_path = path;
+    m_source = std::move(*source);
     return parse();
 }
 
@@ -344,11 +344,7 @@ std::expected<void, std::string> Cpk::load_from_bytes(std::span<const uint8_t> d
 
 std::expected<void, std::string> Cpk::load_from_bytes(std::vector<uint8_t>&& data) {
     m_source_path.clear();
-    m_reader = io::reader{};
-    m_owned_archive_bytes = std::move(data);
-    if (auto result = m_reader.open(std::span<const uint8_t>(m_owned_archive_bytes)); !result) {
-        return std::unexpected(std::string(result.error()));
-    }
+    m_source = io::SourceView::from_owned(std::move(data));
     return parse();
 }
 
@@ -497,14 +493,14 @@ std::expected<void, std::string> Cpk::replace_source(
 }
 
 std::expected<std::span<const uint8_t>, std::string> Cpk::packed_entry_span(const CpkEntry& entry) const {
-    if (entry.file_offset > m_reader.size()) {
+    if (entry.file_offset > m_source.size()) {
         return std::unexpected("CPK entry offset is out of range");
     }
-    if (entry.file_size > static_cast<uint64_t>(m_reader.size() - entry.file_offset)) {
+    if (entry.file_size > static_cast<uint64_t>(m_source.size() - entry.file_offset)) {
         return std::unexpected("CPK entry data exceeds the archive size");
     }
 
-    return m_reader.subspan(
+    return m_source.subspan(
         static_cast<size_t>(entry.file_offset),
         static_cast<size_t>(entry.file_size)
     );
@@ -654,10 +650,10 @@ std::expected<void, std::string> Cpk::parse() {
     m_files.clear();
     m_sources.clear();
 
-    if (!m_reader.is_open()) {
+    if (m_source.empty()) {
         return std::unexpected("CPK parse failed: no source is open");
     }
-    if (m_reader.size() < chunk_header_size) {
+    if (m_source.size() < chunk_header_size) {
         return std::unexpected("CPK source is too small");
     }
 
@@ -791,30 +787,30 @@ std::expected<utf::UtfTable, std::string> Cpk::load_chunk_utf(
     if (expected_magic.size() != 4) {
         return std::unexpected("CPK parse failed: expected chunk magic must be 4 bytes");
     }
-    if (offset > m_reader.size() || m_reader.size() - offset < chunk_header_size) {
+    if (offset > m_source.size() || m_source.size() - offset < chunk_header_size) {
         return std::unexpected("CPK chunk header is out of range");
     }
     if (declared_chunk_size < chunk_header_size) {
         return std::unexpected("CPK chunk size is too small");
     }
 
-    const auto header = m_reader.subspan(static_cast<size_t>(offset), 4);
+    const auto header = m_source.subspan(static_cast<size_t>(offset), 4);
     if (!std::equal(expected_magic.begin(), expected_magic.end(), header.begin())) {
         return std::unexpected("CPK parse failed: unexpected chunk magic while loading " + std::string(expected_magic));
     }
 
-    const uint32_t enc_flag = m_reader.read_le_at<uint32_t>(static_cast<size_t>(offset + 0x04));
-    const uint32_t utf_size = m_reader.read_le_at<uint32_t>(static_cast<size_t>(offset + 0x08));
+    const uint32_t enc_flag = io::read_le<uint32_t>(m_source.data() + offset + 0x04);
+    const uint32_t utf_size = io::read_le<uint32_t>(m_source.data() + offset + 0x08);
     const uint64_t total_size = chunk_header_size + utf_size;
 
     if (total_size > declared_chunk_size) {
         return std::unexpected("CPK chunk payload exceeds the declared chunk size");
     }
-    if (offset > m_reader.size() || total_size > m_reader.size() - offset) {
+    if (offset > m_source.size() || total_size > m_source.size() - offset) {
         return std::unexpected("CPK chunk payload is truncated");
     }
 
-    const auto payload = m_reader.subspan(
+    const auto payload = m_source.subspan(
         static_cast<size_t>(offset + chunk_header_size),
         utf_size
     );

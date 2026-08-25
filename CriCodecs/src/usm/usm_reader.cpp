@@ -242,34 +242,26 @@ std::string_view audio_codec_name(uint8_t codec) noexcept {
 }
 
 std::expected<void, std::string> UsmReader::load(const std::filesystem::path& path) {
-    m_source_path = path;
-    m_owned_source.clear();
-    if (auto result = m_reader.open(path); !result) {
-        return std::unexpected("USM load failed: could not open input: " + std::string(result.error()));
+    auto source = io::SourceView::from_file(path);
+    if (!source) {
+        return std::unexpected("USM load failed: could not open input: " + std::string(source.error()));
     }
+    m_source = std::move(*source);
+    m_source_path = path;
     return parse_file();
 }
 
 std::expected<void, std::string> UsmReader::load(std::span<const uint8_t> data) {
-    m_source_path.clear();
-    m_owned_source.assign(data.begin(), data.end());
-    if (auto result = m_reader.open(std::span<const uint8_t>(m_owned_source)); !result) {
-        return std::unexpected("USM load failed: could not open memory buffer: " + std::string(result.error()));
-    }
-    return parse_file();
+    return load(std::vector<uint8_t>(data.begin(), data.end()));
 }
 
 std::expected<void, std::string> UsmReader::load(std::vector<uint8_t>&& data) {
+    m_source = io::SourceView::from_owned(std::move(data));
     m_source_path.clear();
-    m_owned_source = std::move(data);
-    if (auto result = m_reader.open(std::span<const uint8_t>(m_owned_source)); !result) {
-        return std::unexpected("USM load failed: could not open owned memory buffer: " + std::string(result.error()));
-    }
     return parse_file();
 }
 
 std::expected<void, std::string> UsmReader::parse_file() {
-    m_reader.seek(0);
     m_container_filename.clear();
     m_crid_header = {};
     m_sfsh_header.reset();
@@ -278,13 +270,15 @@ std::expected<void, std::string> UsmReader::parse_file() {
     m_chunks.clear();
     m_audio_codecs.clear();
 
-    if (m_reader.size() >= sizeof(uint32_t) &&
-        m_reader.read_be_at<uint32_t>(0) == static_cast<uint32_t>(UsmChunkType::SFSH)) {
+    if (m_source.size() >= sizeof(uint32_t) &&
+        io::read_be<uint32_t>(m_source.data()) == static_cast<uint32_t>(UsmChunkType::SFSH)) {
         return parse_sfsh_file();
     }
 
-    while (m_reader.remaining() >= UsmChunkHeader::raw_header_size) {
-        auto chunk = read_chunk(m_reader);
+    io::reader source;
+    static_cast<void>(source.open(m_source.bytes));
+    while (source.remaining() >= UsmChunkHeader::raw_header_size) {
+        auto chunk = read_chunk(source);
         if (!chunk) {
             return std::unexpected(chunk.error());
         }
@@ -327,7 +321,7 @@ std::expected<void, std::string> UsmReader::parse_file() {
 }
 
 std::expected<void, std::string> UsmReader::parse_sfsh_file() {
-    const auto data = m_reader.data();
+    const auto data = m_source.bytes;
     auto header = read_sfsh_header(data);
     if (!header) {
         return std::unexpected(header.error());
@@ -606,7 +600,7 @@ std::expected<std::vector<uint8_t>, std::string> UsmReader::transform_container(
 
     const auto& audio_codecs = m_audio_codecs;
 
-    const auto source = m_reader.data();
+    const auto source = m_source.bytes;
     std::vector<uint8_t> output(source.begin(), source.end());
     for (auto chunk : chunk_views(std::span<uint8_t>(output.data(), output.size()))) {
         const auto& header = chunk.header();

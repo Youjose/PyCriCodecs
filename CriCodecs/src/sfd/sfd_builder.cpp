@@ -875,11 +875,9 @@ std::expected<void, std::string> SfdBuilder::build_to_file(
     const std::filesystem::path& output_path,
     const SfdBuildInput& input
 ) {
-    auto bytes = build(input);
-    if (!bytes) {
-        return std::unexpected(bytes.error());
-    }
-    return detail::write_output_file(output_path, *bytes, "SFD build");
+    return build(input).and_then([&](const auto& bytes) {
+        return detail::write_output_file(output_path, bytes, "SFD build");
+    });
 }
 
 } // namespace cricodecs::sfd

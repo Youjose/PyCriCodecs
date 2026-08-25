@@ -23,6 +23,20 @@ namespace cricodecs::aix {
 
 using AixError = std::string;
 
+namespace detail {
+
+struct AixHeader {
+    uint32_t magic;
+    uint32_t data_size;
+    uint32_t version;
+    uint32_t header_size;
+    uint8_t reserved_10[8];
+    uint16_t segment_count;
+    uint8_t reserved_1a[6];
+};
+
+} // namespace detail
+
 struct AixSegment {
     uint32_t offset = 0;
     uint32_t size = 0;
@@ -119,8 +133,7 @@ private:
     static constexpr size_t max_segments = 120;
 
     std::filesystem::path m_source_path;
-    std::vector<uint8_t> m_owned_bytes;
-    io::reader m_reader;
+    io::SourceView m_source;
     std::vector<AixSegment> m_segments;
     std::vector<AixLayer> m_layers;
     std::vector<std::vector<AixPayload>> m_segment_payloads;

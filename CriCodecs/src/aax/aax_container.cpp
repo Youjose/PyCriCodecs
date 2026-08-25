@@ -273,12 +273,9 @@ std::expected<void, std::string> AaxContainer::build_to_file(
     std::span<const AaxBuildEntry> entries,
     const std::filesystem::path& output_path
 ) {
-    auto bytes = build(entries);
-    if (!bytes) {
-        return std::unexpected(bytes.error());
-    }
-
-    return write_output(output_path, *bytes, "AAX build failed", "output file", "output");
+    return build(entries).and_then([&](const auto& bytes) {
+        return write_output(output_path, bytes, "AAX build failed", "output file", "output");
+    });
 }
 
 std::expected<void, std::string> AaxContainer::parse() {
@@ -498,20 +495,13 @@ std::expected<std::vector<uint8_t>, std::string> AaxContainer::adx_data() const 
 }
 
 std::expected<std::vector<uint8_t>, std::string> AaxContainer::save() const {
-    auto entries = build_entries();
-    if (!entries) {
-        return std::unexpected(entries.error());
-    }
-    return build(*entries);
+    return build_entries().and_then([](const auto& entries) { return build(entries); });
 }
 
 std::expected<void, std::string> AaxContainer::save_to_file(const std::filesystem::path& output_path) const {
-    auto bytes = save();
-    if (!bytes) {
-        return std::unexpected(bytes.error());
-    }
-
-    return write_output(output_path, *bytes, "AAX save failed", "output", "output");
+    return save().and_then([&](const auto& bytes) {
+        return write_output(output_path, bytes, "AAX save failed", "output", "output");
+    });
 }
 
 std::expected<void, std::string> AaxContainer::export_adx(const std::filesystem::path& output_path) const {

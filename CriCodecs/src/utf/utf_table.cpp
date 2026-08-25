@@ -12,7 +12,6 @@
 #include "../utilities/io_endian.hpp"
 
 #include <algorithm>
-#include <bit>
 #include <cstring>
 #include <utility>
 
@@ -144,10 +143,10 @@ Value UtfTable::read_value_at(const uint8_t* buf, ColumnType type) const {
         case ColumnType::SInt32: return read_be<int32_t>(buf);
         case ColumnType::UInt64: return read_be<uint64_t>(buf);
         case ColumnType::SInt64: return read_be<int64_t>(buf);
-        case ColumnType::Float:  return std::bit_cast<float>(read_be<uint32_t>(buf));
-        case ColumnType::Double: return std::bit_cast<double>(read_be<uint64_t>(buf));
+        case ColumnType::Float:  return read_be<float>(buf);
+        case ColumnType::Double: return read_be<double>(buf);
         case ColumnType::String: return std::string(string_at(read_be<uint32_t>(buf)));
-        case ColumnType::VLData: return DataRef{read_be<uint32_t>(buf), read_be<uint32_t>(buf + 4)};
+        case ColumnType::VLData: return read_be<DataRef>(buf);
         case ColumnType::GUID: {
             GUID guid;
             std::memcpy(guid.data, buf, 16);

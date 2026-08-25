@@ -40,14 +40,7 @@ std::filesystem::path AfsEntry::suggested_path(bool include_index_prefix) const 
 }
 
 std::optional<AfsDirectoryTimestamp> AfsEntry::directory_timestamp() const noexcept {
-    AfsDirectoryTimestamp timestamp{
-        .year = io::read_le<uint16_t>(directory_metadata.data() + 0),
-        .month = io::read_le<uint16_t>(directory_metadata.data() + 2),
-        .day = io::read_le<uint16_t>(directory_metadata.data() + 4),
-        .hour = io::read_le<uint16_t>(directory_metadata.data() + 6),
-        .minute = io::read_le<uint16_t>(directory_metadata.data() + 8),
-        .second = io::read_le<uint16_t>(directory_metadata.data() + 10),
-    };
+    const auto timestamp = io::read_le<AfsDirectoryTimestamp>(directory_metadata.data());
     if (timestamp.empty()) {
         return std::nullopt;
     }
@@ -56,12 +49,7 @@ std::optional<AfsDirectoryTimestamp> AfsEntry::directory_timestamp() const noexc
 
 std::array<uint8_t, 12> encode_directory_timestamp(const AfsDirectoryTimestamp& timestamp) noexcept {
     std::array<uint8_t, 12> bytes{};
-    io::write_le<uint16_t>(bytes.data() + 0, timestamp.year);
-    io::write_le<uint16_t>(bytes.data() + 2, timestamp.month);
-    io::write_le<uint16_t>(bytes.data() + 4, timestamp.day);
-    io::write_le<uint16_t>(bytes.data() + 6, timestamp.hour);
-    io::write_le<uint16_t>(bytes.data() + 8, timestamp.minute);
-    io::write_le<uint16_t>(bytes.data() + 10, timestamp.second);
+    io::write_le(bytes.data(), timestamp);
     return bytes;
 }
 

@@ -9,6 +9,7 @@ set(CRICODECS_VERSION_MINOR "${CMAKE_MATCH_2}")
 set(CRICODECS_VERSION_PATCH "${CMAKE_MATCH_3}")
 project(CriCodecs VERSION "${cricodecs_numeric_version}" LANGUAGES CXX)
 
+option(CRICODECS_BUILD_TESTS "Build the active GoogleTest suites" ON)
 option(CRICODECS_BUILD_PYTHON "Build the experimental Python binding prototype" OFF)
 option(CRICODECS_BUILD_CLI "Build the shared CriCodecs CLI executable" ON)
 option(CRICODECS_BUILD_CRISTUDIO "Build the CriStudio desktop GUI" OFF)
@@ -158,7 +159,7 @@ if(CRICODECS_BUILD_CLI)
         CriCodecs/src/cli/cricodecs_cli_main.cpp
     )
     target_link_libraries(cricodecs_cli PRIVATE CriCodecs)
-    target_compile_features(cricodecs_cli PRIVATE cxx_std_23)
+    target_compile_features(cricodecs_cli PRIVATE cxx_std_26)
     set_target_properties(cricodecs_cli PROPERTIES
         OUTPUT_NAME cricodecs
     )
@@ -172,6 +173,11 @@ if(CRICODECS_BUILD_CLI)
             )
         endif()
     endif()
+endif()
+
+if(CRICODECS_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(Tests)
 endif()
 
 if(CRICODECS_BUILD_PYTHON)

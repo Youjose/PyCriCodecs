@@ -178,9 +178,8 @@ public:
     [[nodiscard]] std::expected<void, std::string> export_all(const std::filesystem::path& output_dir) const;
 
 private:
-    io::reader m_reader;
+    io::SourceView m_source;
     std::filesystem::path m_source_path;
-    std::vector<uint8_t> m_owned_source;
     std::vector<SfdStream> m_streams;
     std::optional<SfdHeaderSummary> m_header_summary;
 

@@ -9,11 +9,11 @@
  */
 
 #include "utf_table.hpp"
+#include "utf_format.hpp"
 
 #include "../utilities/io_endian.hpp"
 
 #include <algorithm>
-#include <memory>
 #include <utility>
 
 namespace cricodecs::utf {
@@ -25,9 +25,8 @@ std::expected<UtfTable, std::string> UtfTable::load(std::span<const uint8_t> dat
 }
 
 std::expected<UtfTable, std::string> UtfTable::load(std::vector<uint8_t>&& data) {
-    auto owner = std::make_shared<std::vector<uint8_t>>(std::move(data));
-    const std::span<const uint8_t> bytes = *owner;
-    return load(bytes, std::move(owner));
+    auto source = io::SourceView::from_owned(std::move(data));
+    return load(source.bytes, std::move(source.owner));
 }
 
 std::expected<UtfTable, std::string> UtfTable::load(std::span<const uint8_t> data, io::SourceView::Owner owner) {
@@ -42,31 +41,28 @@ std::expected<UtfTable, std::string> UtfTable::load(std::span<const uint8_t> dat
 }
 
 std::expected<UtfTable, std::string> UtfTable::load(const std::filesystem::path& path) {
-    auto reader = std::make_shared<io::reader>();
-    if (auto result = reader->open(path); !result) {
-        return std::unexpected("UTF load failed: failed to open " + path.string() + " (" + result.error() + ")");
+    auto source = io::SourceView::from_file(path);
+    if (!source) {
+        return std::unexpected("UTF load failed: failed to open " + path.string() + " (" + source.error() + ")");
     }
-
-    const auto data = reader->data();
-    return load(data, std::move(reader));
+    return load(source->bytes, std::move(source->owner));
 }
 
 std::expected<void, std::string> UtfTable::parse() {
     const uint8_t* buf = m_source.data();
 
-    if (read_be<uint32_t>(buf) != MAGIC_UTF) {
+    const auto header = read_be<detail::UtfHeader>(buf);
+    if (header.magic != MAGIC_UTF) {
         return std::unexpected("UTF parse failed: invalid magic");
     }
 
-    const uint64_t table_size = static_cast<uint64_t>(read_be<uint32_t>(buf + 0x04)) + 0x08;
-    const uint64_t rows_offset = static_cast<uint64_t>(read_be<uint16_t>(buf + 0x0A)) + 0x08;
-    const uint64_t strings_offset = static_cast<uint64_t>(read_be<uint32_t>(buf + 0x0C)) + 0x08;
-    const uint64_t data_offset = static_cast<uint64_t>(read_be<uint32_t>(buf + 0x10)) + 0x08;
-    m_version = read_be<uint16_t>(buf + 0x08);
-    const uint32_t name_offset = read_be<uint32_t>(buf + 0x14);
-    const uint16_t column_count = read_be<uint16_t>(buf + 0x18);
-    m_row_width = read_be<uint16_t>(buf + 0x1A);
-    m_loaded_row_count = read_be<uint32_t>(buf + 0x1C);
+    const uint64_t table_size = static_cast<uint64_t>(header.table_size) + 0x08;
+    const uint64_t rows_offset = static_cast<uint64_t>(header.rows_offset) + 0x08;
+    const uint64_t strings_offset = static_cast<uint64_t>(header.strings_offset) + 0x08;
+    const uint64_t data_offset = static_cast<uint64_t>(header.data_offset) + 0x08;
+    m_version = header.version;
+    m_row_width = header.row_width;
+    m_loaded_row_count = header.row_count;
 
     if (m_version != 0x00 && m_version != 0x01) {
         return std::unexpected("UTF parse failed: unknown version: " + std::to_string(m_version));
@@ -87,20 +83,20 @@ std::expected<void, std::string> UtfTable::parse() {
 
     const uint32_t strings_size = m_data_offset - m_strings_offset;
 
-    if (strings_size == 0 || name_offset >= strings_size) {
+    if (strings_size == 0 || header.name_offset >= strings_size) {
         return std::unexpected("UTF parse failed: invalid string table");
     }
-    if (column_count == 0) {
+    if (header.column_count == 0) {
         return std::unexpected("UTF parse failed: table has no columns");
     }
 
-    m_table_name = string_at(name_offset);
-    m_columns.reserve(column_count);
+    m_table_name = string_at(header.name_offset);
+    m_columns.reserve(header.column_count);
 
     uint32_t pos = HEADER_SIZE;
     uint32_t column_offset = 0;
 
-    for (uint16_t i = 0; i < column_count; ++i) {
+    for (uint16_t i = 0; i < header.column_count; ++i) {
         if (pos + 5 > m_rows_offset) {
             return std::unexpected("UTF parse failed: schema ended before column " + std::to_string(i));
         }

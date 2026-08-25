@@ -25,6 +25,7 @@
 #include "acb_cue_graph.hpp"
 #include "../utf/utf_table.hpp"
 #include "../awb/awb_container.hpp"
+#include "../utilities/io_reader.hpp"
 #include "../utilities/text_encoding.hpp"
 
 namespace cricodecs::acb {
@@ -192,8 +193,7 @@ public:
 
 private:
     // Source data
-    std::span<const uint8_t> m_source;
-    std::vector<uint8_t> m_owned_source;
+    io::SourceView m_source;
     std::filesystem::path m_source_path;
     text::EncodingOptions m_encoding;
     mutable std::optional<awb::AwbContainer> m_associated_awb;
@@ -254,6 +254,9 @@ private:
     std::optional<std::reference_wrapper<const utf::UtfTable>> load_subtable(const SubtableDescriptor& descriptor) const;
     std::optional<std::reference_wrapper<const utf::UtfTable>> load_subtable(std::string_view name) const;
     [[nodiscard]] std::expected<void, std::string> finish_load_from_source();
+    [[nodiscard]] static std::expected<AcbContainer, std::string> load_source(
+        io::SourceView source,
+        const text::EncodingOptions& encoding);
     bool preload_waveforms();
 
     void resolve_all_names();

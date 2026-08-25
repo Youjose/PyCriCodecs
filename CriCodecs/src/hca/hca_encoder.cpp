@@ -356,8 +356,8 @@ void mdct_transform(EncoderChannel& channel, int subframe) {
             : windowed[static_cast<size_t>(i - half)];
     }
 
-    const auto first_dct = transform::dct4(first, transform::HCA_DCT4_MDCT_SCALE);
-    const auto second_dct = transform::dct4(second, transform::HCA_DCT4_MDCT_SCALE);
+    const auto first_dct = transform::dct4(first);
+    const auto second_dct = transform::dct4(second);
     for (int i = 0; i < size; ++i) {
         channel.spectra[subframe][static_cast<size_t>(i)] =
             first_dct[static_cast<size_t>(i)] + second_dct[static_cast<size_t>(i)];

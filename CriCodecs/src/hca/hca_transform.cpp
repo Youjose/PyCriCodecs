@@ -16,6 +16,7 @@ namespace {
 
 constexpr int DCT_STAGES = HCA_MDCT_BITS;
 constexpr int COEFFICIENTS_PER_STAGE = HCA_SAMPLES_PER_SUBFRAME / 2;
+constexpr float DCT4_SCALE = 0.125f; // sqrt(2.0 / 128.0)
 
 struct DctTables {
     std::array<float, DCT_STAGES * COEFFICIENTS_PER_STAGE> sine{};
@@ -29,7 +30,7 @@ consteval DctTables generate_dct_tables() {
         const int half = width / 2;
         const int group_count = HCA_SAMPLES_PER_SUBFRAME / width;
         const double scale = stage == 0
-            ? static_cast<double>(HCA_DCT4_MDCT_SCALE) / std::numbers::sqrt2_v<double>
+            ? static_cast<double>(DCT4_SCALE) / std::numbers::sqrt2_v<double>
             : 1.0;
         const size_t stage_offset = static_cast<size_t>(stage * COEFFICIENTS_PER_STAGE);
 
@@ -58,8 +59,7 @@ inline constexpr auto DCT_TABLES = generate_dct_tables();
 __attribute__((optimize("fp-contract=off")))
 #endif
 std::array<float, HCA_SAMPLES_PER_SUBFRAME> dct4(
-    const std::array<float, HCA_SAMPLES_PER_SUBFRAME>& input,
-    const float scale
+    const std::array<float, HCA_SAMPLES_PER_SUBFRAME>& input
 ) {
     auto source_storage = input;
     std::array<float, HCA_SAMPLES_PER_SUBFRAME> destination_storage{};
@@ -106,14 +106,7 @@ std::array<float, HCA_SAMPLES_PER_SUBFRAME> dct4(
         std::swap(source, destination);
     }
 
-    auto output = *source;
-    if (scale != HCA_DCT4_MDCT_SCALE) {
-        const float relative_scale = scale / HCA_DCT4_MDCT_SCALE;
-        for (float& value : output) {
-            value *= relative_scale;
-        }
-    }
-    return output;
+    return *source;
 }
 
 } // namespace cricodecs::hca::transform

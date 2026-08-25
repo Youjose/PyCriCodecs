@@ -285,7 +285,7 @@ __attribute__((optimize("fp-contract=off")))
 #endif
 void imdct_transform(DecodeChannel& ch, int subframe) {
     const auto& window = tables::IMDCT_WINDOW;
-    const auto dct_out = transform::dct4(ch.spectra[subframe], transform::HCA_DCT4_IMDCT_SCALE);
+    const auto dct_out = transform::dct4(ch.spectra[subframe]);
 
     for (int i = 0; i < HCA_SAMPLES_PER_SUBFRAME / 2; ++i) {
         ch.wave[subframe][i] =

@@ -4,32 +4,16 @@
  */
 
 #include "mpeg.hpp"
-
-#include <cstring>
-#include <limits>
+#include "../utilities/byte_scan.hpp"
 
 namespace cricodecs::video {
 
 namespace {
 
-constexpr size_t npos = std::numeric_limits<size_t>::max();
+constexpr size_t npos = simd::npos;
 
 [[nodiscard]] size_t find_start_code3(std::span<const uint8_t> bytes, size_t offset = 0) noexcept {
-    const auto* data = bytes.data();
-    const size_t size = bytes.size();
-    while (offset + 3u <= size) {
-        const auto* zero = static_cast<const uint8_t*>(std::memchr(data + offset, 0, size - offset - 2u));
-        if (zero == nullptr) {
-            return npos;
-        }
-
-        offset = static_cast<size_t>(zero - data);
-        if (data[offset + 1u] == 0 && data[offset + 2u] == 1) {
-            return offset;
-        }
-        ++offset;
-    }
-    return npos;
+    return simd::find_zero_zero_one(bytes, offset);
 }
 
 [[nodiscard]] bool is_start_code_at(std::span<const uint8_t> bytes, size_t offset) noexcept {

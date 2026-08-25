@@ -10,6 +10,7 @@
 
 #include "../utilities/io_endian.hpp"
 #include "../utilities/io_reader.hpp"
+#include "../utilities/simd.hpp"
 
 #include <algorithm>
 #include <array>
@@ -253,8 +254,19 @@ public:
                 continue;
             }
 
-            uint32_t length = 1;
-            while (length < max_length && m_bytes[candidate + length] == m_bytes[position + length]) {
+            uint32_t length = 0;
+            for (; length + simd::bytes32::size() <= max_length;
+                 length += simd::bytes32::size()) {
+                const auto different =
+                    simd::load<simd::bytes32>(m_bytes.data() + candidate + length) !=
+                    simd::load<simd::bytes32>(m_bytes.data() + position + length);
+                if (std::simd::any_of(different)) {
+                    length += static_cast<uint32_t>(std::simd::reduce_min_index(different));
+                    break;
+                }
+            }
+            while (length < max_length &&
+                   m_bytes[candidate + length] == m_bytes[position + length]) {
                 ++length;
             }
 

@@ -21,6 +21,7 @@
 
 #include "../utilities/flat_unordered_map.hpp"
 #include "../utilities/numeric.hpp"
+#include "../utilities/simd.hpp"
 #include "../utilities/text_encoding.hpp"
 
 namespace cricodecs::cpk {
@@ -28,6 +29,19 @@ namespace cricodecs::cpk {
 namespace {
 
 constexpr uint32_t chunk_encrypted_flag = 0xFF;
+
+consteval std::array<uint8_t, 64> make_utf_mask() {
+    std::array<uint8_t, 64> mask{};
+    uint8_t value = 0x5F;
+    for (uint8_t& byte : mask) {
+        byte = value;
+        value = static_cast<uint8_t>(value * uint8_t{0x15});
+    }
+    return mask;
+}
+
+inline constexpr auto utf_mask = make_utf_mask();
+static_assert(static_cast<uint8_t>(utf_mask.back() * uint8_t{0x15}) == utf_mask.front());
 
 using util::align_up;
 
@@ -275,10 +289,13 @@ void move_element(std::vector<T>& values, size_t from, size_t to) {
 } // namespace
 
 void Cpk::crypt_utf_payload(std::span<uint8_t> payload) {
-    uint64_t key = 0x655F;
-    for (auto& byte : payload) {
-        byte ^= static_cast<uint8_t>(key);
-        key = (key * 0x4115) & 0xFFFFFFFFull;
+    const simd::bytes64 mask = simd::load<simd::bytes64>(utf_mask.data());
+    size_t offset = 0;
+    for (; offset + simd::bytes64::size() <= payload.size(); offset += simd::bytes64::size()) {
+        simd::store(simd::load<simd::bytes64>(payload.data() + offset) ^ mask, payload.data() + offset);
+    }
+    for (; offset < payload.size(); ++offset) {
+        payload[offset] ^= utf_mask[offset & 63u];
     }
 }
 

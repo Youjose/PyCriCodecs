@@ -15,6 +15,8 @@
 #include <string_view>
 #include <vector>
 
+#include "../utilities/simd.hpp"
+
 namespace cricodecs::awb {
 
 enum class AacEncryptionState {
@@ -38,6 +40,18 @@ enum class AacEncryptionState {
 
 namespace detail {
 
+struct Affine16 {
+    uint16_t mul = 1;
+    uint16_t add = 0;
+};
+
+[[nodiscard]] constexpr Affine16 compose(Affine16 outer, Affine16 inner) noexcept {
+    return {
+        static_cast<uint16_t>(static_cast<uint32_t>(outer.mul) * inner.mul),
+        static_cast<uint16_t>(static_cast<uint32_t>(outer.mul) * inner.add + outer.add),
+    };
+}
+
 [[nodiscard]] inline std::array<uint16_t, 4> derive_aac_key(uint64_t keycode) noexcept {
     if (keycode == 0) {
         return {};
@@ -54,6 +68,42 @@ namespace detail {
         static_cast<uint16_t>(k2 ^ k3),
         static_cast<uint16_t>(~k3),
     };
+}
+
+inline void apply_aac_segment(
+    std::span<uint8_t> data, uint16_t& value, uint16_t mul, uint16_t add) noexcept {
+    if (data.size() < static_cast<size_t>(simd::words16::size())) {
+        for (uint8_t& byte : data) {
+            value = static_cast<uint16_t>(static_cast<uint32_t>(value) * mul + add);
+            byte ^= static_cast<uint8_t>(value >> 8u);
+        }
+        return;
+    }
+
+    std::array<uint16_t, simd::words16::size()> lane_mul{};
+    std::array<uint16_t, simd::words16::size()> lane_add{};
+    Affine16 power{};
+    for (size_t lane = 0; lane < lane_mul.size(); ++lane) {
+        power = compose({mul, add}, power);
+        lane_mul[lane] = power.mul;
+        lane_add[lane] = power.add;
+    }
+
+    const auto multipliers = simd::load<simd::words16>(lane_mul.data());
+    const auto addends = simd::load<simd::words16>(lane_add.data());
+    std::array<uint16_t, simd::words16::size()> values{};
+    size_t offset = 0;
+    for (; offset + values.size() <= data.size(); offset += values.size()) {
+        simd::store(simd::words16{value} * multipliers + addends, values.data());
+        for (size_t lane = 0; lane < values.size(); ++lane) {
+            data[offset + lane] ^= static_cast<uint8_t>(values[lane] >> 8u);
+        }
+        value = values.back();
+    }
+    for (; offset < data.size(); ++offset) {
+        value = static_cast<uint16_t>(static_cast<uint32_t>(value) * mul + add);
+        data[offset] ^= static_cast<uint8_t>(value >> 8u);
+    }
 }
 
 } // namespace detail
@@ -73,17 +123,15 @@ inline void apply_aac_keystream(std::span<uint8_t> data, uint64_t keycode) noexc
     uint16_t add_value = xor_value;
     uint16_t mul_value = static_cast<uint16_t>((4u * seed2) | 1u);
 
-    for (size_t i = 0; i < data.size(); ++i) {
-        if (static_cast<uint16_t>(i) == 0) {
-            const uint32_t next_mul = (4u * seed2) + (seed3 * (mul_value & 0xFFFCu));
-            const uint32_t next_add = (2u * seed0) + (seed1 * (add_value & 0xFFFEu));
-            mul_value = static_cast<uint16_t>((next_mul & 0xFFFDu) | 1u);
-            add_value = static_cast<uint16_t>(next_add | 1u);
-        }
+    for (size_t offset = 0; offset < data.size();) {
+        const uint32_t next_mul = (4u * seed2) + (seed3 * (mul_value & 0xFFFCu));
+        const uint32_t next_add = (2u * seed0) + (seed1 * (add_value & 0xFFFEu));
+        mul_value = static_cast<uint16_t>((next_mul & 0xFFFDu) | 1u);
+        add_value = static_cast<uint16_t>(next_add | 1u);
 
-        xor_value = static_cast<uint16_t>(
-            (static_cast<uint32_t>(xor_value) * mul_value) + add_value);
-        data[i] ^= static_cast<uint8_t>(xor_value >> 8u);
+        const size_t count = std::min(data.size() - offset, size_t{0x10000});
+        detail::apply_aac_segment(data.subspan(offset, count), xor_value, mul_value, add_value);
+        offset += count;
     }
 }
 

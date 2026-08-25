@@ -155,13 +155,15 @@ inline std::array<uint8_t, 8> calc_key_from_string(std::string_view password) no
     std::array<uint8_t, 8> key{};
     std::array<uint8_t, 4> tmp{};
 
+    uint32_t suffix = 0;
+    for (const unsigned char byte : password) {
+        suffix += byte;
+    }
+
     uint32_t sum = 0;
-    for (size_t outer = 0; outer < password.size(); ++outer) {
-        const uint32_t current = static_cast<unsigned char>(password[outer]);
-        sum = current * (current + sum);
-        for (size_t inner = outer + 1; inner < password.size(); ++inner) {
-            sum += static_cast<unsigned char>(password[inner]);
-        }
+    for (const unsigned char current : password) {
+        suffix -= current;
+        sum = current * (current + sum) + suffix;
     }
 
     io::write_be<uint32_t>(tmp.data(), 0x00100001u * sum);

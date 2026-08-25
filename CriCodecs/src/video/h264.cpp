@@ -4,10 +4,9 @@
  */
 
 #include "h264.hpp"
+#include "../utilities/byte_scan.hpp"
 
 #include <algorithm>
-#include <cstring>
-#include <limits>
 #include <numeric>
 #include <ranges>
 
@@ -15,7 +14,7 @@ namespace cricodecs::video {
 
 namespace {
 
-constexpr size_t npos = std::numeric_limits<size_t>::max();
+constexpr size_t npos = simd::npos;
 
 struct NalUnit {
     size_t offset = 0;
@@ -30,24 +29,14 @@ struct AnnexBStartCode {
 };
 
 [[nodiscard]] AnnexBStartCode find_annex_b_start_code(std::span<const uint8_t> bytes, size_t offset = 0) noexcept {
-    const auto* data = bytes.data();
-    const size_t size = bytes.size();
-    while (offset + 3u <= size) {
-        const auto* zero = static_cast<const uint8_t*>(std::memchr(data + offset, 0, size - offset - 2u));
-        if (zero == nullptr) {
-            return {};
-        }
-
-        offset = static_cast<size_t>(zero - data);
-        if (offset + 4u <= size && data[offset + 1u] == 0 && data[offset + 2u] == 0 && data[offset + 3u] == 1) {
-            return AnnexBStartCode{.offset = offset, .size = 4};
-        }
-        if (data[offset + 1u] == 0 && data[offset + 2u] == 1) {
-            return AnnexBStartCode{.offset = offset, .size = 3};
-        }
-        ++offset;
+    const size_t marker = simd::find_zero_zero_one(bytes, offset);
+    if (marker == npos) {
+        return {};
     }
-    return {};
+    if (marker > offset && bytes[marker - 1] == 0) {
+        return AnnexBStartCode{.offset = marker - 1, .size = 4};
+    }
+    return AnnexBStartCode{.offset = marker, .size = 3};
 }
 
 class RbspReader {

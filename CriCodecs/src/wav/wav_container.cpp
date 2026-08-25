@@ -8,6 +8,7 @@
 
 #include "wav_container.hpp"
 #include "../utilities/numeric.hpp"
+#include "../utilities/simd.hpp"
 
 #include <bit>
 #include <limits>
@@ -49,6 +50,41 @@ namespace cricodecs::wav {
             return cricodecs::util::clamp_to<int16_t>(sample);
         }
         return static_cast<int16_t>(sample >> (source_bits - 16));
+    }
+
+    using Float4 = std::simd::vec<float, 4>;
+    using Double4 = std::simd::vec<double, 4>;
+
+    [[nodiscard]] Double4 float_to_pcm16_values(Double4 samples) noexcept {
+        const Double4 infinity{std::numeric_limits<double>::infinity()};
+        const Double4 zero{0.0};
+        const Double4 minus_one{-1.0};
+        const auto finite = (samples == samples) & (samples > -infinity) & (samples < infinity);
+        const auto scaled = std::simd::select(
+            samples <= minus_one,
+            Double4{static_cast<double>(std::numeric_limits<int16_t>::lowest())},
+            std::simd::clamp(samples, minus_one, Double4{1.0}) * Double4{32767.0});
+        return std::simd::select(finite, scaled, zero);
+    }
+
+    template <typename T>
+    void float_to_pcm16(std::span<const uint8_t> source, std::span<int16_t> target) noexcept {
+        size_t index = 0;
+        for (; index + Double4::size() <= target.size(); index += Double4::size()) {
+            Double4 samples;
+            if constexpr (std::is_same_v<T, float>) {
+                const auto packed = std::bit_cast<Float4>(simd::load<std::simd::vec<uint8_t, 16>>(
+                    source.data() + index * sizeof(T)));
+                samples = Double4{packed};
+            } else {
+                samples = std::bit_cast<Double4>(simd::load<simd::bytes32>(
+                    source.data() + index * sizeof(T)));
+            }
+            simd::store_as(float_to_pcm16_values(samples), target.data() + index);
+        }
+        for (; index < target.size(); ++index) {
+            target[index] = float_to_pcm16(io::read_le<T>(source.data() + index * sizeof(T)));
+        }
     }
 
     struct WavWriteLayout {
@@ -274,6 +310,21 @@ namespace cricodecs::wav {
         if (!decoder) return std::unexpected(decoder.error());
 
         const bool tight_frames = block_align == static_cast<size_t>(channels) * decoder->sample_bytes;
+        if constexpr (std::endian::native == std::endian::little) {
+            if (tight_frames &&
+                (decoder->encoding == PcmEncoding::float_32 || decoder->encoding == PcmEncoding::float_64)) {
+                const size_t bytes_needed = target.size() * decoder->sample_bytes;
+                if (bytes_needed > source.size()) {
+                    return std::unexpected(std::string("WAV read failed: PCM data is out of bounds"));
+                }
+                if (decoder->encoding == PcmEncoding::float_32) {
+                    float_to_pcm16<float>(source.first(bytes_needed), target);
+                } else {
+                    float_to_pcm16<double>(source.first(bytes_needed), target);
+                }
+                return {};
+            }
+        }
         if (format.compression == WAVE_FORMAT_PCM && format.valid_bits > 8 && format.valid_bits <= 16 &&
             decoder->sample_bytes == sizeof(int16_t) && tight_frames) {
             const size_t bytes_needed = target.size() * sizeof(int16_t);

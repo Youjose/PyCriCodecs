@@ -10,6 +10,8 @@
 
 #include "usm_crypto.hpp"
 
+#include "../utilities/simd.hpp"
+
 #include <algorithm>
 
 namespace cricodecs::usm {
@@ -24,8 +26,8 @@ constexpr size_t word_size = 8;
 
 void mask_video_common(
     std::span<uint8_t> data,
-    std::span<const uint8_t> mask1_bytes,
-    std::span<const uint8_t> mask2_bytes,
+    std::span<const uint8_t, mask_size> mask1_bytes,
+    std::span<const uint8_t, mask_size> mask2_bytes,
     bool inverse
 ) {
     if (data.size() <= video_min_masked_size) {
@@ -40,19 +42,30 @@ void mask_video_common(
     }
     const size_t masked_size = word_count * word_size;
 
-    std::array<uint8_t, mask_size> mask1{};
     std::array<uint8_t, mask_size> mask2{};
-    std::ranges::copy(mask1_bytes, mask1.begin());
     std::ranges::copy(mask2_bytes, mask2.begin());
 
+    auto mask1_vector = simd::load<simd::bytes32>(mask1_bytes.data());
+    auto mask2_vector = simd::load<simd::bytes32>(mask2.data());
+    const auto original_mask2 = simd::load<simd::bytes32>(mask2_bytes.data());
+    constexpr size_t first_mask_size = video_first_mask_words * word_size;
+
     if (inverse) {
-        for (size_t offset = 0; offset < video_first_mask_words * word_size; ++offset) {
-            const size_t mask_offset = offset % mask_size;
-            mask1[mask_offset] ^= payload[offset + video_first_mask_words * word_size];
-            payload[offset] ^= mask1[mask_offset];
+        for (size_t offset = 0; offset < first_mask_size; offset += mask_size) {
+            mask1_vector ^= simd::load<simd::bytes32>(payload + offset + first_mask_size);
+            simd::store(
+                simd::load<simd::bytes32>(payload + offset) ^ mask1_vector,
+                payload + offset);
         }
 
-        for (size_t offset = video_first_mask_words * word_size; offset < masked_size; ++offset) {
+        size_t offset = first_mask_size;
+        for (; offset + mask_size <= masked_size; offset += mask_size) {
+            const auto plain = simd::load<simd::bytes32>(payload + offset);
+            simd::store(plain ^ mask2_vector, payload + offset);
+            mask2_vector = plain ^ original_mask2;
+        }
+        simd::store(mask2_vector, mask2.data());
+        for (; offset < masked_size; ++offset) {
             const size_t mask_offset = offset % mask_size;
             const uint8_t plain = payload[offset];
             payload[offset] ^= mask2[mask_offset];
@@ -61,18 +74,25 @@ void mask_video_common(
         return;
     }
 
-    for (size_t offset = video_first_mask_words * word_size; offset < masked_size; ++offset) {
+    size_t offset = first_mask_size;
+    for (; offset + mask_size <= masked_size; offset += mask_size) {
+        const auto plain = simd::load<simd::bytes32>(payload + offset) ^ mask2_vector;
+        simd::store(plain, payload + offset);
+        mask2_vector = plain ^ original_mask2;
+    }
+    simd::store(mask2_vector, mask2.data());
+    for (; offset < masked_size; ++offset) {
         const size_t mask_offset = offset % mask_size;
         payload[offset] ^= mask2[mask_offset];
         mask2[mask_offset] = static_cast<uint8_t>(payload[offset] ^ mask2_bytes[mask_offset]);
     }
 
-    for (size_t offset = 0; offset < video_first_mask_words * word_size; ++offset) {
-        const size_t mask_offset = offset % mask_size;
-        mask1[mask_offset] ^= payload[offset + video_first_mask_words * word_size];
-        payload[offset] ^= mask1[mask_offset];
+    for (offset = 0; offset < first_mask_size; offset += mask_size) {
+        mask1_vector ^= simd::load<simd::bytes32>(payload + offset + first_mask_size);
+        simd::store(
+            simd::load<simd::bytes32>(payload + offset) ^ mask1_vector,
+            payload + offset);
     }
-
 }
 
 } // namespace
@@ -128,7 +148,14 @@ void UsmCrypto::decrypt_audio(std::span<uint8_t> data) const {
 
     auto* payload = data.data() + audio_plain_prefix_size;
     const size_t masked_size = ((data.size() - audio_plain_prefix_size) / word_size) * word_size;
-    for (size_t offset = 0; offset < masked_size; ++offset) {
+    const auto mask = simd::load<simd::bytes32>(m_audio_mask.data());
+    size_t offset = 0;
+    for (; offset + mask_size <= masked_size; offset += mask_size) {
+        simd::store(
+            simd::load<simd::bytes32>(payload + offset) ^ mask,
+            payload + offset);
+    }
+    for (; offset < masked_size; ++offset) {
         payload[offset] ^= m_audio_mask[offset % mask_size];
     }
 }

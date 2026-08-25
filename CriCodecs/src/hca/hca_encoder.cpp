@@ -519,6 +519,32 @@ void calculate_frame_header_length(EncoderFrame& frame) {
     }
 }
 
+[[nodiscard]] int band_bit_count(
+    const EncoderChannel& channel, uint8_t band, uint8_t resolution) noexcept {
+    if (resolution == 0) return 0;
+    int bits = 0;
+    if (resolution >= 8) {
+        const int base = tables::QUANTIZED_SPECTRUM_MAX_BITS[resolution] - 1;
+        const float dead_zone = tables::QUANTIZER_DEAD_ZONE[resolution];
+        for (int subframe = 0; subframe < HCA_SUBFRAMES; ++subframe) {
+            bits += base + (std::abs(channel.spectra[subframe][band]) >= dead_zone);
+        }
+        return bits;
+    }
+
+    const float step_inv = tables::QUANTIZER_INVERSE_STEP_SIZE[resolution];
+    const float shift_up = step_inv + 1.0f;
+    const int shift_down = static_cast<int>(step_inv + 0.5f - 8.0f);
+    for (int subframe = 0; subframe < HCA_SUBFRAMES; ++subframe) {
+        const int index = static_cast<int>(channel.spectra[subframe][band] * step_inv + shift_up)
+            - shift_down - 8;
+        const auto* code = tables::quantized_spectrum_code(resolution, index);
+        if (code == nullptr) return std::numeric_limits<int>::max();
+        bits += code->bit_count;
+    }
+    return bits;
+}
+
 [[nodiscard]] int calculate_used_bits(const EncoderFrame& frame, int noise_level, int evaluation_boundary) {
     // The SDK estimator byte-aligns this result and adds 16 before comparing
     // against the frame budget; this local search uses the raw bit estimate.
@@ -531,37 +557,49 @@ void calculate_frame_header_length(EncoderFrame& frame) {
         for (uint8_t band = 0; band < channel.coded_count; ++band) {
             const int noise = band < evaluation_boundary ? noise_level - 1 : noise_level;
             const uint8_t resolution = static_cast<uint8_t>(calculate_resolution(channel.scalefactors[band], noise));
-            if (resolution == 0) {
-                continue;
-            }
-
-            if (resolution >= 8) {
-                const int bits = tables::QUANTIZED_SPECTRUM_MAX_BITS[resolution] - 1;
-                const float dead_zone = tables::QUANTIZER_DEAD_ZONE[resolution];
-                for (int subframe = 0; subframe < HCA_SUBFRAMES; ++subframe) {
-                    total_bits += bits;
-                    if (std::abs(channel.spectra[subframe][band]) >= dead_zone) {
-                        ++total_bits;
-                    }
-                }
-                continue;
-            }
-
-            const float step_inv = tables::QUANTIZER_INVERSE_STEP_SIZE[resolution];
-            const float shift_up = step_inv + 1.0f;
-            const int shift_down = static_cast<int>(step_inv + 0.5f - 8.0f);
-            for (int subframe = 0; subframe < HCA_SUBFRAMES; ++subframe) {
-                const int quantized_index = static_cast<int>(channel.spectra[subframe][band] * step_inv + shift_up) - shift_down;
-                const tables::QuantizedSpectrumCode* code = tables::quantized_spectrum_code(resolution, quantized_index - 8);
-                if (code == nullptr) {
-                    return std::numeric_limits<int>::max();
-                }
-                total_bits += code->bit_count;
-            }
+            const int bits = band_bit_count(channel, band, resolution);
+            if (bits == std::numeric_limits<int>::max()) return bits;
+            total_bits += bits;
         }
     }
 
     return total_bits;
+}
+
+[[nodiscard]] std::array<int, HCA_SAMPLES_PER_SUBFRAME> boundary_bit_counts(
+    const EncoderFrame& frame, int noise_level) {
+    std::array<int64_t, HCA_SAMPLES_PER_SUBFRAME> deltas{};
+    std::array<int, HCA_SAMPLES_PER_SUBFRAME> invalid_deltas{};
+    int64_t base = 16 + 16 + 16;
+    int invalid = 0;
+    for (uint32_t c = 0; c < frame.info.fmt.channel_count; ++c) {
+        const auto& channel = frame.channels[c];
+        base += channel.header_length_bits;
+        for (uint8_t band = 0; band < channel.coded_count; ++band) {
+            const auto normal_resolution = static_cast<uint8_t>(
+                calculate_resolution(channel.scalefactors[band], noise_level));
+            const auto boosted_resolution = static_cast<uint8_t>(
+                calculate_resolution(channel.scalefactors[band], noise_level - 1));
+            const int normal = band_bit_count(channel, band, normal_resolution);
+            const int boosted = band_bit_count(channel, band, boosted_resolution);
+            const bool normal_invalid = normal == std::numeric_limits<int>::max();
+            const bool boosted_invalid = boosted == std::numeric_limits<int>::max();
+            invalid += normal_invalid;
+            invalid_deltas[band] += static_cast<int>(boosted_invalid) - static_cast<int>(normal_invalid);
+            if (!normal_invalid) base += normal;
+            deltas[band] += (boosted_invalid ? 0 : boosted) - (normal_invalid ? 0 : normal);
+        }
+    }
+
+    std::array<int, HCA_SAMPLES_PER_SUBFRAME> result{};
+    for (size_t boundary = 0; boundary < result.size(); ++boundary) {
+        result[boundary] = invalid == 0
+            ? static_cast<int>(std::min<int64_t>(base, std::numeric_limits<int>::max()))
+            : std::numeric_limits<int>::max();
+        base += deltas[boundary];
+        invalid += invalid_deltas[boundary];
+    }
+    return result;
 }
 
 [[nodiscard]] int binary_search_level(const EncoderFrame& frame, int available_bits, int low, int high) {
@@ -582,12 +620,15 @@ void calculate_frame_header_length(EncoderFrame& frame) {
 }
 
 [[nodiscard]] int binary_search_boundary(
-    const EncoderFrame& frame, int available_bits, int noise_level, int low, int high) {
+    const std::array<int, HCA_SAMPLES_PER_SUBFRAME>& bit_counts,
+    int available_bits,
+    int low,
+    int high) {
     const int max = high;
 
     while (std::abs(high - low) > 1) {
         const int mid = (low + high) / 2;
-        const int mid_value = calculate_used_bits(frame, noise_level, mid);
+        const int mid_value = bit_counts[mid];
         if (available_bits < mid_value) {
             high = mid - 1;
         } else {
@@ -599,7 +640,7 @@ void calculate_frame_header_length(EncoderFrame& frame) {
         return low < max ? low : -1;
     }
 
-    return calculate_used_bits(frame, noise_level, high) > available_bits ? low : high;
+    return bit_counts[high] > available_bits ? low : high;
 }
 
 [[nodiscard]] bool calculate_noise_level(EncoderFrame& frame) {
@@ -640,7 +681,8 @@ void calculate_frame_header_length(EncoderFrame& frame) {
     }
 
     const int available_bits = frame.info.codec.frame_size * 8;
-    const int level = binary_search_boundary(frame, available_bits, frame.acceptable_noise_level, 0, 127);
+    const auto bit_counts = boundary_bit_counts(frame, frame.acceptable_noise_level);
+    const int level = binary_search_boundary(bit_counts, available_bits, 0, 127);
     if (level < 0) {
         return false;
     }

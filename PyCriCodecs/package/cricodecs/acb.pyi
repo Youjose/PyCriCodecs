@@ -67,12 +67,6 @@ class AcbCueCommandMeaning(Enum):
     SET_NEXT_BLOCK: AcbCueCommandMeaning
     SET_SELECTOR_LABEL: AcbCueCommandMeaning
 
-class AcbInterpretationEvidence(Enum):
-    NONE: AcbInterpretationEvidence
-    STRUCTURAL: AcbInterpretationEvidence
-    RUNTIME_CONFIRMED: AcbInterpretationEvidence
-    FIXTURE_INFERRED: AcbInterpretationEvidence
-
 class AcbCommandTableKind(Enum):
     TRACK_EVENT: AcbCommandTableKind
     LEGACY_COMMAND: AcbCommandTableKind
@@ -129,7 +123,6 @@ class AcbCueCommand:
     dispatcher: AcbCommandDispatcher
     family: AcbCommandFamily
     meaning: AcbCueCommandMeaning
-    evidence: AcbInterpretationEvidence
     payload: bytes
     target: AcbCommandTarget | None
     argument_u16: int | None
@@ -150,7 +143,6 @@ class AcbCueCommandStream:
     commands: list[AcbCueCommand]
     scheduled_targets: list[AcbScheduledTarget]
     duration_us: int
-    uses_inferred_timing: bool
 
 class AcbCueName:
     row_index: int
@@ -284,10 +276,6 @@ class AcbOutsideLink:
     cue_name_string_index: int
     acb_name_string_index: int
 
-class AcbCueDiagnostic:
-    context: str
-    message: str
-
 class AcbCueNode:
     kind: AcbCueNodeKind
     index: int
@@ -341,7 +329,6 @@ class AcbCuePlaybackPlan:
     cue_name: str
     blocks: list[AcbCueBlockPlan]
     block_count: int
-    diagnostics: list[str]
     def wav_bytes(self, acb: Acb, hca_keycode: int = 0, hca_subkey: int | None = None) -> bytes: ...
     def export(self, acb: Acb, output_path: Any, hca_keycode: int = 0, hca_subkey: int | None = None) -> None: ...
 
@@ -392,7 +379,6 @@ class AcbCueSheetResolution:
     plans: list[AcbResolvedCuePlan]
     plan_count: int
     non_playable_cues: list[int]
-    diagnostics: list[str]
     def filenames(self, include_index_prefix: bool = True) -> list[str]: ...
 
 class AcbCueGraph:
@@ -408,7 +394,6 @@ class AcbCueGraph:
     waveform_extensions: list[AcbWaveformExtension]
     strings: list[AcbStringValue]
     outside_links: list[AcbOutsideLink]
-    diagnostics: list[AcbCueDiagnostic]
     track_events: list[AcbCueCommandStream]
     legacy_commands: list[AcbCueCommandStream]
     sequence_commands: list[AcbCueCommandStream]

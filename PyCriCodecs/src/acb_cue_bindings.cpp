@@ -94,11 +94,6 @@ void bind_acb_cue_types(nb::module_& module) {
         .value("PLAYBACK_PARAMETER", AcbCueCommandMeaning::playback_parameter)
         .value("SET_NEXT_BLOCK", AcbCueCommandMeaning::set_next_block)
         .value("SET_SELECTOR_LABEL", AcbCueCommandMeaning::set_selector_label);
-    nb::enum_<AcbInterpretationEvidence>(module, "AcbInterpretationEvidence")
-        .value("NONE", AcbInterpretationEvidence::none)
-        .value("STRUCTURAL", AcbInterpretationEvidence::structural)
-        .value("RUNTIME_CONFIRMED", AcbInterpretationEvidence::runtime_confirmed)
-        .value("FIXTURE_INFERRED", AcbInterpretationEvidence::fixture_inferred);
     nb::enum_<AcbCommandTableKind>(module, "AcbCommandTableKind")
         .value("TRACK_EVENT", AcbCommandTableKind::track_event)
         .value("LEGACY_COMMAND", AcbCommandTableKind::legacy_command)
@@ -149,7 +144,6 @@ void bind_acb_cue_types(nb::module_& module) {
         .def_ro("dispatcher", &AcbCueCommand::dispatcher)
         .def_ro("family", &AcbCueCommand::family)
         .def_ro("meaning", &AcbCueCommand::meaning)
-        .def_ro("evidence", &AcbCueCommand::evidence)
         .def_prop_ro("payload", [](const AcbCueCommand& self) {
             return to_python_bytes(self.payload);
         })
@@ -171,8 +165,7 @@ void bind_acb_cue_types(nb::module_& module) {
         })
         .def_ro("commands", &AcbCueCommandStream::commands)
         .def_ro("scheduled_targets", &AcbCueCommandStream::scheduled_targets)
-        .def_ro("duration_us", &AcbCueCommandStream::duration_us)
-        .def_ro("uses_inferred_timing", &AcbCueCommandStream::uses_inferred_timing);
+        .def_ro("duration_us", &AcbCueCommandStream::duration_us);
 
     nb::class_<AcbCueName>(module, "AcbCueName")
         .def_ro("row_index", &AcbCueName::row_index)
@@ -319,9 +312,6 @@ void bind_acb_cue_types(nb::module_& module) {
         .def_ro("cue_id", &AcbOutsideLink::cue_id)
         .def_ro("cue_name_string_index", &AcbOutsideLink::cue_name_string_index)
         .def_ro("acb_name_string_index", &AcbOutsideLink::acb_name_string_index);
-    nb::class_<AcbCueDiagnostic>(module, "AcbCueDiagnostic")
-        .def_ro("context", &AcbCueDiagnostic::context)
-        .def_ro("message", &AcbCueDiagnostic::message);
     nb::class_<AcbCueNode>(module, "AcbCueNode")
         .def_ro("kind", &AcbCueNode::kind)
         .def_ro("index", &AcbCueNode::index);
@@ -371,7 +361,6 @@ void bind_acb_cue_types(nb::module_& module) {
         .def_prop_ro("block_count", [](const AcbCuePlaybackPlan& self) {
             return self.blocks.size();
         })
-        .def_ro("diagnostics", &AcbCuePlaybackPlan::diagnostics)
         .def(
             "wav_bytes",
             [](const AcbCuePlaybackPlan& self,
@@ -449,7 +438,6 @@ void bind_acb_cue_types(nb::module_& module) {
             return self.plans.size();
         })
         .def_ro("non_playable_cues", &AcbCueSheetResolution::non_playable_cues)
-        .def_ro("diagnostics", &AcbCueSheetResolution::diagnostics)
         .def(
             "filenames",
             &cue_plan_filenames,
@@ -468,7 +456,6 @@ void bind_acb_cue_types(nb::module_& module) {
         .def_prop_ro("waveform_extensions", &AcbCueGraph::waveform_extensions)
         .def_prop_ro("strings", &AcbCueGraph::strings)
         .def_prop_ro("outside_links", &AcbCueGraph::outside_links)
-        .def_prop_ro("diagnostics", &AcbCueGraph::diagnostics)
         .def_prop_ro("track_events", &AcbCueGraph::track_events)
         .def_prop_ro("legacy_commands", &AcbCueGraph::legacy_commands)
         .def_prop_ro("sequence_commands", &AcbCueGraph::sequence_commands)
@@ -535,8 +522,8 @@ void bind_acb_cue_types(nb::module_& module) {
         nb::arg("raw") = false);
 
     install_row_repr<AcbCommandTarget>(module, "AcbCommandTarget", {"type", "index"});
-    install_row_repr<AcbCueCommand>(module, "AcbCueCommand", {"code", "meaning", "evidence", "payload"});
-    install_row_repr<AcbCueCommandStream>(module, "AcbCueCommandStream", {"row_index", "table_kind", "duration_us", "uses_inferred_timing"});
+    install_row_repr<AcbCueCommand>(module, "AcbCueCommand", {"code", "meaning", "payload"});
+    install_row_repr<AcbCueCommandStream>(module, "AcbCueCommandStream", {"row_index", "table_kind", "duration_us"});
     install_row_repr<AcbCueName>(module, "AcbCueName", {"row_index", "cue_index", "name"});
     install_row_repr<AcbCueReference>(module, "AcbCueReference", {"type", "type_name", "index"});
     install_row_repr<AcbCue>(module, "AcbCue", {"row_index", "cue_id", "reference", "name_rows"});
@@ -546,17 +533,16 @@ void bind_acb_cue_types(nb::module_& module) {
     install_row_repr<AcbBlock>(module, "AcbBlock", {"row_index", "num_loops", "duration_us", "track_indices"});
     install_row_repr<AcbBlockSequence>(module, "AcbBlockSequence", {"row_index", "type", "type_name", "block_indices"});
     install_row_repr<AcbCueWaveform>(module, "AcbCueWaveform", {"row_index", "id", "memory_awb_id", "stream_awb_id", "encode_type"});
-    install_row_repr<AcbCueDiagnostic>(module, "AcbCueDiagnostic", {"context", "message"});
     install_row_repr<AcbCueNode>(module, "AcbCueNode", {"kind", "index"});
     install_row_repr<AcbCueEdge>(module, "AcbCueEdge", {"from_node", "to_node", "kind", "ordinal"});
     install_row_repr<AcbCueAssembly>(module, "AcbCueAssembly", {"cue_index", "has_cycle", "nodes", "edges", "unresolved"});
     install_row_repr<AcbCueClipPlan>(module, "AcbCueClipPlan", {"waveform_index", "start_time_us", "awb_wave_id", "awb_stream_index", "awb_bank"});
     install_row_repr<AcbCueBlockPlan>(module, "AcbCueBlockPlan", {"block_position", "block_index", "name", "duration_us", "authored_loop_count", "render_loop_count"});
-    install_row_repr<AcbCuePlaybackPlan>(module, "AcbCuePlaybackPlan", {"cue_index", "cue_id", "cue_name", "block_count", "diagnostics"});
+    install_row_repr<AcbCuePlaybackPlan>(module, "AcbCuePlaybackPlan", {"cue_index", "cue_id", "cue_name", "block_count"});
     install_row_repr<AcbCueChoiceSelection>(module, "AcbCueChoiceSelection", {"domain", "node_index", "occurrence", "option_index", "selector_name", "selector_value"});
     install_row_repr<AcbCuePlanSource>(module, "AcbCuePlanSource", {"source_cue_index", "source_cue_id", "source_cue_name", "terminal_cue_index", "selector_values"});
     install_row_repr<AcbResolvedCuePlan>(module, "AcbResolvedCuePlan", {"plan", "sources"});
-    install_row_repr<AcbCueSheetResolution>(module, "AcbCueSheetResolution", {"plan_count", "non_playable_cues", "diagnostics"});
+    install_row_repr<AcbCueSheetResolution>(module, "AcbCueSheetResolution", {"plan_count", "non_playable_cues"});
     install_row_repr<AcbCueGraph>(module, "AcbCueGraph", {"cue_count", "waveform_count", "has_embedded_awb"});
 }
 

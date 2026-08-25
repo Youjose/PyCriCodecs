@@ -148,13 +148,7 @@ selector_values_from_object(const nb::object& selectors) {
     auto resolution = unwrap_expected(
         cricodecs::acb::resolve_cue_playback_paths(self, cue_index, options));
     if (resolution.plans.empty()) {
-        std::string message =
-            "ACB cue has no statically playable plan";
-        if (!resolution.diagnostics.empty()) {
-            message += ": ";
-            message += resolution.diagnostics.front();
-        }
-        raise_value_error(message);
+        raise_value_error("ACB cue has no statically playable plan");
     }
 
     if (variant.is_none()) {

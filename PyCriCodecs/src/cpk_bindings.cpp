@@ -79,10 +79,7 @@ void bind_cpk_module(nb::module_& module) {
         .def_ro("extract_size", &cricodecs::cpk::CpkEntry::extract_size)
         .def_ro("is_compressed", &cricodecs::cpk::CpkEntry::is_compressed)
         .def_ro("request_compress", &cricodecs::cpk::CpkEntry::request_compress)
-        .def_ro("group", &cricodecs::cpk::CpkEntry::group)
-        .def_ro("attribute", &cricodecs::cpk::CpkEntry::attribute)
         .def_ro("user_string", &cricodecs::cpk::CpkEntry::user_string)
-        .def_ro("update_date_time", &cricodecs::cpk::CpkEntry::update_date_time)
         .def_prop_ro("full_path", [](const cricodecs::cpk::CpkEntry& entry) {
             return entry.full_path().generic_string();
         });
@@ -382,7 +379,7 @@ void bind_cpk_module(nb::module_& module) {
             return to_python_bytes(unwrap_expected(self.decrypt()));
         });
 
-    install_attr_repr(module, "CpkEntry", {"dirname", "filename", "id", "toc_index", "file_offset", "file_size", "extract_size", "is_compressed", "request_compress", "group", "attribute", "user_string", "update_date_time", "full_path"});
+    install_attr_repr(module, "CpkEntry", {"dirname", "filename", "id", "toc_index", "file_offset", "file_size", "extract_size", "is_compressed", "request_compress", "user_string", "full_path"});
     install_attr_repr(module, "Cpk", {"source_path", "file_count", "layout_mode", "preset", "has_declared_preset", "declared_preset", "alignment", "content_offset", "has_toc", "has_itoc", "has_gtoc", "has_etoc", "files"});
 
     module.def(

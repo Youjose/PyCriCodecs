@@ -28,10 +28,7 @@ class CpkEntry:
     extract_size: int
     is_compressed: bool
     request_compress: bool
-    group: str
-    attribute: str
     user_string: str
-    update_date_time: int
 
 class CpkInfo:
     source_path: str | None

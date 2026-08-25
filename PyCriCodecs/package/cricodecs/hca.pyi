@@ -95,7 +95,8 @@ class HcaHeader:
     cipher: HcaCipherChunk
     rva: HcaRvaChunk
     comment: HcaCommentChunk
-    sample_count: int
+
+    def sample_count(self) -> int: ...
 
 class HcaEncodeConfig:
     sample_rate: int

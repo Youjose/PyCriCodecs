@@ -1,8 +1,13 @@
-from typing import Any
+from typing import Any, overload
 
 class CsbBuildEntry:
     source_path: str
     archive_path: str
+
+    @overload
+    def __init__(self) -> None: ...
+    @overload
+    def __init__(self, source_path: Any, archive_path: Any) -> None: ...
 
 class CsbSection:
     row_index: int
@@ -21,7 +26,8 @@ class CsbStreamInfo:
     streamed: bool
     wrapper_size: int
     wrapper_table_name: str
-    suggested_path: str
+
+    def suggested_path(self) -> str: ...
 
 class CsbInfo:
     source_path: str | None

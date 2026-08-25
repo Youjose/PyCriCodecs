@@ -9,9 +9,11 @@
  */
 
 #include <cstdint>
+#include <algorithm>
 #include <expected>
 #include <filesystem>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string>
 #include <vector>
@@ -60,38 +62,21 @@ public:
         return 0x08u + static_cast<uint32_t>(m_entries.size()) * 0x08u;
     }
     [[nodiscard]] uint32_t type_count(AcxEntryType type) const noexcept {
-        uint32_t count = 0;
-        for (const auto& entry : m_entries) {
-            if (entry.type == type) {
-                ++count;
-            }
-        }
-        return count;
+        return static_cast<uint32_t>(std::ranges::count(m_entries, type, &AcxEntry::type));
     }
     [[nodiscard]] std::optional<uint32_t> first_payload_offset() const noexcept {
         if (m_entries.empty()) {
             return std::nullopt;
         }
-        uint32_t first = m_entries.front().offset;
-        for (const auto& entry : m_entries) {
-            if (entry.offset < first) {
-                first = entry.offset;
-            }
-        }
-        return first;
+        return std::ranges::min(m_entries, {}, &AcxEntry::offset).offset;
     }
     [[nodiscard]] std::optional<uint64_t> payload_end_offset() const noexcept {
         if (m_entries.empty()) {
             return std::nullopt;
         }
-        uint64_t end = 0;
-        for (const auto& entry : m_entries) {
-            const uint64_t entry_end = static_cast<uint64_t>(entry.offset) + entry.size;
-            if (entry_end > end) {
-                end = entry_end;
-            }
-        }
-        return end;
+        return std::ranges::max(m_entries | std::views::transform([](const AcxEntry& entry) {
+            return static_cast<uint64_t>(entry.offset) + entry.size;
+        }));
     }
     [[nodiscard]] const std::vector<AcxEntry>& entries() const noexcept { return m_entries; }
     [[nodiscard]] const AcxEntry& entry(uint32_t index) const { return m_entries[index]; }
@@ -124,6 +109,14 @@ private:
     [[nodiscard]] std::expected<std::vector<std::vector<uint8_t>>, std::string>
         copy_payloads() const;
     [[nodiscard]] std::expected<void, std::string> replace_payloads(std::vector<std::vector<uint8_t>> payloads);
+
+    template <typename Edit>
+    [[nodiscard]] std::expected<void, std::string> edit_payloads(Edit edit) {
+        return copy_payloads().and_then([&](auto payloads) {
+            edit(payloads);
+            return replace_payloads(std::move(payloads));
+        });
+    }
 };
 
 } // namespace cricodecs::acx

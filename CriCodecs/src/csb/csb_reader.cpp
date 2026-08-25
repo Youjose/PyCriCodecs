@@ -129,7 +129,7 @@ std::expected<CsbContainer, std::string> CsbContainer::load(
     const text::EncodingOptions& encoding
 ) {
     return load_source(
-        io::SourceView::from_owned(std::vector<uint8_t>(data.begin(), data.end())),
+        io::SourceView::from_copy(data),
         encoding);
 }
 
@@ -307,12 +307,7 @@ std::expected<utf::UtfTable, std::string> CsbContainer::section_table(uint32_t i
 }
 
 std::expected<utf::UtfTable, std::string> CsbContainer::wrapper_table(uint32_t index) const {
-    auto wrapper = wrapper_data(index);
-    if (!wrapper) {
-        return std::unexpected(wrapper.error());
-    }
-
-    return parse_wrapper_table(*wrapper);
+    return wrapper_data(index).and_then(parse_wrapper_table);
 }
 
 std::expected<std::vector<uint8_t>, std::string> CsbContainer::stream_data(uint32_t index) const {

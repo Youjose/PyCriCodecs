@@ -44,6 +44,65 @@ enum class ChannelType : uint8_t {
 
 namespace detail {
 
+struct HcaFileRecord {
+    uint32_t id;
+    uint16_t version;
+    uint16_t header_size;
+};
+
+struct HcaFormatRecord {
+    uint32_t id;
+    uint32_t channel_rate;
+    uint32_t frame_count;
+    uint16_t encoder_delay;
+    uint16_t encoder_padding;
+};
+
+struct HcaCompRecord {
+    uint32_t id;
+    uint16_t frame_size;
+    uint8_t min_resolution;
+    uint8_t max_resolution;
+    uint8_t track_count;
+    uint8_t channel_config;
+    uint8_t total_band_count;
+    uint8_t base_band_count;
+    uint8_t stereo_band_count;
+    uint8_t bands_per_hfr_group;
+    uint8_t ms_stereo;
+    uint8_t reserved;
+};
+
+struct HcaDecRecord {
+    uint32_t id;
+    uint16_t frame_size;
+    uint8_t min_resolution;
+    uint8_t max_resolution;
+    uint8_t total_band_count_minus_one;
+    uint8_t base_band_count_minus_one;
+    uint8_t track_config;
+    uint8_t stereo_type;
+};
+
+struct HcaVbrRecord {
+    uint32_t id;
+    uint16_t max_frame_size;
+    uint16_t noise_level;
+};
+
+struct HcaLoopRecord {
+    uint32_t id;
+    uint32_t start_frame;
+    uint32_t end_frame;
+    uint16_t start_delay;
+    uint16_t end_padding;
+};
+
+struct HcaRvaRecord {
+    uint32_t id;
+    float volume;
+};
+
 [[nodiscard]] constexpr bool uses_dec_header(uint16_t version) noexcept {
     return version == HCA_VERSION_V102 || version == HCA_VERSION_V103;
 }

@@ -40,6 +40,7 @@ struct SourceView {
         : bytes(bytes), owner(std::move(owner)) {}
 
     [[nodiscard]] static SourceView from_owned(std::vector<uint8_t> bytes);
+    [[nodiscard]] static SourceView from_copy(std::span<const uint8_t> bytes);
     [[nodiscard]] static std::expected<SourceView, const char*> from_file(
         const std::filesystem::path& path,
         access_pattern pattern = access_pattern::sequential);
@@ -334,6 +335,13 @@ inline SourceView SourceView::from_owned(std::vector<uint8_t> bytes) {
     auto storage = std::make_shared<const std::vector<uint8_t>>(std::move(bytes));
     const std::span<const uint8_t> view(*storage);
     return SourceView(view, std::move(storage));
+}
+
+inline SourceView SourceView::from_copy(std::span<const uint8_t> bytes) {
+    auto storage = std::make_shared_for_overwrite<uint8_t[]>(bytes.size());
+    std::ranges::copy(bytes, storage.get());
+    const auto* data = storage.get();
+    return SourceView({data, bytes.size()}, Owner(std::move(storage), data));
 }
 
 inline std::expected<SourceView, const char*> SourceView::from_file(

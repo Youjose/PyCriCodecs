@@ -50,62 +50,47 @@ struct AnnexBStartCode {
     return {};
 }
 
-std::expected<uint32_t, std::string> read_bits(io::bit_reader& br, int bits) {
-    auto value = br.read_checked(bits);
-    if (!value) {
-        return std::unexpected("H.264 bitstream parse failed: " + std::string(value.error()));
-    }
-    return *value;
-}
+class RbspReader {
+public:
+    explicit RbspReader(std::span<const uint8_t> data) : m_reader(data) {}
 
-std::expected<bool, std::string> read_bit(io::bit_reader& br) {
-    auto value = read_bits(br, 1);
-    if (!value) {
-        return std::unexpected(value.error());
-    }
-    return *value != 0;
-}
+    [[nodiscard]] uint32_t bits(int count) noexcept { return m_reader.read(count); }
+    [[nodiscard]] bool bit() noexcept { return bits(1) != 0; }
 
-std::expected<uint32_t, std::string> read_ue(io::bit_reader& br) {
-    uint32_t leading_zero_bits = 0;
-    bool found_stop_bit = false;
-    while (br.remaining() != 0) {
-        auto bit = read_bit(br);
-        if (!bit) {
-            return std::unexpected(bit.error());
+    [[nodiscard]] uint32_t ue() noexcept {
+        uint32_t zeros = 0;
+        bool stop = false;
+        while (m_reader.remaining() != 0) {
+            if (bit()) {
+                stop = true;
+                break;
+            }
+            if (++zeros > 31u) {
+                m_valid = false;
+                return 0;
+            }
         }
-        if (*bit) {
-            found_stop_bit = true;
-            break;
+        if (!stop) {
+            m_valid = false;
+            return 0;
         }
-        ++leading_zero_bits;
-        if (leading_zero_bits > 31u) {
-            return std::unexpected("H.264 bitstream parse failed: Exp-Golomb code is too wide");
-        }
+        return zeros == 0 ? 0u : ((1u << zeros) - 1u) + bits(static_cast<int>(zeros));
     }
 
-    if (!found_stop_bit) {
-        return std::unexpected("H.264 bitstream parse failed: truncated Exp-Golomb code");
-    }
-    if (leading_zero_bits == 0) {
-        return 0u;
+    [[nodiscard]] int32_t se() noexcept {
+        const uint32_t code = ue();
+        const int32_t value = static_cast<int32_t>((code + 1u) / 2u);
+        return (code & 1u) != 0 ? value : -value;
     }
 
-    auto suffix = read_bits(br, static_cast<int>(leading_zero_bits));
-    if (!suffix) {
-        return std::unexpected(suffix.error());
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return m_valid && m_reader.valid();
     }
-    return ((1u << leading_zero_bits) - 1u) + *suffix;
-}
 
-std::expected<int32_t, std::string> read_se(io::bit_reader& br) {
-    auto code_num = read_ue(br);
-    if (!code_num) {
-        return std::unexpected(code_num.error());
-    }
-    const int32_t value = static_cast<int32_t>((*code_num + 1u) / 2u);
-    return (*code_num & 1u) != 0 ? value : -value;
-}
+private:
+    io::bit_reader m_reader;
+    bool m_valid = true;
+};
 
 [[nodiscard]] bool is_vcl_nal(uint8_t nal_type) noexcept {
     return nal_type >= 1u && nal_type <= 5u;
@@ -150,94 +135,43 @@ std::expected<int32_t, std::string> read_se(io::bit_reader& br) {
     return rbsp;
 }
 
-std::expected<void, std::string> skip_scaling_list(io::bit_reader& br, uint32_t size) {
+void skip_scaling_list(RbspReader& br, uint32_t size) {
     int32_t last_scale = 8;
     int32_t next_scale = 8;
     for (uint32_t index = 0; index < size; ++index) {
         if (next_scale != 0) {
-            auto delta_scale = read_se(br);
-            if (!delta_scale) {
-                return std::unexpected(delta_scale.error());
-            }
-            next_scale = (last_scale + *delta_scale + 256) % 256;
+            next_scale = (last_scale + br.se() + 256) % 256;
         }
         last_scale = next_scale == 0 ? last_scale : next_scale;
     }
-    return {};
 }
 
-std::expected<void, std::string> skip_vui_prefix_before_timing(io::bit_reader& br) {
-    auto aspect_ratio_info_present_flag = read_bit(br);
-    if (!aspect_ratio_info_present_flag) {
-        return std::unexpected(aspect_ratio_info_present_flag.error());
-    }
-    if (*aspect_ratio_info_present_flag) {
-        auto aspect_ratio_idc = read_bits(br, 8);
-        if (!aspect_ratio_idc) {
-            return std::unexpected(aspect_ratio_idc.error());
-        }
-        if (*aspect_ratio_idc == 255u) {
-            if (auto sar_width = read_bits(br, 16); !sar_width) {
-                return std::unexpected(sar_width.error());
-            }
-            if (auto sar_height = read_bits(br, 16); !sar_height) {
-                return std::unexpected(sar_height.error());
-            }
+void skip_vui_prefix_before_timing(RbspReader& br) {
+    if (br.bit()) {
+        if (br.bits(8) == 255u) {
+            static_cast<void>(br.bits(16));
+            static_cast<void>(br.bits(16));
         }
     }
 
-    auto overscan_info_present_flag = read_bit(br);
-    if (!overscan_info_present_flag) {
-        return std::unexpected(overscan_info_present_flag.error());
+    if (br.bit()) {
+        static_cast<void>(br.bit());
     }
-    if (*overscan_info_present_flag) {
-        if (auto overscan_appropriate_flag = read_bit(br); !overscan_appropriate_flag) {
-            return std::unexpected(overscan_appropriate_flag.error());
+
+    if (br.bit()) {
+        static_cast<void>(br.bits(3));
+        static_cast<void>(br.bit());
+        if (br.bit()) {
+            static_cast<void>(br.bits(8));
+            static_cast<void>(br.bits(8));
+            static_cast<void>(br.bits(8));
         }
     }
 
-    auto video_signal_type_present_flag = read_bit(br);
-    if (!video_signal_type_present_flag) {
-        return std::unexpected(video_signal_type_present_flag.error());
+    if (br.bit()) {
+        static_cast<void>(br.ue());
+        static_cast<void>(br.ue());
     }
-    if (*video_signal_type_present_flag) {
-        if (auto video_format = read_bits(br, 3); !video_format) {
-            return std::unexpected(video_format.error());
-        }
-        if (auto video_full_range_flag = read_bit(br); !video_full_range_flag) {
-            return std::unexpected(video_full_range_flag.error());
-        }
-        auto colour_description_present_flag = read_bit(br);
-        if (!colour_description_present_flag) {
-            return std::unexpected(colour_description_present_flag.error());
-        }
-        if (*colour_description_present_flag) {
-            if (auto colour_primaries = read_bits(br, 8); !colour_primaries) {
-                return std::unexpected(colour_primaries.error());
-            }
-            if (auto transfer_characteristics = read_bits(br, 8); !transfer_characteristics) {
-                return std::unexpected(transfer_characteristics.error());
-            }
-            if (auto matrix_coefficients = read_bits(br, 8); !matrix_coefficients) {
-                return std::unexpected(matrix_coefficients.error());
-            }
-        }
-    }
-
-    auto chroma_loc_info_present_flag = read_bit(br);
-    if (!chroma_loc_info_present_flag) {
-        return std::unexpected(chroma_loc_info_present_flag.error());
-    }
-    if (*chroma_loc_info_present_flag) {
-        if (auto chroma_sample_loc_type_top_field = read_ue(br); !chroma_sample_loc_type_top_field) {
-            return std::unexpected(chroma_sample_loc_type_top_field.error());
-        }
-        if (auto chroma_sample_loc_type_bottom_field = read_ue(br); !chroma_sample_loc_type_bottom_field) {
-            return std::unexpected(chroma_sample_loc_type_bottom_field.error());
-        }
-    }
-
-    return {};
 }
 
 } // namespace
@@ -281,12 +215,11 @@ H264Structure inspect_h264_structure(std::span<const uint8_t> bytes) noexcept {
             continue;
         }
         const auto rbsp = make_rbsp(ebsp);
-        io::bit_reader br(rbsp);
-        const auto first_mb_in_slice = read_ue(br);
-        const auto slice_type = read_ue(br);
-        const auto pic_parameter_set_id = read_ue(br);
-        if (first_mb_in_slice && slice_type && pic_parameter_set_id &&
-            *slice_type <= 9u && *pic_parameter_set_id <= 255u) {
+        RbspReader br(rbsp);
+        static_cast<void>(br.ue());
+        const auto slice_type = br.ue();
+        const auto pic_parameter_set_id = br.ue();
+        if (br && slice_type <= 9u && pic_parameter_set_id <= 255u) {
             ++structure.valid_slice_headers;
         }
     }
@@ -303,19 +236,19 @@ std::expected<H264SequenceParameterSet, std::string> parse_h264_sequence_paramet
     }
 
     const auto rbsp = make_rbsp(bytes.subspan(sps_nal->payload_offset + 1u, sps_nal->end - sps_nal->payload_offset - 1u));
-    io::bit_reader br(rbsp);
+    RbspReader br(rbsp);
 
-    auto profile_idc = read_bits(br, 8);
-    auto constraint_flags = read_bits(br, 8);
-    auto level_idc = read_bits(br, 8);
-    auto seq_parameter_set_id = read_ue(br);
-    if (!profile_idc || !constraint_flags || !level_idc || !seq_parameter_set_id) {
+    const auto profile_idc = br.bits(8);
+    static_cast<void>(br.bits(8));
+    const auto level_idc = br.bits(8);
+    static_cast<void>(br.ue());
+    if (!br) {
         return std::unexpected("H.264 video parse failed: truncated SPS header");
     }
 
     uint32_t chroma_format_idc = 1;
     bool separate_colour_plane_flag = false;
-    switch (*profile_idc) {
+    switch (profile_idc) {
         case 100:
         case 110:
         case 122:
@@ -328,44 +261,23 @@ std::expected<H264SequenceParameterSet, std::string> parse_h264_sequence_paramet
         case 138:
         case 139:
         case 134: {
-            auto chroma_format = read_ue(br);
-            if (!chroma_format) {
-                return std::unexpected(chroma_format.error());
-            }
-            chroma_format_idc = *chroma_format;
+            chroma_format_idc = br.ue();
             if (chroma_format_idc == 3u) {
-                auto separate_colour_plane = read_bit(br);
-                if (!separate_colour_plane) {
-                    return std::unexpected(separate_colour_plane.error());
-                }
-                separate_colour_plane_flag = *separate_colour_plane;
+                separate_colour_plane_flag = br.bit();
             }
-            if (auto bit_depth_luma_minus8 = read_ue(br); !bit_depth_luma_minus8) {
-                return std::unexpected(bit_depth_luma_minus8.error());
-            }
-            if (auto bit_depth_chroma_minus8 = read_ue(br); !bit_depth_chroma_minus8) {
-                return std::unexpected(bit_depth_chroma_minus8.error());
-            }
-            if (auto qpprime_y_zero_transform_bypass_flag = read_bit(br); !qpprime_y_zero_transform_bypass_flag) {
-                return std::unexpected(qpprime_y_zero_transform_bypass_flag.error());
-            }
-            auto seq_scaling_matrix_present_flag = read_bit(br);
-            if (!seq_scaling_matrix_present_flag) {
-                return std::unexpected(seq_scaling_matrix_present_flag.error());
-            }
-            if (*seq_scaling_matrix_present_flag) {
+            static_cast<void>(br.ue());
+            static_cast<void>(br.ue());
+            static_cast<void>(br.bit());
+            if (br.bit()) {
                 const uint32_t scaling_list_count = chroma_format_idc != 3u ? 8u : 12u;
                 for (uint32_t index = 0; index < scaling_list_count; ++index) {
-                    auto seq_scaling_list_present_flag = read_bit(br);
-                    if (!seq_scaling_list_present_flag) {
-                        return std::unexpected(seq_scaling_list_present_flag.error());
-                    }
-                    if (*seq_scaling_list_present_flag) {
-                        if (auto skipped = skip_scaling_list(br, index < 6u ? 16u : 64u); !skipped) {
-                            return std::unexpected(skipped.error());
-                        }
+                    if (br.bit()) {
+                        skip_scaling_list(br, index < 6u ? 16u : 64u);
                     }
                 }
+            }
+            if (!br) {
+                return std::unexpected("H.264 video parse failed: truncated SPS profile data");
             }
             break;
         }
@@ -373,119 +285,75 @@ std::expected<H264SequenceParameterSet, std::string> parse_h264_sequence_paramet
             break;
     }
 
-    if (auto log2_max_frame_num_minus4 = read_ue(br); !log2_max_frame_num_minus4) {
-        return std::unexpected(log2_max_frame_num_minus4.error());
-    }
-    auto pic_order_cnt_type = read_ue(br);
-    if (!pic_order_cnt_type) {
-        return std::unexpected(pic_order_cnt_type.error());
-    }
-    if (*pic_order_cnt_type == 0u) {
-        if (auto log2_max_pic_order_cnt_lsb_minus4 = read_ue(br); !log2_max_pic_order_cnt_lsb_minus4) {
-            return std::unexpected(log2_max_pic_order_cnt_lsb_minus4.error());
-        }
-    } else if (*pic_order_cnt_type == 1u) {
-        if (auto delta_pic_order_always_zero_flag = read_bit(br); !delta_pic_order_always_zero_flag) {
-            return std::unexpected(delta_pic_order_always_zero_flag.error());
-        }
-        if (auto offset_for_non_ref_pic = read_se(br); !offset_for_non_ref_pic) {
-            return std::unexpected(offset_for_non_ref_pic.error());
-        }
-        if (auto offset_for_top_to_bottom_field = read_se(br); !offset_for_top_to_bottom_field) {
-            return std::unexpected(offset_for_top_to_bottom_field.error());
-        }
-        auto num_ref_frames_in_pic_order_cnt_cycle = read_ue(br);
-        if (!num_ref_frames_in_pic_order_cnt_cycle) {
-            return std::unexpected(num_ref_frames_in_pic_order_cnt_cycle.error());
-        }
-        for (uint32_t index = 0; index < *num_ref_frames_in_pic_order_cnt_cycle; ++index) {
-            if (auto offset_for_ref_frame = read_se(br); !offset_for_ref_frame) {
-                return std::unexpected(offset_for_ref_frame.error());
-            }
+    static_cast<void>(br.ue());
+    const auto pic_order_cnt_type = br.ue();
+    if (pic_order_cnt_type == 0u) {
+        static_cast<void>(br.ue());
+    } else if (pic_order_cnt_type == 1u) {
+        static_cast<void>(br.bit());
+        static_cast<void>(br.se());
+        static_cast<void>(br.se());
+        const auto cycle_size = br.ue();
+        for (uint32_t index = 0; index < cycle_size && br; ++index) {
+            static_cast<void>(br.se());
         }
     }
 
-    if (auto max_num_ref_frames = read_ue(br); !max_num_ref_frames) {
-        return std::unexpected(max_num_ref_frames.error());
-    }
-    if (auto gaps_in_frame_num_value_allowed_flag = read_bit(br); !gaps_in_frame_num_value_allowed_flag) {
-        return std::unexpected(gaps_in_frame_num_value_allowed_flag.error());
-    }
-    auto pic_width_in_mbs_minus1 = read_ue(br);
-    auto pic_height_in_map_units_minus1 = read_ue(br);
-    auto frame_mbs_only_flag = read_bit(br);
-    if (!pic_width_in_mbs_minus1 || !pic_height_in_map_units_minus1 || !frame_mbs_only_flag) {
+    static_cast<void>(br.ue());
+    static_cast<void>(br.bit());
+    const auto pic_width_in_mbs_minus1 = br.ue();
+    const auto pic_height_in_map_units_minus1 = br.ue();
+    const auto frame_mbs_only_flag = br.bit();
+    if (!br) {
         return std::unexpected("H.264 video parse failed: truncated SPS dimensions");
     }
-    if (!*frame_mbs_only_flag) {
-        if (auto mb_adaptive_frame_field_flag = read_bit(br); !mb_adaptive_frame_field_flag) {
-            return std::unexpected(mb_adaptive_frame_field_flag.error());
-        }
+    if (!frame_mbs_only_flag) {
+        static_cast<void>(br.bit());
     }
-    if (auto direct_8x8_inference_flag = read_bit(br); !direct_8x8_inference_flag) {
-        return std::unexpected(direct_8x8_inference_flag.error());
-    }
+    static_cast<void>(br.bit());
 
     uint32_t frame_crop_left_offset = 0;
     uint32_t frame_crop_right_offset = 0;
     uint32_t frame_crop_top_offset = 0;
     uint32_t frame_crop_bottom_offset = 0;
-    auto frame_cropping_flag = read_bit(br);
-    if (!frame_cropping_flag) {
-        return std::unexpected(frame_cropping_flag.error());
-    }
-    if (*frame_cropping_flag) {
-        auto left = read_ue(br);
-        auto right = read_ue(br);
-        auto top = read_ue(br);
-        auto bottom = read_ue(br);
-        if (!left || !right || !top || !bottom) {
+    if (br.bit()) {
+        frame_crop_left_offset = br.ue();
+        frame_crop_right_offset = br.ue();
+        frame_crop_top_offset = br.ue();
+        frame_crop_bottom_offset = br.ue();
+        if (!br) {
             return std::unexpected("H.264 video parse failed: truncated SPS crop rectangle");
         }
-        frame_crop_left_offset = *left;
-        frame_crop_right_offset = *right;
-        frame_crop_top_offset = *top;
-        frame_crop_bottom_offset = *bottom;
     }
 
     uint32_t num_units_in_tick = 0;
     uint32_t time_scale = 0;
     bool fixed_frame_rate = false;
-    auto vui_parameters_present_flag = read_bit(br);
-    if (!vui_parameters_present_flag) {
-        return std::unexpected(vui_parameters_present_flag.error());
-    }
-    if (*vui_parameters_present_flag) {
-        if (auto skipped = skip_vui_prefix_before_timing(br); !skipped) {
-            return std::unexpected(skipped.error());
-        }
-        auto timing_info_present_flag = read_bit(br);
-        if (!timing_info_present_flag) {
-            return std::unexpected(timing_info_present_flag.error());
-        }
-        if (*timing_info_present_flag) {
-            auto num_units = read_bits(br, 32);
-            auto scale = read_bits(br, 32);
-            auto fixed = read_bit(br);
-            if (!num_units || !scale || !fixed) {
+    if (br.bit()) {
+        skip_vui_prefix_before_timing(br);
+        if (br.bit()) {
+            num_units_in_tick = br.bits(32);
+            time_scale = br.bits(32);
+            fixed_frame_rate = br.bit();
+            if (!br) {
                 return std::unexpected("H.264 video parse failed: truncated SPS timing info");
             }
-            num_units_in_tick = *num_units;
-            time_scale = *scale;
-            fixed_frame_rate = *fixed;
         }
     }
+    if (!br) {
+        return std::unexpected("H.264 video parse failed: truncated SPS data");
+    }
 
-    uint32_t width = (*pic_width_in_mbs_minus1 + 1u) * 16u;
-    uint32_t height = (2u - static_cast<uint32_t>(*frame_mbs_only_flag)) * (*pic_height_in_map_units_minus1 + 1u) * 16u;
+    uint32_t width = (pic_width_in_mbs_minus1 + 1u) * 16u;
+    uint32_t height = (2u - static_cast<uint32_t>(frame_mbs_only_flag)) * (pic_height_in_map_units_minus1 + 1u) * 16u;
     const uint32_t chroma_array_type = separate_colour_plane_flag ? 0u : chroma_format_idc;
     uint32_t crop_unit_x = 1;
-    uint32_t crop_unit_y = 2u - static_cast<uint32_t>(*frame_mbs_only_flag);
+    uint32_t crop_unit_y = 2u - static_cast<uint32_t>(frame_mbs_only_flag);
     if (chroma_array_type != 0u) {
         const uint32_t sub_width_c = chroma_array_type == 3u ? 1u : 2u;
         const uint32_t sub_height_c = chroma_array_type == 1u ? 2u : 1u;
         crop_unit_x = sub_width_c;
-        crop_unit_y = sub_height_c * (2u - static_cast<uint32_t>(*frame_mbs_only_flag));
+        crop_unit_y = sub_height_c * (2u - static_cast<uint32_t>(frame_mbs_only_flag));
     }
     width -= std::min(width, (frame_crop_left_offset + frame_crop_right_offset) * crop_unit_x);
     height -= std::min(height, (frame_crop_top_offset + frame_crop_bottom_offset) * crop_unit_y);
@@ -493,8 +361,8 @@ std::expected<H264SequenceParameterSet, std::string> parse_h264_sequence_paramet
     return H264SequenceParameterSet{
         .width = static_cast<uint16_t>(width),
         .height = static_cast<uint16_t>(height),
-        .profile_idc = static_cast<uint8_t>(*profile_idc),
-        .level_idc = static_cast<uint8_t>(*level_idc),
+        .profile_idc = static_cast<uint8_t>(profile_idc),
+        .level_idc = static_cast<uint8_t>(level_idc),
         .num_units_in_tick = num_units_in_tick,
         .time_scale = time_scale,
         .fixed_frame_rate = fixed_frame_rate,

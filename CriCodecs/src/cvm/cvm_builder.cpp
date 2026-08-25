@@ -837,11 +837,9 @@ std::expected<std::vector<uint8_t>, std::string> CvmBuilder::build(
     const CvmBuildInput& input,
     std::string_view key
 ) const {
-    auto state = build_state_from_input(input);
-    if (!state) {
-        return std::unexpected(state.error());
-    }
-    return scramble_cvm_toc(build_cvm_image(*state), *state, key);
+    return build_state_from_input(input).transform([&](auto state) {
+        return scramble_cvm_toc(build_cvm_image(state), state, key);
+    });
 }
 
 std::expected<void, std::string> CvmBuilder::build_to_file(

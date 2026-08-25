@@ -159,6 +159,16 @@ namespace cricodecs::cli::detail {
     return wav::WavContainer::write(output_path.string(), pcm, sample_rate, channels, loops);
 }
 
+template <typename Bytes>
+[[nodiscard]] std::expected<void, std::string> write_bytes_result(
+    std::expected<Bytes, std::string> result,
+    const std::filesystem::path& output_path
+) {
+    return std::move(result).and_then([&](const auto& bytes) {
+        return write_bytes_file(output_path, bytes);
+    });
+}
+
 [[nodiscard]] std::expected<void, std::string> decode_adx_like_to_wav(
     adx::Adx& audio,
     const std::filesystem::path& output_path,
@@ -194,16 +204,10 @@ namespace cricodecs::cli::detail {
     if (!key) {
         return std::unexpected(key.error());
     }
-    auto decoded = audio.decode(*key, options.subkey.value_or(0));
-    if (!decoded) {
-        return std::unexpected(decoded.error());
-    }
-    return write_pcm_as_wav(
-        output_path,
-        *decoded,
-        audio.header().fmt.sample_rate,
-        audio.header().fmt.channel_count
-    );
+    return audio.decode(*key, options.subkey.value_or(0)).and_then([&](const auto& pcm) {
+        return write_pcm_as_wav(
+            output_path, pcm, audio.header().fmt.sample_rate, audio.header().fmt.channel_count);
+    });
 }
 
 [[nodiscard]] std::expected<void, std::string> decode_aax_to_wav(
@@ -211,15 +215,11 @@ namespace cricodecs::cli::detail {
     const std::filesystem::path& output_path,
     const Options& options
 ) {
-    auto adx_bytes = archive.adx_data();
-    if (!adx_bytes) {
-        return std::unexpected(adx_bytes.error());
-    }
-    auto adx_audio = adx::Adx::load(std::span<const uint8_t>(*adx_bytes));
-    if (!adx_audio) {
-        return std::unexpected(adx_audio.error());
-    }
-    return decode_adx_like_to_wav(*adx_audio, output_path, options);
+    return archive.adx_data()
+        .and_then([](const auto& bytes) { return adx::Adx::load(std::span<const uint8_t>(bytes)); })
+        .and_then([&](auto audio) mutable {
+            return decode_adx_like_to_wav(audio, output_path, options);
+        });
 }
 
 [[nodiscard]] std::filesystem::path wav_output_path(const std::filesystem::path& path) {
@@ -250,11 +250,9 @@ namespace cricodecs::cli::detail {
 
     switch (*detected) {
         case Format::adx: {
-            auto audio = adx::Adx::load(bytes);
-            if (!audio) {
-                return std::unexpected(audio.error());
-            }
-            return decode_adx_like_to_wav(*audio, output_path, options).transform([] { return true; });
+            return adx::Adx::load(bytes).and_then([&](auto audio) mutable {
+                return decode_adx_like_to_wav(audio, output_path, options).transform([] { return true; });
+            });
         }
         case Format::hca: {
             auto audio = hca::Hca::load(bytes);
@@ -268,11 +266,9 @@ namespace cricodecs::cli::detail {
             return decode_hca_to_wav(*audio, output_path, decode_options).transform([] { return true; });
         }
         case Format::aax: {
-            auto audio = aax::AaxContainer::load(bytes);
-            if (!audio) {
-                return std::unexpected(audio.error());
-            }
-            return decode_aax_to_wav(*audio, output_path, options).transform([] { return true; });
+            return aax::AaxContainer::load(bytes).and_then([&](const auto& audio) {
+                return decode_aax_to_wav(audio, output_path, options).transform([] { return true; });
+            });
         }
         default:
             return false;
@@ -638,11 +634,8 @@ void append_cue_plan_details(
             }
             return write_bytes_file(output_path, *payload);
         } else if constexpr (std::same_as<T, cpk::Cpk>) {
-            auto bytes = current.extract_to_memory(current.files()[item.index]);
-            if (!bytes) {
-                return std::unexpected(bytes.error());
-            }
-            return write_bytes_file(output_path, *bytes);
+            return write_bytes_result(
+                current.extract_to_memory(current.files()[item.index]), output_path);
         } else if constexpr (std::same_as<T, cvm::CvmContainer>) {
             return current.extract_file(static_cast<uint32_t>(item.index), output_path);
         } else if constexpr (std::same_as<T, aix::Aix>) {
@@ -700,17 +693,9 @@ void append_cue_plan_details(
         return std::visit([&](auto& current) -> std::expected<void, std::string> {
             using T = std::decay_t<decltype(current)>;
             if constexpr (std::same_as<T, adx::Adx> || std::same_as<T, hca::Hca>) {
-                auto bytes = current.rebuild();
-                if (!bytes) {
-                    return std::unexpected(bytes.error());
-                }
-                return write_bytes_file(output_path, *bytes);
+                return write_bytes_result(current.rebuild(), output_path);
             } else if constexpr (std::same_as<T, aax::AaxContainer>) {
-                auto adx_bytes = current.adx_data();
-                if (!adx_bytes) {
-                    return std::unexpected(adx_bytes.error());
-                }
-                return write_bytes_file(output_path, *adx_bytes);
+                return write_bytes_result(current.adx_data(), output_path);
             } else {
                 return std::unexpected("raw export is not supported for this format");
             }
@@ -749,69 +734,41 @@ void append_cue_plan_details(
                 if (!cipher_type) {
                     return std::unexpected(cipher_type.error());
                 }
-                auto encrypted = current.encrypt(*cipher_type, *key, options.subkey.value_or(0));
-                if (!encrypted) {
-                    return std::unexpected(encrypted.error());
-                }
-                return write_bytes_file(output_path, *encrypted);
+                return write_bytes_result(
+                    current.encrypt(*cipher_type, *key, options.subkey.value_or(0)), output_path);
             }
             auto key = hca_keycode(options);
             if (!key) {
                 return std::unexpected(key.error());
             }
-            auto decrypted = current.decrypt(*key, options.subkey.value_or(0));
-            if (!decrypted) {
-                return std::unexpected(decrypted.error());
-            }
-            return write_bytes_file(output_path, *decrypted);
+            return write_bytes_result(
+                current.decrypt(*key, options.subkey.value_or(0)), output_path);
         } else if constexpr (std::same_as<T, adx::Adx>) {
             if (options.encrypt) {
                 auto config = make_adx_encrypt_config(current, options);
                 if (!config) {
                     return std::unexpected(config.error());
                 }
-                auto encrypted = current.encode(*config);
-                if (!encrypted) {
-                    return std::unexpected(encrypted.error());
-                }
-                return write_bytes_file(output_path, *encrypted);
+                return write_bytes_result(current.encode(*config), output_path);
             }
             if (auto applied = apply_adx_key(current, options); !applied) {
                 return std::unexpected(applied.error());
             }
-            auto decrypted = current.decrypt();
-            if (!decrypted) {
-                return std::unexpected(decrypted.error());
-            }
-            return write_bytes_file(output_path, *decrypted);
+            return write_bytes_result(current.decrypt(), output_path);
         } else if constexpr (std::same_as<T, cvm::CvmContainer>) {
             if (options.encrypt) {
                 if (!options.key.has_value()) {
                     return std::unexpected("CVM encrypt requires `--key`");
                 }
-                auto encrypted = current.save(*options.key);
-                if (!encrypted) {
-                    return std::unexpected(encrypted.error());
-                }
-                return write_bytes_file(output_path, *encrypted);
+                return write_bytes_result(current.save(*options.key), output_path);
             }
-            auto decrypted = current.save();
-            if (!decrypted) {
-                return std::unexpected(decrypted.error());
-            }
-            return write_bytes_file(output_path, *decrypted);
+            return write_bytes_result(current.save(), output_path);
         } else if constexpr (std::same_as<T, usm::UsmReader>) {
-            auto bytes = options.encrypt ? current.encrypt() : current.decrypt();
-            if (!bytes) {
-                return std::unexpected(bytes.error());
-            }
-            return write_bytes_file(output_path, *bytes);
+            return write_bytes_result(
+                options.encrypt ? current.encrypt() : current.decrypt(), output_path);
         } else if constexpr (std::same_as<T, cpk::Cpk>) {
-            auto bytes = options.encrypt ? current.encrypt() : current.decrypt();
-            if (!bytes) {
-                return std::unexpected(bytes.error());
-            }
-            return write_bytes_file(output_path, *bytes);
+            return write_bytes_result(
+                options.encrypt ? current.encrypt() : current.decrypt(), output_path);
         } else {
             return std::unexpected("`--encrypt`/`--decrypt` is not supported for this format");
         }

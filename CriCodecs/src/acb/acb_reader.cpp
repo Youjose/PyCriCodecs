@@ -121,7 +121,7 @@ std::expected<AcbContainer, std::string> AcbContainer::load(
     const text::EncodingOptions& encoding
 ) {
     return load_source(
-        io::SourceView::from_owned(std::vector<uint8_t>(data.begin(), data.end())),
+        io::SourceView::from_copy(data),
         encoding);
 }
 

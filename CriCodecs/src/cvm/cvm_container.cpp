@@ -57,21 +57,6 @@ constexpr size_t sector_size = CvmContainer::sector_length();
     return uppercase_ascii(std::move(normalized));
 }
 
-[[nodiscard]] std::expected<void, std::string> write_output_file(
-    const std::filesystem::path& path,
-    std::span<const uint8_t> data,
-    std::string_view context
-) {
-    if (path.has_parent_path()) {
-        std::error_code error;
-        std::filesystem::create_directories(path.parent_path(), error);
-        if (error) {
-            return std::unexpected(std::string(context) + ": could not create output directory: " + error.message());
-        }
-    }
-    return io::write_file_bytes(path, data, context);
-}
-
 } // namespace
 
 std::expected<void, std::string> CvmContainer::ensure_contents_accessible() const {
@@ -256,11 +241,9 @@ std::expected<std::span<const uint8_t>, std::string> CvmContainer::iso_directory
     if (!has_current_layout()) {
         return std::unexpected("CVM raw ISO layout is unavailable after unsaved mutations");
     }
-    auto directory = directory_record(archive_directory);
-    if (!directory) {
-        return std::unexpected(directory.error());
-    }
-    return iso_directory_data_from_extent_sector(directory->extent_sector);
+    return directory_record(archive_directory).and_then([&](const auto& directory) {
+        return iso_directory_data_from_extent_sector(directory.extent_sector);
+    });
 }
 
 std::expected<std::span<const uint8_t>, std::string> CvmContainer::iso_directory_data_from_extent_sector(
@@ -387,24 +370,18 @@ std::expected<void, std::string> CvmContainer::extract(
     const CvmEntry& entry,
     const std::filesystem::path& output_root
 ) const {
-    auto data = file_data(entry.index);
-    if (!data) {
-        return std::unexpected(data.error());
-    }
-
-    return write_output_file(output_root / entry.path, *data, "CVM extract failed");
+    return file_data(entry.index).and_then([&](auto data) {
+        return io::write_file_bytes(output_root / entry.path, data, "CVM extract failed");
+    });
 }
 
 std::expected<void, std::string> CvmContainer::extract_file(
     uint32_t index,
     const std::filesystem::path& output_path
 ) const {
-    auto data = file_data(index);
-    if (!data) {
-        return std::unexpected(data.error());
-    }
-
-    return write_output_file(output_path, *data, "CVM extract failed");
+    return file_data(index).and_then([&](auto data) {
+        return io::write_file_bytes(output_path, data, "CVM extract failed");
+    });
 }
 
 std::expected<void, std::string> CvmContainer::extract_all(const std::filesystem::path& output_root) const {
@@ -460,12 +437,9 @@ std::expected<void, std::string> CvmContainer::save_to_file(
     const std::filesystem::path& output_path,
     std::string_view key
 ) const {
-    auto bytes = save(key);
-    if (!bytes) {
-        return std::unexpected(bytes.error());
-    }
-
-    return write_output_file(output_path, *bytes, "CVM save failed");
+    return save(key).and_then([&](const auto& bytes) {
+        return io::write_file_bytes(output_path, bytes, "CVM save failed");
+    });
 }
 
 std::expected<std::string, std::string> CvmContainer::export_script_text() const {
@@ -598,11 +572,8 @@ std::expected<void, std::string> CvmContainer::replace_file(
     const std::filesystem::path& archive_path,
     const std::filesystem::path& source_path
 ) {
-    auto index = index_of(archive_path);
-    if (!index) {
-        return std::unexpected(index.error());
-    }
-    return replace_file(*index, source_path);
+    return index_of(archive_path).and_then(
+        [&](uint32_t index) { return replace_file(index, source_path); });
 }
 
 std::expected<void, std::string> CvmContainer::replace_bytes(uint32_t index, std::span<const uint8_t> data) {
@@ -626,11 +597,8 @@ std::expected<void, std::string> CvmContainer::replace_bytes(
     const std::filesystem::path& archive_path,
     std::span<const uint8_t> data
 ) {
-    auto index = index_of(archive_path);
-    if (!index) {
-        return std::unexpected(index.error());
-    }
-    return replace_bytes(*index, data);
+    return index_of(archive_path).and_then(
+        [&](uint32_t index) { return replace_bytes(index, data); });
 }
 
 std::expected<void, std::string> CvmContainer::remove(uint32_t index) {
@@ -648,11 +616,7 @@ std::expected<void, std::string> CvmContainer::remove(uint32_t index) {
 }
 
 std::expected<void, std::string> CvmContainer::remove(const std::filesystem::path& archive_path) {
-    auto index = index_of(archive_path);
-    if (!index) {
-        return std::unexpected(index.error());
-    }
-    return remove(*index);
+    return index_of(archive_path).and_then([&](uint32_t index) { return remove(index); });
 }
 
 std::expected<void, std::string> CvmContainer::move_file(uint32_t from_index, uint32_t to_index) {
@@ -700,11 +664,8 @@ std::expected<void, std::string> CvmContainer::rename(
     const std::filesystem::path& existing_archive_path,
     const std::filesystem::path& archive_path
 ) {
-    auto index = index_of(existing_archive_path);
-    if (!index) {
-        return std::unexpected(index.error());
-    }
-    return rename(*index, archive_path);
+    return index_of(existing_archive_path).and_then(
+        [&](uint32_t index) { return rename(index, archive_path); });
 }
 
 } // namespace cricodecs::cvm

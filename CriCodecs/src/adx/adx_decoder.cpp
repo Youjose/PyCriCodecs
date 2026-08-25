@@ -49,87 +49,54 @@ using cricodecs::util::divide_round_up;
     }
 
     std::expected<Adx, AdxError> Adx::load(const std::filesystem::path& path) {
-        Adx adx;
-        auto load_result = adx.m_decoder.load(path.string());
-        if (!load_result) {
-            return std::unexpected(load_result.error());
+        auto source = io::SourceView::from_file(path);
+        if (!source) {
+            return std::unexpected(
+                "ADX load failed: could not open " + path.string() + " (" + source.error() + ")");
         }
-
-        adx.m_decoder.m_reader.close();
-        adx.m_source_path = path;
-        return adx;
+        return load_source(std::move(*source), path);
     }
 
     std::expected<Adx, AdxError> Adx::load(std::span<const uint8_t> data) {
-        Adx adx;
-        adx.m_source_bytes.assign(data.begin(), data.end());
-        auto load_result = adx.m_decoder.load(std::span<const uint8_t>(adx.m_source_bytes));
-        if (!load_result) {
-            return std::unexpected(load_result.error());
-        }
-        return adx;
+        return load_source(io::SourceView::from_copy(data), {});
     }
 
-    void Adx::copy_decode_settings_to(AdxDecoder& decoder) const {
-        decoder.m_key = m_decoder.m_key;
-        decoder.m_ahx_key = m_decoder.m_ahx_key;
+    std::expected<Adx, AdxError> Adx::load_source(
+        io::SourceView source, std::filesystem::path path) {
+        Adx adx;
+        adx.m_source = std::move(source);
+        adx.m_source_path = std::move(path);
+        return adx.m_decoder.load(adx.m_source).transform([&] { return std::move(adx); });
     }
 
     std::expected<AdxDecodeResult, AdxError> Adx::decode() {
-        if (m_source_path.empty()) {
-            return m_decoder.decode();
-        }
-
-        AdxDecoder decoder;
-        auto load_result = decoder.load(m_source_path.string());
-        if (!load_result) {
-            return std::unexpected(load_result.error());
-        }
-        copy_decode_settings_to(decoder);
-        return decoder.decode();
+        if (auto source = require_source("ADX decode failed"); !source) return std::unexpected(source.error());
+        return m_decoder.decode();
     }
 
     std::expected<void, AdxError> Adx::decode_into(std::span<int16_t> pcm_output) {
-        if (m_source_path.empty()) {
-            return m_decoder.decode_into(pcm_output);
-        }
-
-        AdxDecoder decoder;
-        auto load_result = decoder.load(m_source_path.string());
-        if (!load_result) {
-            return std::unexpected(load_result.error());
-        }
-        copy_decode_settings_to(decoder);
-        return decoder.decode_into(pcm_output);
-    }
-
-    std::expected<std::vector<uint8_t>, AdxError> Adx::source_bytes(
-        std::string_view context) const {
-        if (m_source_path.empty()) {
-            return m_source_bytes;
-        }
-        return io::read_file_bytes(m_source_path, context);
+        if (auto source = require_source("ADX decode failed"); !source) return std::unexpected(source.error());
+        return m_decoder.decode_into(pcm_output);
     }
 
     std::expected<std::vector<uint8_t>, AdxError> Adx::rebuild() const {
-        return source_bytes("ADX rebuild failed");
+        if (auto source = require_source("ADX rebuild failed"); !source) return std::unexpected(source.error());
+        return std::vector<uint8_t>(m_source.begin(), m_source.end());
     }
 
     std::expected<std::vector<uint8_t>, AdxError> Adx::decrypt() const {
-        auto bytes = source_bytes("ADX decrypt failed");
-        if (!bytes) {
-            return std::unexpected(bytes.error());
-        }
+        if (auto source = require_source("ADX decrypt failed"); !source) return std::unexpected(source.error());
+        std::vector<uint8_t> bytes(m_source.begin(), m_source.end());
 
         if (!is_encrypted()) {
-            return std::move(*bytes);
+            return bytes;
         }
 
         if (is_ahx()) {
             if (!m_decoder.m_ahx_key) {
                 return std::unexpected(AdxError("AHX decryption key required"));
             }
-            auto decrypted = ahx::decrypt(*bytes, m_decoder.ahx_config());
+            auto decrypted = ahx::decrypt(bytes, m_decoder.ahx_config());
             if (!decrypted) {
                 return std::unexpected(decrypted.error());
             }
@@ -144,7 +111,7 @@ using cricodecs::util::divide_round_up;
         }
 
         const auto data_start = static_cast<size_t>(m_decoder.m_header.data_offset) + 4u;
-        if (data_start > bytes->size()) {
+        if (data_start > bytes.size()) {
             return std::unexpected(AdxError("ADX audio data offset is out of bounds"));
         }
 
@@ -154,23 +121,33 @@ using cricodecs::util::divide_round_up;
             m_decoder.m_header.channels;
         size_t cursor = data_start;
         for (size_t frame = 0; frame < frame_count; ++frame) {
-            if (cursor + m_decoder.m_header.block_size > bytes->size()) {
+            if (cursor + m_decoder.m_header.block_size > bytes.size()) {
                 break;
             }
-            const auto scale = io::read_be<uint16_t>(bytes->data() + cursor);
+            const auto scale = io::read_be<uint16_t>(bytes.data() + cursor);
             if (scale == ADX_EOF_SCALE) break;
 
             const uint16_t mask = m_decoder.m_header.flags == 0x09 ? 0x1FFFu : 0x7FFFu;
-            io::write_be<uint16_t>(bytes->data() + cursor,
+            io::write_be<uint16_t>(bytes.data() + cursor,
                 static_cast<uint16_t>((scale ^ key_state.xor_value) & mask));
             cursor += m_decoder.m_header.block_size;
             key_state.advance();
         }
 
-        if (bytes->size() > ADX_FLAG_OFFSET) {
-            (*bytes)[ADX_FLAG_OFFSET] = 0;
+        if (bytes.size() > ADX_FLAG_OFFSET) {
+            bytes[ADX_FLAG_OFFSET] = 0;
         }
-        return std::move(*bytes);
+        return bytes;
+    }
+
+    std::expected<void, AdxError> Adx::require_source(std::string_view context) const {
+        std::error_code error;
+        if (!m_source_path.empty() && !std::filesystem::exists(m_source_path, error)) {
+            return std::unexpected(
+                std::string(context) + ": source is unavailable: " + m_source_path.string() +
+                (error ? " (" + error.message() + ")" : ""));
+        }
+        return {};
     }
 
     std::expected<std::vector<uint8_t>, AdxError> Adx::encode(

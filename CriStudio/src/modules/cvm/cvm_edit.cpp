@@ -187,7 +187,7 @@ QString entry_preview(
     lines.push_back(QCoreApplication::translate("Cvm.CvmEdit", "Flags: 0x%1 (%2)").arg(flags_hex).arg(header.flags));
     lines.push_back(QCoreApplication::translate("Cvm.CvmEdit", "Filesystem ID: %1").arg(utf8_to_qstring(header.filesystem_id)));
     lines.push_back(QCoreApplication::translate("Cvm.CvmEdit", "Maker ID: %1").arg(utf8_to_qstring(header.maker_id)));
-    lines.push_back(QCoreApplication::translate("Cvm.CvmEdit", "Sector table entries: %1").arg(header.sector_table_entry_count));
+    lines.push_back(QCoreApplication::translate("Cvm.CvmEdit", "Sector table entries: %1").arg(cvm.sector_table().size()));
     lines.push_back(QCoreApplication::translate("Cvm.CvmEdit", "Zone sector index: %1").arg(header.zone_sector_index));
     lines.push_back(QCoreApplication::translate("Cvm.CvmEdit", "ISO start sector: %1").arg(header.iso_start_sector));
     lines.push_back(QStringLiteral(""));

@@ -30,10 +30,8 @@ struct CvmHeader {
     uint32_t flags = 0;
     std::string filesystem_id;
     std::string maker_id;
-    uint32_t sector_table_entry_count = 0;
     uint32_t zone_sector_index = 0;
     uint32_t iso_start_sector = 0;
-    std::vector<uint32_t> sector_table;
 };
 
 struct CvmZoneLayout {
@@ -115,6 +113,7 @@ public:
     [[nodiscard]] const std::string& recording_date_text() const noexcept { return m_recording_date_text; }
     [[nodiscard]] const std::string& media() const noexcept { return m_media; }
     [[nodiscard]] const CvmHeader& header() const noexcept { return m_header; }
+    [[nodiscard]] const std::vector<uint32_t>& sector_table() const noexcept { return m_sector_table; }
     [[nodiscard]] const CvmZoneLayout& zone() const noexcept { return m_zone; }
     [[nodiscard]] const CvmPrimaryVolume& primary_volume() const noexcept { return m_primary_volume; }
     [[nodiscard]] bool is_scrambled() const noexcept { return (m_header.flags & 0x10u) != 0; }
@@ -240,6 +239,7 @@ private:
     CvmHeader m_header;
     CvmZoneLayout m_zone;
     CvmPrimaryVolume m_primary_volume;
+    std::vector<uint32_t> m_sector_table;
     std::vector<CvmEntry> m_entries;
     std::vector<EntryPayload> m_entry_payloads;
     std::vector<CvmDirectoryRecord> m_directories;

@@ -679,43 +679,47 @@ void quantize_spectra(EncoderFrame& frame) {
 }
 
 size_t write_format_chunk(const HcaHeader& info, uint8_t* buffer) {
-    write_be<uint32_t>(buffer + 8, HCA_CHUNK_ID_FMT);
-    buffer[12] = info.fmt.channel_count;
-    buffer[13] = static_cast<uint8_t>(info.fmt.sample_rate >> 16);
-    buffer[14] = static_cast<uint8_t>(info.fmt.sample_rate >> 8);
-    buffer[15] = static_cast<uint8_t>(info.fmt.sample_rate);
-    write_be<uint32_t>(buffer + 16, info.fmt.frame_count);
-    write_be<uint16_t>(buffer + 20, static_cast<uint16_t>(info.fmt.encoder_delay));
-    write_be<uint16_t>(buffer + 22, static_cast<uint16_t>(info.fmt.encoder_padding));
-    return 24;
+    write_be(buffer + sizeof(detail::HcaFileRecord), detail::HcaFormatRecord{
+        HCA_CHUNK_ID_FMT,
+        static_cast<uint32_t>(info.fmt.channel_count) << 24 | info.fmt.sample_rate,
+        info.fmt.frame_count,
+        info.fmt.encoder_delay,
+        info.fmt.encoder_padding,
+    });
+    return sizeof(detail::HcaFileRecord) + sizeof(detail::HcaFormatRecord);
 }
 
 size_t write_comp_chunk(const HcaHeader& info, uint8_t* buffer, size_t position) {
-    write_be<uint32_t>(buffer + position, HCA_CHUNK_ID_COMP);
-    write_be<uint16_t>(buffer + position + 4, static_cast<uint16_t>(info.codec.frame_size));
-    buffer[position + 6] = info.codec.min_resolution;
-    buffer[position + 7] = info.codec.max_resolution;
-    buffer[position + 8] = info.codec.track_count;
-    buffer[position + 9] = info.codec.channel_config;
-    buffer[position + 10] = info.codec.total_band_count;
-    buffer[position + 11] = info.codec.base_band_count;
-    buffer[position + 12] = info.codec.stereo_band_count;
-    buffer[position + 13] = info.codec.bands_per_hfr_group;
-    buffer[position + 14] = info.codec.ms_stereo();
-    buffer[position + 15] = 0;
-    return position + 16;
+    write_be(buffer + position, detail::HcaCompRecord{
+        HCA_CHUNK_ID_COMP,
+        info.codec.frame_size,
+        info.codec.min_resolution,
+        info.codec.max_resolution,
+        info.codec.track_count,
+        info.codec.channel_config,
+        info.codec.total_band_count,
+        info.codec.base_band_count,
+        info.codec.stereo_band_count,
+        info.codec.bands_per_hfr_group,
+        info.codec.ms_stereo(),
+        0,
+    });
+    return position + sizeof(detail::HcaCompRecord);
 }
 
 size_t write_dec_chunk(const HcaHeader& info, uint8_t* buffer, size_t position) {
-    write_be<uint32_t>(buffer + position, HCA_CHUNK_ID_DEC);
-    write_be<uint16_t>(buffer + position + 4, static_cast<uint16_t>(info.codec.frame_size));
-    buffer[position + 6] = info.codec.min_resolution;
-    buffer[position + 7] = info.codec.max_resolution;
-    buffer[position + 8] = static_cast<uint8_t>(info.codec.total_band_count - 1);
-    buffer[position + 9] = static_cast<uint8_t>((info.codec.stereo_band_count > 0 ? info.codec.base_band_count : info.codec.total_band_count) - 1);
-    buffer[position + 10] = static_cast<uint8_t>((info.codec.track_count << 4) | (info.codec.channel_config & 0x0F));
-    buffer[position + 11] = info.codec.stereo_band_count > 0 ? 1 : 0;
-    return position + 12;
+    write_be(buffer + position, detail::HcaDecRecord{
+        HCA_CHUNK_ID_DEC,
+        info.codec.frame_size,
+        info.codec.min_resolution,
+        info.codec.max_resolution,
+        static_cast<uint8_t>(info.codec.total_band_count - 1),
+        static_cast<uint8_t>((info.codec.stereo_band_count > 0
+            ? info.codec.base_band_count : info.codec.total_band_count) - 1),
+        static_cast<uint8_t>((info.codec.track_count << 4) | (info.codec.channel_config & 0x0F)),
+        static_cast<uint8_t>(info.codec.stereo_band_count > 0),
+    });
+    return position + sizeof(detail::HcaDecRecord);
 }
 
 size_t write_ath_chunk(const HcaHeader& info, uint8_t* buffer, size_t position) {
@@ -728,8 +732,8 @@ size_t write_ath_chunk(const HcaHeader& info, uint8_t* buffer, size_t position) 
 void pack_header(const HcaHeader& info, uint8_t* buffer) {
     std::memset(buffer, 0, info.file.header_size);
 
-    write_be<uint32_t>(buffer, HCA_CHUNK_ID_HCA);
-    write_be(buffer + 4, info.file);
+    write_be(buffer, detail::HcaFileRecord{
+        HCA_CHUNK_ID_HCA, info.file.version, info.file.header_size});
 
     size_t position = write_format_chunk(info, buffer);
     if (detail::uses_dec_header(info.file.version)) {
@@ -743,9 +747,14 @@ void pack_header(const HcaHeader& info, uint8_t* buffer) {
     }
 
     if (info.loop.enabled()) {
-        write_be<uint32_t>(buffer + position, HCA_CHUNK_ID_LOOP);
-        write_be(buffer + position + 4, info.loop);
-        position += 16;
+        write_be(buffer + position, detail::HcaLoopRecord{
+            HCA_CHUNK_ID_LOOP,
+            info.loop.start_frame,
+            info.loop.end_frame,
+            info.loop.start_delay,
+            info.loop.end_padding,
+        });
+        position += sizeof(detail::HcaLoopRecord);
     }
 
     write_be<uint32_t>(buffer + position, HCA_CHUNK_ID_CIPH);

@@ -403,7 +403,6 @@ std::expected<std::vector<int16_t>, std::string> decode(
         static_cast<size_t>(sample_count) * info.fmt.channel_count;
     std::vector<int16_t> output(output_sample_count);
     std::vector<uint8_t> frame_buffer(info.codec.frame_size);
-
     const uint8_t* frame_data = hca_data.data() + info.file.header_size;
     uint32_t samples_written = 0;
     uint32_t samples_to_skip = info.fmt.encoder_delay;
@@ -455,11 +454,8 @@ static std::expected<std::vector<uint8_t>, std::string> encrypt_copy(
     uint64_t keycode,
     uint16_t subkey) {
     std::vector<uint8_t> output(hca_data.begin(), hca_data.end());
-    auto crypt_result = detail::encrypt_in_place(output, info, cipher_type, keycode, subkey);
-    if (!crypt_result) {
-        return std::unexpected(crypt_result.error());
-    }
-    return output;
+    return detail::encrypt_in_place(output, info, cipher_type, keycode, subkey)
+        .transform([&] { return std::move(output); });
 }
 
 static std::expected<std::vector<uint8_t>, std::string> decrypt_copy(
@@ -468,11 +464,8 @@ static std::expected<std::vector<uint8_t>, std::string> decrypt_copy(
     uint64_t keycode,
     uint16_t subkey) {
     std::vector<uint8_t> output(hca_data.begin(), hca_data.end());
-    auto crypt_result = detail::decrypt_in_place(output, info, keycode, subkey);
-    if (!crypt_result) {
-        return std::unexpected(crypt_result.error());
-    }
-    return output;
+    return detail::decrypt_in_place(output, info, keycode, subkey)
+        .transform([&] { return std::move(output); });
 }
 
 std::expected<std::vector<uint8_t>, std::string> encrypt(

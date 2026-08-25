@@ -35,19 +35,8 @@
 namespace cricodecs::hca {
 
 struct HcaRecoveryAccess {
-    [[nodiscard]] static std::expected<std::span<const uint8_t>, std::string> source_bytes(
-        const Hca& hca,
-        std::vector<std::vector<uint8_t>>& owned,
-        std::string_view context) {
-        if (!hca.m_bytes.empty()) {
-            return hca.m_bytes;
-        }
-        auto loaded = io::read_file_bytes(hca.m_source_path, context);
-        if (!loaded) {
-            return std::unexpected(loaded.error());
-        }
-        owned.push_back(std::move(*loaded));
-        return owned.back();
+    [[nodiscard]] static std::span<const uint8_t> source_bytes(const Hca& hca) noexcept {
+        return hca.m_source.bytes;
     }
 };
 
@@ -1181,8 +1170,6 @@ namespace {
         return std::unexpected("HCA key recovery failed: no HCA inputs");
     }
 
-    std::vector<std::vector<uint8_t>> owned;
-    owned.reserve(sources.size());
     std::vector<Payload> payloads;
     payloads.reserve(sources.size());
     struct ProfileGroup {
@@ -1194,15 +1181,12 @@ namespace {
         if (source == nullptr) {
             return std::unexpected("HCA key recovery failed: null HCA recovery source");
         }
-        auto bytes = HcaRecoveryAccess::source_bytes(*source, owned, "HCA key recovery failed");
-        if (!bytes) {
-            return std::unexpected(bytes.error());
-        }
+        const auto bytes = HcaRecoveryAccess::source_bytes(*source);
         const auto& header = source->header();
         if (header.cipher.type != 56) {
             return std::unexpected("HCA key recovery failed: every input must use cipher type 56");
         }
-        if (header.available_frame_count(bytes->size()) == 0) {
+        if (header.available_frame_count(bytes.size()) == 0) {
             return std::unexpected("HCA key recovery failed: input contains no complete frames");
         }
         const Profile current = profile(header);
@@ -1211,7 +1195,7 @@ namespace {
             groups.push_back(ProfileGroup{.profile = current, .payloads = {}});
             group = std::prev(groups.end());
         }
-        const Payload payload{.bytes = *bytes, .header = &header};
+        const Payload payload{.bytes = bytes, .header = &header};
         payloads.push_back(payload);
         group->payloads.push_back(payload);
     }
@@ -1516,16 +1500,13 @@ std::expected<KeyRecoveryResult, std::string> recover_key(
     if (exact_consensus_key) {
         const auto validate_group = [&](size_t index) -> std::expected<std::optional<KeyCandidate>, std::string> {
             const auto& group = groups[index];
-            std::vector<std::vector<uint8_t>> owned;
-            owned.reserve(group.hcas.size());
             std::vector<Payload> payloads;
             payloads.reserve(group.hcas.size());
             for (const Hca* hca : group.hcas) {
-                auto bytes = HcaRecoveryAccess::source_bytes(*hca, owned, "HCA key validation failed");
-                if (!bytes) {
-                    return std::unexpected(bytes.error());
-                }
-                payloads.push_back(Payload{.bytes = *bytes, .header = &hca->header()});
+                payloads.push_back(Payload{
+                    .bytes = HcaRecoveryAccess::source_bytes(*hca),
+                    .header = &hca->header(),
+                });
             }
             const auto validation = sample_frames(payloads, ValidationFrameLimit);
             if (validation.empty()) {

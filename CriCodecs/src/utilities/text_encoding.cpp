@@ -327,11 +327,8 @@ std::expected<std::string, std::string> platform_convert(
         return std::unexpected("Windows does not support conversion from " + std::string(from_encoding) +
             " to " + std::string(to_encoding));
     }
-    auto wide = windows_decode(input, *from_page);
-    if (!wide) {
-        return std::unexpected(wide.error());
-    }
-    return windows_encode(*wide, *to_page);
+    return windows_decode(input, *from_page).and_then(
+        [&](const auto& wide) { return windows_encode(wide, *to_page); });
 }
 #else
 bool valid_utf8(std::span<const uint8_t> input) {

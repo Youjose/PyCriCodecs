@@ -876,7 +876,7 @@ std::expected<void, std::string> SfdBuilder::build_to_file(
     const SfdBuildInput& input
 ) {
     return build(input).and_then([&](const auto& bytes) {
-        return detail::write_output_file(output_path, bytes, "SFD build");
+        return io::write_file_bytes(output_path, bytes, "SFD build failed");
     });
 }
 

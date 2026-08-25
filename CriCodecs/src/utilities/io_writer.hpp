@@ -97,6 +97,15 @@ private:
     std::span<const uint8_t> bytes,
     std::string_view context = "Failed to write file")
 {
+    if (const auto parent = path.parent_path(); !parent.empty()) {
+        std::error_code error;
+        std::filesystem::create_directories(parent, error);
+        if (error) {
+            return std::unexpected(
+                std::string(context) + ": failed to create " + parent.string() + " (" + error.message() + ")");
+        }
+    }
+
     writer file_writer;
     if (auto result = file_writer.open(path); !result) {
         return std::unexpected(

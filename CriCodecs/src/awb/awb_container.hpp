@@ -102,20 +102,13 @@ public:
     }
 
     [[nodiscard]] std::expected<std::vector<uint8_t>, std::string> file_bytes(uint32_t index) const {
-        auto data = file_data(index);
-        if (!data) {
-            return std::unexpected(data.error());
-        }
-
-        return std::vector<uint8_t>(data->begin(), data->end());
+        return file_data(index).transform([](auto data) {
+            return std::vector<uint8_t>(data.begin(), data.end());
+        });
     }
 
     [[nodiscard]] std::expected<EntryCodec, std::string> entry_codec(uint32_t index) const {
-        auto data = file_data(index);
-        if (!data) {
-            return std::unexpected(data.error());
-        }
-        return probe_entry_codec(*data);
+        return file_data(index).transform(probe_entry_codec);
     }
 
     [[nodiscard]] std::expected<void, std::string> extract_file(
@@ -176,12 +169,9 @@ public:
 
     [[nodiscard]] std::expected<AacEncryptionState, std::string> probe_aac_encryption(uint32_t index,
                                                                                        uint64_t keycode) const {
-        auto data = file_data(index);
-        if (!data) {
-            return std::unexpected(data.error());
-        }
-
-        return ::cricodecs::awb::probe_aac_encryption(*data, keycode);
+        return file_data(index).transform([&](auto data) {
+            return ::cricodecs::awb::probe_aac_encryption(data, keycode);
+        });
     }
 
     /// Return true when the bank contains a group that can be tested as CRI's

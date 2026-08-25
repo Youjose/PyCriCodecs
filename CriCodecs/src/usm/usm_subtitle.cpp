@@ -527,12 +527,7 @@ std::expected<std::vector<uint8_t>, std::string> subtitle_source_text_to_sbt(
 }
 
 std::expected<std::string, std::string> sbt_to_srt(std::span<const uint8_t> data) {
-    auto cues = parse_sbt_subtitles(data);
-    if (!cues) {
-        return std::unexpected(cues.error());
-    }
-
-    return format_srt_cues(*cues);
+    return parse_sbt_subtitles(data).transform(format_srt_cues);
 }
 
 std::expected<std::flat_map<uint32_t, std::string>, std::string> sbt_to_srt_tracks(std::span<const uint8_t> data) {
@@ -558,11 +553,7 @@ std::expected<std::vector<uint8_t>, std::string> srt_to_sbt(
     uint32_t language_id,
     uint32_t time_unit
 ) {
-    auto cues = srt_to_cues(text, language_id, time_unit);
-    if (!cues) {
-        return std::unexpected(cues.error());
-    }
-    return build_sbt_subtitles(*cues);
+    return srt_to_cues(text, language_id, time_unit).and_then(build_sbt_subtitles);
 }
 
 std::expected<std::string, std::string> sbt_to_ass(std::span<const uint8_t> data, std::string_view title) {
@@ -601,11 +592,7 @@ std::expected<std::vector<uint8_t>, std::string> ass_to_sbt(
     uint32_t language_id,
     uint32_t time_unit
 ) {
-    auto cues = ass_to_cues(text, language_id, time_unit);
-    if (!cues) {
-        return std::unexpected(cues.error());
-    }
-    return build_sbt_subtitles(*cues);
+    return ass_to_cues(text, language_id, time_unit).and_then(build_sbt_subtitles);
 }
 
 } // namespace cricodecs::usm

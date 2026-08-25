@@ -116,11 +116,8 @@ std::expected<CvmKey, std::string> recover_key(std::span<const uint8_t> data) {
 }
 
 std::expected<CvmKey, std::string> recover_key(const std::filesystem::path& path) {
-    auto data = io::read_file_bytes(path, "CVM key recovery failed");
-    if (!data) {
-        return std::unexpected(data.error());
-    }
-    return recover_key(*data);
+    return io::read_file_bytes(path, "CVM key recovery failed").and_then(
+        [](const auto& data) { return recover_key(data); });
 }
 
 } // namespace cricodecs::cvm

@@ -289,10 +289,8 @@ void bind_cvm_module(nb::module_& module) {
         .def_ro("flags", &cricodecs::cvm::CvmHeader::flags)
         .def_ro("filesystem_id", &cricodecs::cvm::CvmHeader::filesystem_id)
         .def_ro("maker_id", &cricodecs::cvm::CvmHeader::maker_id)
-        .def_ro("sector_table_entry_count", &cricodecs::cvm::CvmHeader::sector_table_entry_count)
         .def_ro("zone_sector_index", &cricodecs::cvm::CvmHeader::zone_sector_index)
-        .def_ro("iso_start_sector", &cricodecs::cvm::CvmHeader::iso_start_sector)
-        .def_ro("sector_table", &cricodecs::cvm::CvmHeader::sector_table);
+        .def_ro("iso_start_sector", &cricodecs::cvm::CvmHeader::iso_start_sector);
 
     nb::class_<cricodecs::cvm::CvmZoneLayout>(module, "CvmZoneLayout")
         .def_ro("chunk_length", &cricodecs::cvm::CvmZoneLayout::chunk_length)
@@ -366,6 +364,7 @@ void bind_cvm_module(nb::module_& module) {
             return self.primary_volume().application_identifier;
         }, &cricodecs::cvm::CvmContainer::set_application_identifier)
         .def_prop_ro("header", &cricodecs::cvm::CvmContainer::header)
+        .def_prop_ro("sector_table", &cricodecs::cvm::CvmContainer::sector_table)
         .def_prop_ro("zone", &cricodecs::cvm::CvmContainer::zone)
         .def_prop_ro("primary_volume", &cricodecs::cvm::CvmContainer::primary_volume)
         .def_prop_ro("is_scrambled", &cricodecs::cvm::CvmContainer::is_scrambled)
@@ -703,7 +702,7 @@ void bind_cvm_module(nb::module_& module) {
     install_attr_repr(module, "CvmRofsVolumeInfo", {"name", "source_path", "current_directory", "is_default", "is_scrambled"});
     install_attr_repr(module, "CvmRofsScrambleInfo", {"volume_name", "volume_token", "initial_sector", "current_sector", "is_scrambled", "raw_words"});
     install_attr_repr(module, "CvmRofsRangeHandle", {"volume_name", "start_sector", "sector_count", "current_sector", "byte_size", "last_transfer_sector_count", "last_transfer_status"});
-    install_attr_repr(module, "CvmHeader", {"chunk_length", "total_size", "flags", "filesystem_id", "maker_id", "sector_table_entry_count", "zone_sector_index", "iso_start_sector", "sector_table"});
+    install_attr_repr(module, "CvmHeader", {"chunk_length", "total_size", "flags", "filesystem_id", "maker_id", "zone_sector_index", "iso_start_sector"});
     install_attr_repr(module, "CvmZoneLayout", {"chunk_length", "zone_sector", "sector_length_1", "sector_length_2", "data_sector", "data_length", "iso_sector", "iso_length"});
     install_attr_repr(module, "CvmPrimaryVolume", {"system_identifier", "volume_identifier", "volume_set_identifier", "publisher_identifier", "data_preparer_identifier", "application_identifier", "volume_space_size", "logical_block_size"});
     install_attr_repr(module, "CvmEntry", {"index", "path", "extent_sector", "size"});

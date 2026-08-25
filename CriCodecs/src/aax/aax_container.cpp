@@ -66,37 +66,6 @@ adx::AdxLoop sample_loop(uint32_t start, uint32_t count) {
     };
 }
 
-std::expected<void, std::string> write_output(
-    const std::filesystem::path& path,
-    std::span<const uint8_t> bytes,
-    std::string_view context,
-    std::string_view target,
-    std::string_view directory_target
-) {
-    if (path.has_parent_path()) {
-        std::error_code error;
-        std::filesystem::create_directories(path.parent_path(), error);
-        if (error) {
-            return std::unexpected(
-                std::string(context) + ": could not create " + std::string(directory_target) +
-                " directory: " + error.message());
-        }
-    }
-
-    io::writer writer;
-    if (auto result = writer.open(path); !result) {
-        return std::unexpected(std::string(context) + ": could not open " + std::string(target) + ": " + path.string());
-    }
-    if (auto result = writer.write(bytes); !result) {
-        (void)writer.close();
-        return std::unexpected(std::string(context) + ": could not write " + std::string(target) + ": " + path.string());
-    }
-    if (auto result = writer.close(); !result) {
-        return std::unexpected(std::string(context) + ": could not finalize " + std::string(target) + ": " + path.string());
-    }
-    return {};
-}
-
 } // namespace
 
 std::expected<AaxContainer, std::string> AaxContainer::load(const std::filesystem::path& path) {
@@ -274,7 +243,7 @@ std::expected<void, std::string> AaxContainer::build_to_file(
     const std::filesystem::path& output_path
 ) {
     return build(entries).and_then([&](const auto& bytes) {
-        return write_output(output_path, bytes, "AAX build failed", "output file", "output");
+        return io::write_file_bytes(output_path, bytes, "AAX build failed");
     });
 }
 
@@ -422,7 +391,7 @@ std::expected<void, std::string> AaxContainer::extract_file(
         return std::unexpected(data.error());
     }
 
-    return write_output(output_path, *data, "AAX extract failed", "segment output", "segment output");
+    return io::write_file_bytes(output_path, *data, "AAX extract failed");
 }
 
 std::expected<std::vector<uint8_t>, std::string> AaxContainer::adx_data() const {
@@ -500,36 +469,14 @@ std::expected<std::vector<uint8_t>, std::string> AaxContainer::save() const {
 
 std::expected<void, std::string> AaxContainer::save_to_file(const std::filesystem::path& output_path) const {
     return save().and_then([&](const auto& bytes) {
-        return write_output(output_path, bytes, "AAX save failed", "output", "output");
+        return io::write_file_bytes(output_path, bytes, "AAX save failed");
     });
 }
 
 std::expected<void, std::string> AaxContainer::export_adx(const std::filesystem::path& output_path) const {
-    if (output_path.has_parent_path()) {
-        std::error_code filesystem_error;
-        std::filesystem::create_directories(output_path.parent_path(), filesystem_error);
-        if (filesystem_error) {
-            return std::unexpected("AAX export failed: could not create output directory: " + filesystem_error.message());
-        }
-    }
-
-    io::writer writer;
-    if (auto result = writer.open(output_path); !result) {
-        return std::unexpected("AAX export failed: could not open output: " + output_path.string());
-    }
-    auto output = adx_data();
-    if (!output) {
-        (void)writer.close();
-        return std::unexpected(output.error());
-    }
-    if (auto result = writer.write(*output); !result) {
-        (void)writer.close();
-        return std::unexpected("AAX export failed: could not write output: " + output_path.string());
-    }
-    if (auto result = writer.close(); !result) {
-        return std::unexpected("AAX export failed: could not finalize output: " + output_path.string());
-    }
-    return {};
+    return adx_data().and_then([&](const auto& bytes) {
+        return io::write_file_bytes(output_path, bytes, "AAX export failed");
+    });
 }
 
 } // namespace cricodecs::aax

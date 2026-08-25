@@ -306,12 +306,7 @@ std::expected<std::vector<uint8_t>, std::string> CsbContainer::build(
     std::span<const CsbBuildEntry> entries,
     const text::EncodingOptions& encoding
 ) {
-    auto streams = inspect_build_entries(entries, encoding);
-    if (!streams) {
-        return std::unexpected(streams.error());
-    }
-
-    return build_minimal_csb(*streams);
+    return inspect_build_entries(entries, encoding).and_then(build_minimal_csb);
 }
 
 std::expected<std::vector<uint8_t>, std::string> CsbContainer::build_from_directory(

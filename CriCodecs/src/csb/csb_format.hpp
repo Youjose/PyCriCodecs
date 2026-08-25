@@ -109,12 +109,9 @@ inline std::expected<std::span<const uint8_t>, std::string> require_data(
 [[nodiscard]] inline std::expected<std::string, std::string> parse_wrapper_table_name(
     std::span<const uint8_t> wrapper
 ) {
-    auto table = parse_wrapper_table(wrapper);
-    if (!table) {
-        return std::unexpected(table.error());
-    }
-
-    return std::string(table->table_name());
+    return parse_wrapper_table(wrapper).transform([](const auto& table) {
+        return std::string(table.table_name());
+    });
 }
 
 [[nodiscard]] inline std::expected<uint8_t, std::string> read_segment_loop_flag(

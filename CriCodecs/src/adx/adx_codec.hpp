@@ -149,13 +149,13 @@ namespace cricodecs::adx {
         );
 
     private:
-        std::vector<uint8_t> m_source_bytes;
+        io::SourceView m_source;
         std::filesystem::path m_source_path;
         AdxDecoder m_decoder;
 
-        [[nodiscard]] std::expected<std::vector<uint8_t>, AdxError> source_bytes(
-            std::string_view context) const;
-        void copy_decode_settings_to(AdxDecoder& decoder) const;
+        [[nodiscard]] static std::expected<Adx, AdxError> load_source(
+            io::SourceView source, std::filesystem::path path);
+        [[nodiscard]] std::expected<void, AdxError> require_source(std::string_view context) const;
     };
 
     struct AdxEncodeConfig {

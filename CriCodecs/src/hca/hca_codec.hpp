@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <span>
 #include <string>
+#include <type_traits>
 #include <vector>
 #include <expected>
 
@@ -77,45 +78,32 @@ class HcaEncoder;
 class Hca {
 public:
     [[nodiscard]] static std::expected<Hca, std::string> load(const std::filesystem::path& path) {
-        io::reader reader;
-        if (auto result = reader.open(path); !result) {
-            return std::unexpected("HCA load failed: could not open file `" + path.string() + "`");
+        auto source = io::SourceView::from_file(path);
+        if (!source) {
+            return std::unexpected(
+                "HCA load failed: could not open " + path.string() + " (" + source.error() + ")");
         }
-
-        auto parsed = parse_header(reader.data());
-        if (!parsed) {
-            return std::unexpected(parsed.error());
-        }
-
-        return Hca({}, std::move(parsed.value()), path);
+        return load_source(std::move(*source), path);
     }
 
     [[nodiscard]] static std::expected<Hca, std::string> load(std::span<const uint8_t> data) {
-        auto parsed = parse_header(data);
-        if (!parsed) {
-            return std::unexpected(parsed.error());
-        }
-
-        return Hca(
-            std::vector<uint8_t>(data.begin(), data.end()),
-            std::move(parsed.value())
-        );
+        return load_source(io::SourceView::from_copy(data), {});
     }
 
     [[nodiscard]] const HcaHeader& header() const noexcept { return m_header; }
     [[nodiscard]] const std::filesystem::path& source_path() const noexcept { return m_source_path; }
     [[nodiscard]] std::expected<std::vector<uint8_t>, std::string> bytes() const {
-        if (!m_bytes.empty() || m_source_path.empty()) {
-            return m_bytes;
-        }
-        return io::read_file_bytes(m_source_path, "HCA byte load failed");
+        return with_source("HCA byte load failed", [](auto source) {
+            return std::expected<std::vector<uint8_t>, std::string>(
+                std::in_place, source.begin(), source.end());
+        });
     }
 
     [[nodiscard]] std::expected<std::vector<int16_t>, std::string> decode(
         uint64_t keycode = 0,
         uint16_t subkey = 0
     ) const {
-        return with_source("HCA decode failed", [=](std::span<const uint8_t> source) {
+        return with_source("HCA decode failed", [=](auto source) {
             return hca::decode(source, keycode, subkey);
         });
     }
@@ -125,7 +113,7 @@ public:
         uint64_t keycode = 0,
         uint16_t subkey = 0
     ) const {
-        return with_source("HCA encrypt failed", [=](std::span<const uint8_t> source) {
+        return with_source("HCA encrypt failed", [=](auto source) {
             return hca::encrypt(source, cipher_type, keycode, subkey);
         });
     }
@@ -134,16 +122,16 @@ public:
         uint64_t keycode = 0,
         uint16_t subkey = 0
     ) const {
-        return with_source("HCA decrypt failed", [=](std::span<const uint8_t> source) {
+        return with_source("HCA decrypt failed", [=](auto source) {
             return hca::decrypt(source, keycode, subkey);
         });
     }
 
     [[nodiscard]] std::expected<std::vector<uint8_t>, std::string> rebuild() const {
-        if (!m_bytes.empty() || m_source_path.empty()) {
-            return m_bytes;
-        }
-        return io::read_file_bytes(m_source_path, "HCA rebuild failed");
+        return with_source("HCA rebuild failed", [](auto source) {
+            return std::expected<std::vector<uint8_t>, std::string>(
+                std::in_place, source.begin(), source.end());
+        });
     }
 
 private:
@@ -152,31 +140,31 @@ private:
 
     [[nodiscard]] static std::expected<HcaHeader, std::string> parse_header(std::span<const uint8_t> data);
 
-    Hca(
-        std::vector<uint8_t> bytes,
-        HcaHeader header,
-        std::filesystem::path source_path = {})
-        : m_bytes(std::move(bytes))
+    Hca(io::SourceView source, HcaHeader header, std::filesystem::path source_path)
+        : m_source(std::move(source))
         , m_header(std::move(header))
         , m_source_path(std::move(source_path)) {}
 
-    template <typename Operation>
-    [[nodiscard]] auto with_source(std::string_view context, Operation&& operation) const
-        -> decltype(operation(std::span<const uint8_t>{})) {
-        if (!m_bytes.empty() || m_source_path.empty()) {
-            return operation(m_bytes);
-        }
-
-        io::reader reader;
-        if (auto result = reader.open(m_source_path); !result) {
-            return std::unexpected(
-                std::string(context) + ": failed to open " + m_source_path.string() +
-                " (" + result.error() + ")");
-        }
-        return operation(reader.data());
+    [[nodiscard]] static std::expected<Hca, std::string> load_source(
+        io::SourceView source, std::filesystem::path path) {
+        return parse_header(source).transform([&](HcaHeader header) {
+            return Hca(std::move(source), std::move(header), std::move(path));
+        });
     }
 
-    std::vector<uint8_t> m_bytes;
+    template <typename Operation>
+    [[nodiscard]] auto with_source(std::string_view context, Operation operation) const
+        -> std::invoke_result_t<Operation, std::span<const uint8_t>> {
+        std::error_code error;
+        if (!m_source_path.empty() && !std::filesystem::exists(m_source_path, error)) {
+            return std::unexpected(
+                std::string(context) + ": source is unavailable: " + m_source_path.string() +
+                (error ? " (" + error.message() + ")" : ""));
+        }
+        return operation(m_source.bytes);
+    }
+
+    io::SourceView m_source;
     HcaHeader m_header;
     std::filesystem::path m_source_path;
 };

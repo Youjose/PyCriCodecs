@@ -432,19 +432,13 @@ std::expected<void, AixError> Aix::replace_segments(std::vector<AixBuildSegment>
 }
 
 std::expected<std::vector<uint8_t>, AixError> Aix::save() const {
-    auto segments = build_segments();
-    if (!segments) {
-        return std::unexpected(segments.error());
-    }
-    return build(*segments);
+    return build_segments().and_then([](const auto& segments) { return build(segments); });
 }
 
 std::expected<void, AixError> Aix::save_to_file(const std::filesystem::path& output_path) const {
-    auto segments = build_segments();
-    if (!segments) {
-        return std::unexpected(segments.error());
-    }
-    return build_to_file(*segments, output_path);
+    return build_segments().and_then([&](const auto& segments) {
+        return build_to_file(segments, output_path);
+    });
 }
 
 std::expected<void, AixError> Aix::add_segment(AixBuildSegment segment) {

@@ -22,34 +22,6 @@ using util::lowercase_ascii;
 
 } // namespace
 
-std::expected<void, std::string> detail::write_output_file(
-    const std::filesystem::path& path,
-    std::span<const uint8_t> bytes,
-    std::string_view operation
-) {
-    if (path.has_parent_path()) {
-        std::error_code error;
-        std::filesystem::create_directories(path.parent_path(), error);
-        if (error) {
-            return std::unexpected(
-                std::string(operation) + " failed: could not create output directory: " + error.message());
-        }
-    }
-
-    io::writer writer;
-    if (!writer.open(path)) {
-        return std::unexpected(std::string(operation) + " failed: could not open output: " + path.string());
-    }
-    if (!writer.write(bytes)) {
-        (void)writer.close();
-        return std::unexpected(std::string(operation) + " failed: could not write output: " + path.string());
-    }
-    if (!writer.close()) {
-        return std::unexpected(std::string(operation) + " failed: could not finalize output: " + path.string());
-    }
-    return {};
-}
-
 std::filesystem::path SfdStream::suggested_path(bool include_index_prefix) const {
     const std::string_view kind = type == SfdStreamType::audio
         ? "audio"
@@ -152,7 +124,7 @@ std::expected<std::vector<uint8_t>, std::string> SfdContainer::save() const {
 }
 
 std::expected<void, std::string> SfdContainer::save_to_file(const std::filesystem::path& output_path) const {
-    return detail::write_output_file(output_path, m_source.bytes, "SFD save");
+    return io::write_file_bytes(output_path, m_source.bytes, "SFD save failed");
 }
 
 std::expected<void, std::string> SfdContainer::export_stream(

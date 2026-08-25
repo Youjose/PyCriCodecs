@@ -35,9 +35,7 @@ std::filesystem::path AcxEntry::suggested_path(bool include_index_prefix) const 
 }
 
 std::expected<std::vector<uint8_t>, std::string> AcxContainer::rebuild() const {
-    auto payloads = copy_payloads();
-    if (!payloads) return std::unexpected(payloads.error());
-    return build_archive(std::move(*payloads));
+    return copy_payloads().and_then(build_archive);
 }
 
 std::expected<std::vector<std::vector<uint8_t>>, std::string>
@@ -73,17 +71,13 @@ std::expected<void, std::string> AcxContainer::set_file_data(uint32_t index, std
         return std::unexpected("ACX entry index is out of range");
     }
 
-    auto payloads = copy_payloads();
-    if (!payloads) return std::unexpected(payloads.error());
-    (*payloads)[index].assign(data.begin(), data.end());
-    return replace_payloads(std::move(*payloads));
+    return edit_payloads([&](auto& payloads) {
+        payloads[index].assign(data.begin(), data.end());
+    });
 }
 
 std::expected<void, std::string> AcxContainer::add_file(std::span<const uint8_t> data) {
-    auto payloads = copy_payloads();
-    if (!payloads) return std::unexpected(payloads.error());
-    payloads->emplace_back(data.begin(), data.end());
-    return replace_payloads(std::move(*payloads));
+    return edit_payloads([&](auto& payloads) { payloads.emplace_back(data.begin(), data.end()); });
 }
 
 std::expected<void, std::string> AcxContainer::remove_file(uint32_t index) {
@@ -94,10 +88,7 @@ std::expected<void, std::string> AcxContainer::remove_file(uint32_t index) {
         return std::unexpected("ACX remove failed: archive must keep at least one entry");
     }
 
-    auto payloads = copy_payloads();
-    if (!payloads) return std::unexpected(payloads.error());
-    payloads->erase(payloads->begin() + index);
-    return replace_payloads(std::move(*payloads));
+    return edit_payloads([&](auto& payloads) { payloads.erase(payloads.begin() + index); });
 }
 
 std::expected<void, std::string> AcxContainer::move_file(uint32_t from_index, uint32_t to_index) {
@@ -108,13 +99,11 @@ std::expected<void, std::string> AcxContainer::move_file(uint32_t from_index, ui
         return {};
     }
 
-    auto payloads = copy_payloads();
-    if (!payloads) return std::unexpected(payloads.error());
-
-    auto moved = std::move((*payloads)[from_index]);
-    payloads->erase(payloads->begin() + from_index);
-    payloads->insert(payloads->begin() + to_index, std::move(moved));
-    return replace_payloads(std::move(*payloads));
+    return edit_payloads([&](auto& payloads) {
+        auto moved = std::move(payloads[from_index]);
+        payloads.erase(payloads.begin() + from_index);
+        payloads.insert(payloads.begin() + to_index, std::move(moved));
+    });
 }
 
 } // namespace cricodecs::acx

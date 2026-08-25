@@ -418,6 +418,7 @@ std::expected<void, std::string> CvmContainer::parse(std::optional<CvmKey> key) 
     m_header = {};
     m_zone = {};
     m_primary_volume = {};
+    m_sector_table.clear();
     m_media = "DVD";
     m_entries.clear();
     m_entry_payloads.clear();
@@ -440,20 +441,20 @@ std::expected<void, std::string> CvmContainer::parse(std::optional<CvmKey> key) 
     m_header.flags = read_be<uint32_t>(m_source.data() + cvmh_offset + 0x30);
     m_header.filesystem_id = read_ascii(m_source, cvmh_offset + 0x34, 4);
     m_header.maker_id = read_ascii(m_source, cvmh_offset + 0x38, 64);
-    m_header.sector_table_entry_count = read_be<uint32_t>(m_source.data() + cvmh_offset + 0x80);
+    const uint32_t sector_table_entry_count = read_be<uint32_t>(m_source.data() + cvmh_offset + 0x80);
     m_header.zone_sector_index = read_be<uint32_t>(m_source.data() + cvmh_offset + 0x84);
     m_header.iso_start_sector = read_be<uint32_t>(m_source.data() + cvmh_offset + 0x88);
 
     const size_t sector_table_offset = cvmh_offset + 0x100;
-    const size_t sector_table_size = static_cast<size_t>(m_header.sector_table_entry_count) * sizeof(uint32_t);
+    const size_t sector_table_size = static_cast<size_t>(sector_table_entry_count) * sizeof(uint32_t);
     if (sector_table_offset + sector_table_size > zone_offset) {
         return std::unexpected("CVM sector table exceeds the CVMH chunk");
     }
 
-    m_header.sector_table.resize(m_header.sector_table_entry_count);
+    m_sector_table.resize(sector_table_entry_count);
     io::read_structs<std::endian::big>(
         m_source.data() + sector_table_offset,
-        std::span(m_header.sector_table));
+        std::span(m_sector_table));
 
     if (m_header.total_size != m_source.size()) {
         return std::unexpected("CVM total size field does not match the source size");

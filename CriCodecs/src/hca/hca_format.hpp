@@ -14,6 +14,11 @@ inline constexpr int HCA_MASK             = 0x7F7F7F7F;
 inline constexpr int HCA_SUBFRAMES        = 8;
 inline constexpr int HCA_SAMPLES_PER_SUBFRAME = 128;
 inline constexpr int HCA_SAMPLES_PER_FRAME    = HCA_SUBFRAMES * HCA_SAMPLES_PER_SUBFRAME; // 1024
+// The fmt chunk stores an eight-bit count. Ambisonics is narrower: order 14 is
+// the last square count that fits (15^2 = 225).
+inline constexpr int HCA_MAX_CHANNELS     = 255; // Encoder accepts all channels.
+// I tried forcing 0x8F to the encoder/decoder thinking channel count has a special value (0) if so, and it failed.
+inline constexpr int HCA_MAX_AMBISONICS_ORDER = 14; // 0x8E in fmt chunk.
 inline constexpr int HCA_MDCT_BITS        = 7; // log2(128)
 inline constexpr int HCA_MIN_FRAME_SIZE   = 8;
 inline constexpr int HCA_MAX_FRAME_SIZE   = 0xFFFF;

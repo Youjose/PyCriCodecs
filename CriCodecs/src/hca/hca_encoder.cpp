@@ -47,7 +47,6 @@ constexpr uint32_t BASE_HEADER_SIZE = 96;
 constexpr uint32_t BASE_HEADER_ALIGNMENT = 32;
 constexpr uint32_t LOOP_FRAME_ALIGNMENT = 2048;
 constexpr uint32_t HFR_GROUP_TARGET_BANDS = 8;
-constexpr uint8_t CHANNEL_CONFIG_DISABLES_STEREO_HFR = 128;
 constexpr float MAX_SCALED_SPECTRA = 0.999999f;
 constexpr float INTENSITY_ENERGY_SCALE = 16777216.0f;
 constexpr float ONE_OVER_SQRT2 = 0.70710677f;
@@ -57,14 +56,20 @@ constexpr float ONE_OVER_SQRT2 = 0.70710677f;
 }
 
 [[nodiscard]] uint32_t calculate_bitrate(const HcaHeader& info, HcaQuality quality) {
-    const uint32_t pcm_bitrate = info.fmt.sample_rate * info.fmt.channel_count * 16;
-    const uint32_t max_bitrate = pcm_bitrate / 4;
+    const uint64_t pcm_bitrate =
+        static_cast<uint64_t>(info.fmt.sample_rate) * info.fmt.channel_count * 16;
+    const uint64_t frame_limited_bitrate =
+        static_cast<uint64_t>(HCA_MAX_FRAME_SIZE) * info.fmt.sample_rate * 8 /
+        HCA_SAMPLES_PER_FRAME;
+    const uint32_t max_bitrate = static_cast<uint32_t>(
+        std::min(pcm_bitrate / 4, frame_limited_bitrate));
     const bool joint_coding = info.fmt.channel_count != 1 &&
         info.codec.track_count != info.fmt.channel_count &&
-        info.codec.channel_config < CHANNEL_CONFIG_DISABLES_STEREO_HFR;
-    const uint32_t min_bitrate = std::min(
+        !info.codec.is_ambisonics();
+    const uint32_t min_bitrate = static_cast<uint32_t>(std::min<uint64_t>(
         pcm_bitrate / 6,
-        info.fmt.channel_count * (joint_coding ? 32'000u : 42'666u));
+        static_cast<uint64_t>(info.fmt.channel_count) *
+            (joint_coding ? 32'000u : 42'666u)));
 
     int ratio = 6;
     switch (quality) {
@@ -76,11 +81,20 @@ constexpr float ONE_OVER_SQRT2 = 0.70710677f;
         default: break;
     }
 
-    return std::clamp(pcm_bitrate / static_cast<uint32_t>(ratio), min_bitrate, max_bitrate);
+    const uint32_t target = static_cast<uint32_t>(
+        pcm_bitrate / static_cast<uint32_t>(ratio));
+    return std::clamp(target, std::min(min_bitrate, max_bitrate), max_bitrate);
 }
 
-void calculate_band_counts(HcaHeader& info, uint32_t bitrate, uint32_t cutoff_freq) {
-    info.codec.frame_size = static_cast<uint16_t>(bitrate * HCA_SAMPLES_PER_FRAME / info.fmt.sample_rate / 8);
+[[nodiscard]] bool calculate_band_counts(
+    HcaHeader& info, uint32_t bitrate, uint32_t cutoff_freq)
+{
+    const uint64_t frame_size = static_cast<uint64_t>(bitrate) * HCA_SAMPLES_PER_FRAME /
+        info.fmt.sample_rate / 8;
+    if (frame_size > HCA_MAX_FRAME_SIZE) {
+        return false;
+    }
+    info.codec.frame_size = static_cast<uint16_t>(frame_size);
 
     const uint32_t channel_count = std::max<uint32_t>(info.fmt.channel_count, 1);
     const uint32_t track_count = std::max<uint32_t>(info.codec.track_count, 1);
@@ -101,7 +115,7 @@ void calculate_band_counts(HcaHeader& info, uint32_t bitrate, uint32_t cutoff_fr
         const double bitrate_ratio =
             ((static_cast<double>(bitrate) / channel_count) / sample_rate) * 128.0 / total_band_count;
         const bool independent_channels =
-            channels_per_track <= 1 || info.codec.channel_config >= CHANNEL_CONFIG_DISABLES_STEREO_HFR;
+            channels_per_track <= 1 || info.codec.is_ambisonics();
 
         if (independent_channels) {
             if (bitrate_ratio < 8.0 / 3.0) {
@@ -153,20 +167,76 @@ void calculate_band_counts(HcaHeader& info, uint32_t bitrate, uint32_t cutoff_fr
     info.codec.stereo_band_count = static_cast<uint8_t>(stereo_band_count);
     info.codec.hfr_group_count = static_cast<uint8_t>(group_count);
     info.codec.bands_per_hfr_group = static_cast<uint8_t>(bands_per_group);
+    return true;
 }
 
-[[nodiscard]] bool set_channel_configuration(HcaHeader& info) noexcept {
+[[nodiscard]] constexpr uint8_t ambisonics_order_for_channels(uint32_t channels) noexcept {
+    // Full-sphere Ambisonics carries (order + 1)^2 channels.
+    for (uint8_t order = 1; order <= HCA_MAX_AMBISONICS_ORDER; ++order) {
+        const uint32_t side = static_cast<uint32_t>(order) + 1;
+        if (side * side == channels) {
+            return order;
+        }
+    }
+    return 0;
+}
+
+[[nodiscard]] std::optional<uint8_t> default_channel_configuration(
+    uint8_t channels_per_track, bool ambisonics) noexcept
+{
+    if (ambisonics) {
+        const uint8_t order = ambisonics_order_for_channels(channels_per_track);
+        return order == 0
+            ? std::nullopt
+            : std::optional<uint8_t>{static_cast<uint8_t>(HcaCodecChunk::ambisonics_flag | order)};
+    }
+    if (channels_per_track < tables::DEFAULT_CHANNEL_MAPPING.size()) {
+        return tables::DEFAULT_CHANNEL_MAPPING[channels_per_track];
+    }
+    return uint8_t{0};
+}
+
+[[nodiscard]] bool is_supported_channel_configuration(
+    uint8_t channels_per_track, uint8_t channel_config) noexcept
+{
+    if ((channel_config & HcaCodecChunk::ambisonics_flag) != 0) {
+        return true;
+    }
+    if (channels_per_track <= tables::VALID_CHANNEL_MAPPINGS.size()) {
+        return channel_config < tables::VALID_CHANNEL_MAPPINGS[0].size() &&
+            tables::VALID_CHANNEL_MAPPINGS[channels_per_track - 1][channel_config] != 0;
+    }
+
+    // The official encoder accepts config 0 through the fmt channel limit, and its
+    // role builder also defines config 3 layouts for 10, 12, and 16 channels.
+    return channel_config == 0 ||
+        (channel_config == 3 &&
+            (channels_per_track == 10 || channels_per_track == 12 || channels_per_track == 16));
+}
+
+[[nodiscard]] bool set_channel_configuration(
+    HcaHeader& info, const HcaEncodeConfig& config) noexcept
+{
     if (info.codec.track_count == 0 || info.fmt.channel_count % info.codec.track_count != 0) {
         return false;
     }
 
     const uint8_t channels_per_track = static_cast<uint8_t>(info.fmt.channel_count / info.codec.track_count);
-    if (channels_per_track == 0 || channels_per_track >= tables::DEFAULT_CHANNEL_MAPPING.size()) {
+    if (channels_per_track == 0) {
         return false;
     }
 
-    const uint8_t channel_config = tables::DEFAULT_CHANNEL_MAPPING[channels_per_track];
-    if (tables::VALID_CHANNEL_MAPPINGS[channels_per_track - 1][channel_config] == 0) {
+    const auto default_config = default_channel_configuration(channels_per_track, config.ambisonics);
+    if (!config.channel_config && !default_config) {
+        return false;
+    }
+    const uint8_t channel_config = config.channel_config
+        ? *config.channel_config
+        : *default_config;
+    if (((channel_config & HcaCodecChunk::ambisonics_flag) != 0) != config.ambisonics) {
+        return false;
+    }
+    if (!is_supported_channel_configuration(channels_per_track, channel_config)) {
         return false;
     }
 
@@ -175,10 +245,9 @@ void calculate_band_counts(HcaHeader& info, uint32_t bitrate, uint32_t cutoff_fr
 }
 
 void initialize_frame(EncoderFrame& frame) {
-    const auto types = detail::channel_types(frame.info);
     for (uint32_t c = 0; c < frame.info.fmt.channel_count; ++c) {
         auto& channel = frame.channels[c];
-        channel.type = types[c];
+        channel.type = detail::channel_type(frame.info, c);
         channel.coded_count = channel.type == ChannelType::StereoSecondary
             ? frame.info.codec.base_band_count
             : static_cast<uint8_t>(frame.info.codec.base_band_count + frame.info.codec.stereo_band_count);
@@ -859,7 +928,7 @@ std::expected<std::vector<uint8_t>, std::string> encode(
     std::span<const int16_t> pcm_data,
     const HcaEncodeConfig& config)
 {
-    if (config.channel_count == 0 || config.channel_count > 8 || config.sample_rate == 0) {
+    if (config.channel_count == 0 || config.channel_count > HCA_MAX_CHANNELS || config.sample_rate == 0) {
         return std::unexpected(std::string("HCA encode failed: channel count and sample rate must be valid"));
     }
     if (!detail::supports_encoder_version(config.version)) {
@@ -881,13 +950,17 @@ std::expected<std::vector<uint8_t>, std::string> encode(
     info.codec.max_resolution = 15;
     info.fmt.encoder_delay = HCA_SAMPLES_PER_SUBFRAME;
     info.ath.type = detail::explicit_ath_type(info.file.version, false);
-    if (!set_channel_configuration(info)) {
+    if (!set_channel_configuration(info, config)) {
         return std::unexpected(std::string("HCA encode failed: unsupported channel configuration"));
+    }
+    if (detail::uses_dec_header(info.file.version) && info.codec.is_ambisonics()) {
+        return std::unexpected(std::string("HCA encode failed: Ambisonics requires comp headers"));
     }
 
     const uint32_t bitrate = config.bitrate > 0 ? config.bitrate : calculate_bitrate(info, config.quality);
-    calculate_band_counts(info, bitrate, config.sample_rate / 2);
-    if (info.codec.frame_size < HCA_MIN_FRAME_SIZE || info.codec.frame_size > HCA_MAX_FRAME_SIZE || info.codec.total_band_count > HCA_SAMPLES_PER_SUBFRAME) {
+    if (!calculate_band_counts(info, bitrate, config.sample_rate / 2) ||
+        info.codec.frame_size < HCA_MIN_FRAME_SIZE ||
+        info.codec.total_band_count > HCA_SAMPLES_PER_SUBFRAME) {
         return std::unexpected(std::string("HCA encode failed: calculated frame layout is invalid"));
     }
     if (detail::uses_dec_header(info.file.version) && info.codec.hfr_group_count != 0) {
@@ -931,7 +1004,7 @@ std::expected<std::vector<uint8_t>, std::string> encode(
     std::vector<uint8_t> output(static_cast<size_t>(info.file.header_size) + static_cast<size_t>(info.fmt.frame_count) * info.codec.frame_size, 0);
     pack_header(info, output.data());
 
-    EncoderFrame frame{.info = info};
+    EncoderFrame frame(info);
     initialize_frame(frame);
 
     uint8_t* frame_ptr = output.data() + info.file.header_size;

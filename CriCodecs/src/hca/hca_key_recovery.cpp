@@ -115,7 +115,7 @@ struct Profile {
     uint8_t stereo_band_count{};
     uint8_t bands_per_hfr_group{};
     uint8_t hfr_group_count{};
-    std::array<ChannelType, 8> channel_types{};
+    std::vector<ChannelType> channel_types;
     bool ath{};
 
     friend bool operator==(const Profile&, const Profile&) = default;
@@ -176,9 +176,12 @@ inline constexpr auto Rows = make_rows();
             ? uint8_t{0}
             : header.codec.bands_per_hfr_group,
         .hfr_group_count = header.codec.hfr_group_count,
-        .channel_types = detail::channel_types(header),
+        .channel_types = std::vector<ChannelType>(header.fmt.channel_count),
         .ath = header.ath.uses_curve(),
     };
+    for (size_t channel = 0; channel < result.channel_types.size(); ++channel) {
+        result.channel_types[channel] = detail::channel_type(header, channel);
+    }
     return result;
 }
 
@@ -727,17 +730,17 @@ struct FrameMetrics {
     const uint32_t boundary = reader.read(7);
     const int packed_noise = static_cast<int>((acceptable_noise << 8) - boundary);
     const auto& header = *frame.header;
-    const auto types = detail::channel_types(header);
-    std::array<std::array<uint8_t, HCA_SAMPLES_PER_SUBFRAME>, 8> resolutions{};
-    std::array<uint8_t, 8> coded_counts{};
+    std::array<std::array<uint8_t, HCA_SAMPLES_PER_SUBFRAME>, HCA_MAX_CHANNELS> resolutions;
+    std::array<uint8_t, HCA_MAX_CHANNELS> coded_counts;
     uint32_t wraps = 0;
     uint32_t canonical_headers = 0;
 
     for (size_t channel = 0; channel < header.fmt.channel_count; ++channel) {
-        const size_t coded_count = types[channel] == ChannelType::StereoSecondary
+        const ChannelType type = detail::channel_type(header, channel);
+        const size_t coded_count = type == ChannelType::StereoSecondary
             ? header.codec.base_band_count
             : header.codec.base_band_count + header.codec.stereo_band_count;
-        const size_t extra_count = types[channel] != ChannelType::StereoSecondary
+        const size_t extra_count = type != ChannelType::StereoSecondary
                 && header.file.version > HCA_VERSION_V200
             ? header.codec.hfr_group_count
             : 0;
@@ -749,7 +752,7 @@ struct FrameMetrics {
             && decoding.delta_bits == packing::scalefactor_encoding(
                 std::span(scales).first(coded_count + extra_count)).delta_bits;
         if (!skip_intensity(
-                reader, types[channel], header.codec.hfr_group_count, header.file.version)) {
+                reader, type, header.codec.hfr_group_count, header.file.version)) {
             return {};
         }
         coded_counts[channel] = static_cast<uint8_t>(coded_count);

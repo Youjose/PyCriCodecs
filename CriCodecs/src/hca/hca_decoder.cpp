@@ -10,7 +10,8 @@
  * - Cleaned up and re-reverse engineered for HCA v3 by bnnm, using
  *   Thealexbarney's VGAudio decoder as reference
  *     https://github.com/Thealexbarney/VGAudio
- * - CriCodecs C++23 port by Youjose, including generated tables formulas.
+ * - CriCodecs C++23 port by Youjose, including generated tables formulas
+ *   and ambisonic support.
  *
  */
 
@@ -52,9 +53,12 @@ struct DecodeChannel {
 
 struct DecodeFrame {
     const HcaHeader& info;
-    std::array<DecodeChannel, 8> channels;
+    std::vector<DecodeChannel> channels;
     std::array<uint8_t, HCA_SAMPLES_PER_SUBFRAME> ath_curve{};
     uint32_t random = 1;
+
+    explicit DecodeFrame(const HcaHeader& header)
+        : info(header), channels(header.fmt.channel_count) {}
 };
 
 [[nodiscard]] float dequantizer_scale(uint8_t scalefactor) noexcept {
@@ -78,9 +82,8 @@ struct DecodeFrame {
 
 void assign_channel_types(DecodeFrame& frame) {
     const auto& info = frame.info;
-    const auto types = detail::channel_types(info);
     for (uint32_t i = 0; i < info.fmt.channel_count; ++i) {
-        frame.channels[i].type = types[i];
+        frame.channels[i].type = detail::channel_type(info, i);
         frame.channels[i].coded_count = frame.channels[i].type == ChannelType::StereoSecondary
             ? info.codec.base_band_count
             : static_cast<uint8_t>(info.codec.base_band_count + info.codec.stereo_band_count);
@@ -329,10 +332,10 @@ std::expected<void, std::string> decode_frame(DecodeFrame& frame, const uint8_t*
             dequantize_coefficients(frame.channels[ch], br, subframe);
         }
 
-        const uint32_t reconstruction_channel_count = (info.codec.channel_config & 0x80u) != 0
+        const uint32_t noise_hfr_channel_count = info.codec.is_ambisonics()
             ? 1u
             : info.fmt.channel_count;
-        for (uint32_t ch = 0; ch < reconstruction_channel_count; ++ch) {
+        for (uint32_t ch = 0; ch < noise_hfr_channel_count; ++ch) {
             reconstruct_noise(frame.channels[ch], info.codec.min_resolution, info.codec.uses_ms_stereo(), frame.random, subframe);
             reconstruct_hfr(frame.channels[ch], info, subframe);
         }
@@ -386,7 +389,7 @@ std::expected<std::vector<int16_t>, std::string> decode(
         return std::unexpected(info_result.error());
     }
 
-    DecodeFrame frame{.info = *info_result};
+    DecodeFrame frame(*info_result);
     const HcaHeader& info = frame.info;
     assign_channel_types(frame);
 

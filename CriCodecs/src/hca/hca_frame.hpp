@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <vector>
 
 namespace cricodecs::hca {
 
@@ -32,63 +33,61 @@ struct EncoderChannel {
 
 struct EncoderFrame {
     const HcaHeader& info;
-    std::array<EncoderChannel, 8> channels;
+    std::vector<EncoderChannel> channels;
     int acceptable_noise_level = 0;
     int evaluation_boundary = 0;
+
+    explicit EncoderFrame(const HcaHeader& header)
+        : info(header), channels(header.fmt.channel_count) {}
 };
 
 namespace detail {
 
-[[nodiscard]] inline std::array<ChannelType, 8> channel_types(const HcaHeader& info) noexcept {
-    std::array<ChannelType, 8> result{};
+[[nodiscard]] inline ChannelType channel_type(
+    const HcaHeader& info, uint32_t channel) noexcept
+{
     const uint32_t channels_per_track = info.codec.track_count == 0
         ? 0u
         : info.fmt.channel_count / info.codec.track_count;
-    if (info.codec.stereo_band_count == 0 || channels_per_track <= 1) {
-        return result;
+    if (info.codec.stereo_band_count == 0 || channels_per_track <= 1 ||
+        channel >= channels_per_track * info.codec.track_count) {
+        return ChannelType::Discrete;
     }
 
-    for (uint32_t track = 0; track < info.codec.track_count; ++track) {
-        auto* types = result.data() + track * channels_per_track;
-        switch (channels_per_track) {
-            case 2:
-            case 3:
-                types[0] = ChannelType::StereoPrimary;
-                types[1] = ChannelType::StereoSecondary;
-                break;
-            case 4:
-                types[0] = ChannelType::StereoPrimary;
-                types[1] = ChannelType::StereoSecondary;
-                if (info.codec.channel_config == 0) {
-                    types[2] = ChannelType::StereoPrimary;
-                    types[3] = ChannelType::StereoSecondary;
-                }
-                break;
-            case 5:
-                types[0] = ChannelType::StereoPrimary;
-                types[1] = ChannelType::StereoSecondary;
-                if (info.codec.channel_config <= 2) {
-                    types[3] = ChannelType::StereoPrimary;
-                    types[4] = ChannelType::StereoSecondary;
-                }
-                break;
-            case 6:
-            case 7:
-            case 8:
-                types[0] = ChannelType::StereoPrimary;
-                types[1] = ChannelType::StereoSecondary;
-                types[4] = ChannelType::StereoPrimary;
-                types[5] = ChannelType::StereoSecondary;
-                if (channels_per_track == 8) {
-                    types[6] = ChannelType::StereoPrimary;
-                    types[7] = ChannelType::StereoSecondary;
-                }
-                break;
-            default:
-                break;
+    const uint32_t local = channel % channels_per_track;
+    if (info.codec.channel_config == 3 &&
+        (channels_per_track == 10 || channels_per_track == 12 || channels_per_track == 16)) {
+        if (channels_per_track == 10 && (local == 2 || local == 3)) {
+            return ChannelType::Discrete;
+        }
+        return local % 2 == 0 ? ChannelType::StereoPrimary : ChannelType::StereoSecondary;
+    }
+    if (channels_per_track > 8) {
+        return ChannelType::Discrete;
+    }
+
+    if (local == 0) {
+        return ChannelType::StereoPrimary;
+    }
+    if (local == 1) {
+        return ChannelType::StereoSecondary;
+    }
+
+    if (channels_per_track == 4 && info.codec.channel_config == 0) {
+        return local == 2 ? ChannelType::StereoPrimary : ChannelType::StereoSecondary;
+    }
+    if (channels_per_track == 5 && info.codec.channel_config <= 2 && local >= 3) {
+        return local == 3 ? ChannelType::StereoPrimary : ChannelType::StereoSecondary;
+    }
+    if (channels_per_track >= 6 && channels_per_track <= 8) {
+        if (local == 4 || (channels_per_track == 8 && local == 6)) {
+            return ChannelType::StereoPrimary;
+        }
+        if (local == 5 || (channels_per_track == 8 && local == 7)) {
+            return ChannelType::StereoSecondary;
         }
     }
-    return result;
+    return ChannelType::Discrete;
 }
 
 } // namespace detail

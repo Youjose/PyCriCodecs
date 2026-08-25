@@ -45,6 +45,7 @@ struct HcaCodecChunk {
     uint8_t hfr_group_count = 0;
     uint8_t flags = 0;
 
+    static constexpr uint8_t ambisonics_flag = 0x80;
     static constexpr uint8_t ms_stereo_flag = 0x01;
     static constexpr uint8_t type_shift = 1;
     static constexpr uint8_t type_mask = 0x06;
@@ -67,6 +68,10 @@ struct HcaCodecChunk {
 
     [[nodiscard]] bool uses_ms_stereo() const noexcept {
         return (flags & ms_stereo_flag) != 0;
+    }
+
+    [[nodiscard]] bool is_ambisonics() const noexcept {
+        return (channel_config & ambisonics_flag) != 0;
     }
 };
 

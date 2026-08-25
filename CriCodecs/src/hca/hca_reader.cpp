@@ -82,7 +82,8 @@ std::expected<HcaHeader, std::string> detail::parse_header(std::span<const uint8
         .encoder_padding = format->encoder_padding,
     };
 
-    if (info.fmt.channel_count == 0 || info.fmt.channel_count > 8 || info.fmt.sample_rate == 0 || info.fmt.frame_count == 0) {
+    if (info.fmt.channel_count == 0 || info.fmt.channel_count > HCA_MAX_CHANNELS ||
+        info.fmt.sample_rate == 0 || info.fmt.frame_count == 0) {
         return std::unexpected(std::string("HCA parse failed: invalid fmt chunk values"));
     }
     const uint64_t frame_sample_total = static_cast<uint64_t>(info.fmt.frame_count) * HCA_SAMPLES_PER_FRAME;

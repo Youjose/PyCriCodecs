@@ -104,7 +104,8 @@ struct QuantizedSpectrumEncodeTables {
     std::array<std::array<QuantizedSpectrumCode, 17>, 8> entries{};
 };
 
-// Default channel mapping
+// Ordinary defaults indexed by channels per track. Higher counts use config 0
+// and remain independent unless an explicit supported mapping is requested.
 inline constexpr std::array<uint8_t, 9> DEFAULT_CHANNEL_MAPPING = {0, 1, 0, 4, 0, 1, 3, 7, 3};
 
 // Valid channel mappings [channels][config]

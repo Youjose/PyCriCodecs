@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string>
 #include <type_traits>
@@ -42,9 +43,15 @@ struct HcaEncodeConfig {
     uint16_t version = HCA_VERSION_V200;
     uint16_t subkey = 0;
     uint8_t channel_count = 2;
+    // Optional raw comp.channel_config override. Its high bit must agree with
+    // ambisonics; the remaining high-bit value is preserved as opaque metadata.
+    std::optional<uint8_t> channel_config;
     HcaQuality quality = HcaQuality::High;
     bool loop_enabled = false;
     bool ms_stereo = false;
+    // Ambisonics is explicit because 4, 9, and 16 channels are also valid
+    // ordinary layouts. Full-sphere orders use (order + 1)^2 channels.
+    bool ambisonics = false;
 };
 
 class HcaDecoder;

@@ -88,15 +88,12 @@ uint16_t AcbContainer::waveform_id_for_bank(const WaveformInfo& waveform, bool i
     return waveform.memory_awb_id;
 }
 
-bool AcbContainer::prefers_memory_bank(const WaveformInfo& waveform) noexcept {
-    return waveform.streaming == 0 || waveform.stream_awb_id == invalid_wave_id;
+AcbAwbBank AcbContainer::waveform_bank(const WaveformInfo& waveform) noexcept {
+    return waveform.streaming == 0 ? AcbAwbBank::memory : AcbAwbBank::stream;
 }
 
-bool AcbContainer::uses_memory_bank_for_associated_awb(const WaveformInfo& waveform) const {
-    if (has_embedded_awb()) {
-        return waveform.streaming != 1;
-    }
-    return prefers_memory_bank(waveform);
+uint16_t AcbContainer::waveform_stream_port(const WaveformInfo& waveform) noexcept {
+    return waveform.port_no == invalid_wave_id ? 0 : waveform.port_no;
 }
 
 } // namespace cricodecs::acb

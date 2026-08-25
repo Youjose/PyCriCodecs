@@ -514,10 +514,6 @@ private:
 resolve_awb_provenance(
     const AcbContainer& acb,
     AcbCueSheetResolution resolved) {
-    if (!acb.has_embedded_awb() && !acb.companion_awb_path()) {
-        return resolved;
-    }
-
     std::map<uint32_t, WaveformAwbEntry> entries;
     std::set<uint32_t> attempted;
     for (auto& resolved_plan : resolved.plans) {
@@ -538,6 +534,9 @@ resolve_awb_provenance(
                 clip.awb_bank = entry->second.stream_bank
                     ? AcbCueAwbBank::stream
                     : AcbCueAwbBank::memory;
+                clip.awb_port_no = entry->second.stream_bank
+                    ? std::optional<uint16_t>{entry->second.port_no}
+                    : std::nullopt;
             }
         }
     }

@@ -341,6 +341,7 @@ void MainWindow::refresh_acb_cue_route_choices() {
                     "-",
                     "-",
                     "-",
+                    "-",
                     number(block.duration_us) + " us",
                 };
                 clip_entries.push_back(std::move(entry));
@@ -354,6 +355,7 @@ void MainWindow::refresh_acb_cue_route_choices() {
                     optional_number(clip.awb_wave_id),
                     optional_number(clip.awb_stream_index),
                     clip.awb_bank.empty() ? "-" : clip.awb_bank,
+                    optional_number(clip.awb_port_no),
                     std::to_string(clip.start_time_us) + " us",
                     number(block.duration_us) + " us",
                 };
@@ -397,6 +399,10 @@ void MainWindow::refresh_acb_cue_route_choices() {
                 .toStdString(),
             QCoreApplication::translate(
                 "MainWindow.AcbCuePreview",
+                "AWB port")
+                .toStdString(),
+            QCoreApplication::translate(
+                "MainWindow.AcbCuePreview",
                 "Start")
                 .toStdString(),
             QCoreApplication::translate(
@@ -404,7 +410,7 @@ void MainWindow::refresh_acb_cue_route_choices() {
                 "Duration")
                 .toStdString(),
         },
-        {"name", "index", "index", "index", "type", "time", "time"});
+        {"name", "index", "index", "index", "type", "index", "time", "time"});
     m_nested_entry_view->setRootIsDecorated(false);
     m_nested_entry_view->setVisible(!clip_entries.empty());
     if (!clip_entries.empty()) {

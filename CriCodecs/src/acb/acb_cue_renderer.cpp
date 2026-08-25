@@ -26,6 +26,7 @@ namespace {
 struct AwbReference {
     uint16_t wave_id = invalid_acb_index;
     AcbCueAwbBank bank = AcbCueAwbBank::memory;
+    std::optional<uint16_t> port_no;
 };
 
 struct PendingChoice {
@@ -59,6 +60,12 @@ std::optional<AwbReference> awb_reference(
         .bank = stream_bank
             ? AcbCueAwbBank::stream
             : AcbCueAwbBank::memory,
+        .port_no = stream_bank
+            ? std::optional<uint16_t>{
+                waveform.stream_awb_port_no == invalid_acb_index
+                    ? uint16_t{0}
+                    : waveform.stream_awb_port_no}
+            : std::nullopt,
     };
 }
 
@@ -282,11 +289,13 @@ private:
                         .awb_wave_id = std::nullopt,
                         .awb_stream_index = std::nullopt,
                         .awb_bank = std::nullopt,
+                        .awb_port_no = std::nullopt,
                     };
                     if (const auto awb = awb_reference(
                             m_graph.waveforms()[index])) {
                         clip.awb_wave_id = awb->wave_id;
                         clip.awb_bank = awb->bank;
+                        clip.awb_port_no = awb->port_no;
                     }
                     clips.push_back(std::move(clip));
                 }
@@ -497,15 +506,22 @@ private:
 };
 
 struct DecodedWaveform {
+    struct Loop {
+        uint64_t start_sample = 0;
+        uint64_t end_sample = 0;
+    };
+
     uint32_t sample_rate = 0;
     uint8_t channels = 0;
     std::vector<int16_t> pcm;
+    std::vector<Loop> loops;
 };
 
 struct DecodedSourceKey {
     uint32_t index = 0;
     awb::EntryCodec codec = awb::EntryCodec::Unknown;
     AcbCueAwbBank bank = AcbCueAwbBank::memory;
+    uint16_t port_no = invalid_acb_index;
     bool physical_awb_entry = false;
 
     friend bool operator<(
@@ -514,11 +530,13 @@ struct DecodedSourceKey {
         return std::tie(
             lhs.physical_awb_entry,
             lhs.bank,
+            lhs.port_no,
             lhs.index,
             lhs.codec) <
             std::tie(
                 rhs.physical_awb_entry,
                 rhs.bank,
+                rhs.port_no,
                 rhs.index,
                 rhs.codec);
     }
@@ -533,6 +551,40 @@ int16_t saturate_sample(int64_t sample) noexcept {
         sample,
         std::numeric_limits<int16_t>::min(),
         std::numeric_limits<int16_t>::max()));
+}
+
+std::optional<DecodedWaveform::Loop> hca_pcm_loop(
+    const hca::HcaHeader& header) {
+    if (!header.loop.enabled()) {
+        return std::nullopt;
+    }
+    const uint64_t encoded_start =
+        static_cast<uint64_t>(header.loop.start_frame) *
+            hca::HCA_SAMPLES_PER_FRAME +
+        header.loop.start_delay;
+    const uint64_t encoded_end =
+        (static_cast<uint64_t>(header.loop.end_frame) + 1) *
+            hca::HCA_SAMPLES_PER_FRAME -
+        header.loop.end_padding;
+    const uint64_t decoder_origin = header.fmt.encoder_delay;
+    const uint64_t sample_count = header.sample_count();
+    const auto start = std::min(
+        encoded_start > decoder_origin
+            ? encoded_start - decoder_origin
+            : uint64_t{0},
+        sample_count);
+    const auto end = std::min(
+        encoded_end > decoder_origin
+            ? encoded_end - decoder_origin
+            : uint64_t{0},
+        sample_count);
+    if (end <= start) {
+        return std::nullopt;
+    }
+    return DecodedWaveform::Loop{
+        .start_sample = start,
+        .end_sample = end,
+    };
 }
 
 } // namespace
@@ -571,7 +623,8 @@ std::string semantic_plan_signature(
                 << clip.start_time_us << ':'
                 << clip.awb_wave_id.value_or(invalid_acb_index) << ':'
                 << static_cast<unsigned>(clip.awb_bank.value_or(
-                    AcbCueAwbBank::memory));
+                    AcbCueAwbBank::memory)) << ':'
+                << clip.awb_port_no.value_or(invalid_acb_index);
             if (clip.waveform_index < graph.waveforms().size()) {
                 const auto& waveform = graph.waveforms()[clip.waveform_index];
                 out << ':'
@@ -709,13 +762,6 @@ std::string cue_plan_semantic_signature(
 static std::expected<AcbCuePlaybackPlan, std::string> resolve_plan_awb_entries(
     const AcbContainer& acb,
     AcbCuePlaybackPlan plan) {
-    // TODO(acb-multi-awb): Resolve each streamed clip through its
-    // StreamAwbPortNo and named StreamAwb slot. Streaming==2 requires both the
-    // embedded prefetch bank and the external full-stream bank at runtime.
-    if (!acb.has_embedded_awb() && !acb.companion_awb_path()) {
-        return plan;
-    }
-
     std::map<uint32_t, WaveformAwbEntry> resolved;
     std::set<uint32_t> attempted;
     for (auto& block : plan.blocks) {
@@ -735,6 +781,9 @@ static std::expected<AcbCuePlaybackPlan, std::string> resolve_plan_awb_entries(
             clip.awb_bank = entry->second.stream_bank
                 ? AcbCueAwbBank::stream
                 : AcbCueAwbBank::memory;
+            clip.awb_port_no = entry->second.stream_bank
+                ? std::optional<uint16_t>{entry->second.port_no}
+                : std::nullopt;
         }
     }
     return plan;
@@ -777,16 +826,6 @@ std::expected<AcbRenderedCue, std::string> render_cue_plan(
     const AcbContainer& acb,
     AcbCuePlaybackPlan plan,
     const AcbCueRenderOptions& options) {
-    // TODO(acb-native-loops): Carry codec/waveform loop points through full
-    // cue rendering and CriStudio preview instead of treating decoded PCM as
-    // one finite clip. Keep block-loop scheduling distinct from codec loops.
-    uint16_t hca_subkey = options.hca_subkey.value_or(0);
-    if (!options.hca_subkey) {
-        auto subkey = acb.awb_subkey();
-        if (!subkey) return std::unexpected(subkey.error());
-        hca_subkey = *subkey;
-    }
-
     // Logical waveform rows may reuse one physical AWB entry. Keep decoded PCM
     // only for this plan so reuse is cheap without retaining a bank-sized cache.
     std::map<DecodedSourceKey, DecodedWaveform> decoded;
@@ -810,6 +849,7 @@ std::expected<AcbRenderedCue, std::string> render_cue_plan(
             source.bank = entry->stream_bank
                 ? AcbCueAwbBank::stream
                 : AcbCueAwbBank::memory;
+            source.port_no = entry->port_no;
             source.physical_awb_entry = true;
         }
         if (const auto it = decoded.find(source); it != decoded.end()) {
@@ -828,11 +868,20 @@ std::expected<AcbRenderedCue, std::string> render_cue_plan(
             case awb::EntryCodec::Hca: {
                 auto audio = hca::Hca::load(*data);
                 if (!audio) return std::unexpected(audio.error());
+                uint16_t hca_subkey = options.hca_subkey.value_or(0);
+                if (!options.hca_subkey) {
+                    auto subkey = acb.waveform_awb_subkey(waveform_index);
+                    if (!subkey) return std::unexpected(subkey.error());
+                    hca_subkey = *subkey;
+                }
                 auto pcm = audio->decode(options.hca_keycode, hca_subkey);
                 if (!pcm) return std::unexpected(pcm.error());
                 waveform.sample_rate = audio->header().fmt.sample_rate;
                 waveform.channels = audio->header().fmt.channel_count;
                 waveform.pcm = std::move(*pcm);
+                if (const auto loop = hca_pcm_loop(audio->header())) {
+                    waveform.loops.push_back(*loop);
+                }
                 break;
             }
             case awb::EntryCodec::Adx: {
@@ -842,6 +891,16 @@ std::expected<AcbRenderedCue, std::string> render_cue_plan(
                 if (!pcm) return std::unexpected(pcm.error());
                 waveform.sample_rate = pcm->sample_rate;
                 waveform.channels = pcm->channels;
+                waveform.loops.reserve(pcm->loops.size());
+                for (const auto& loop : pcm->loops) {
+                    if (loop.end_sample > loop.start_sample &&
+                        loop.end_sample <= pcm->sample_count) {
+                        waveform.loops.push_back({
+                            .start_sample = loop.start_sample,
+                            .end_sample = loop.end_sample,
+                        });
+                    }
+                }
                 waveform.pcm = std::move(pcm->pcm_data);
                 break;
             }
@@ -1057,6 +1116,141 @@ std::expected<AcbRenderedCue, std::string> render_cue_plan(
         }
     }
 
+    std::vector<AcbRenderedLoop> rendered_loops;
+    rendered_loops.reserve(block_ranges.size());
+    const uint64_t rendered_frame_count = output.size() / output_channels;
+    for (const auto& range : block_ranges) {
+        if (range.plan_block_index >= plan.blocks.size() ||
+            range.end_sample <= range.start_sample ||
+            range.end_sample > rendered_frame_count) {
+            continue;
+        }
+        const auto& block = plan.blocks[range.plan_block_index];
+        // An authored holding block is the cue-level loop. Its component codec
+        // loops are implementation details and must not replace that range.
+        if (block.authored_loop_count < 0 && !block.clips.empty()) {
+            rendered_loops.push_back({
+                .kind = AcbRenderedLoopKind::authored_block,
+                .plan_block_index = range.plan_block_index,
+                .waveform_index = std::nullopt,
+                .start_sample = range.start_sample,
+                .end_sample = range.end_sample,
+            });
+            continue;
+        }
+
+        struct NativeLoopCandidate {
+            uint32_t waveform_index = 0;
+            uint64_t start_sample = 0;
+            uint64_t end_sample = 0;
+        };
+        struct ClipNativeLoopInfo {
+            uint64_t content_start = 0;
+            uint64_t content_end = 0;
+            std::vector<NativeLoopCandidate> loops;
+        };
+        std::vector<NativeLoopCandidate> candidates;
+        std::vector<ClipNativeLoopInfo> clip_loop_info;
+        clip_loop_info.reserve(block.clips.size());
+        const uint64_t block_frames = range.end_sample - range.start_sample;
+        for (const auto& clip : block.clips) {
+            auto waveform = decode_waveform(clip.waveform_index);
+            if (!waveform) return std::unexpected(waveform.error());
+            const auto& audio = waveform->get();
+            const uint64_t clip_start = frames_for_us(
+                static_cast<uint64_t>(clip.start_time_us), output_rate);
+            if (clip_start >= block_frames) {
+                clip_loop_info.push_back({});
+                continue;
+            }
+            const uint64_t available_frames = std::min<uint64_t>(
+                audio.pcm.size() / output_channels,
+                block_frames - clip_start);
+
+            std::vector<DecodedWaveform::Loop> source_loops = audio.loops;
+            if (source_loops.empty() &&
+                clip.waveform_index < acb.cue_graph().waveforms().size()) {
+                const auto& source =
+                    acb.cue_graph().waveforms()[clip.waveform_index];
+                if (source.loop_flag == 2 &&
+                    source.extension_data <
+                        acb.cue_graph().waveform_extensions().size()) {
+                    const auto& extension = acb.cue_graph()
+                        .waveform_extensions()[source.extension_data];
+                    if (extension.loop_end > extension.loop_start) {
+                        source_loops.push_back({
+                            .start_sample = extension.loop_start,
+                            .end_sample = extension.loop_end,
+                        });
+                    }
+                }
+            }
+
+            ClipNativeLoopInfo info{
+                .content_start = range.start_sample + clip_start,
+                .content_end = range.start_sample + clip_start + available_frames,
+                .loops = {},
+            };
+            info.loops.reserve(source_loops.size());
+            for (const auto& loop : source_loops) {
+                if (loop.end_sample <= loop.start_sample ||
+                    loop.end_sample > available_frames) {
+                    continue;
+                }
+                info.loops.push_back({
+                    .waveform_index = clip.waveform_index,
+                    .start_sample = range.start_sample + clip_start +
+                        loop.start_sample,
+                    .end_sample = range.start_sample + clip_start +
+                        loop.end_sample,
+                });
+            }
+            candidates.insert(
+                candidates.end(),
+                info.loops.begin(),
+                info.loops.end());
+            clip_loop_info.push_back(std::move(info));
+        }
+
+        // Repeating mixed PCM also repeats every overlapping layer. Preserve a
+        // native loop only when each such layer declares the same mapped range;
+        // otherwise the codec loops cannot be represented by one cue loop.
+        for (const auto& candidate : candidates) {
+            bool compatible = true;
+            for (const auto& info : clip_loop_info) {
+                if (info.content_end <= candidate.start_sample ||
+                    info.content_start >= candidate.end_sample) {
+                    continue;
+                }
+                const bool has_matching_loop = std::ranges::any_of(
+                    info.loops,
+                    [&](const NativeLoopCandidate& other) {
+                        return other.start_sample == candidate.start_sample &&
+                            other.end_sample == candidate.end_sample;
+                    });
+                if (!has_matching_loop) {
+                    compatible = false;
+                    break;
+                }
+            }
+            if (!compatible || std::ranges::any_of(
+                    rendered_loops,
+                    [&](const AcbRenderedLoop& loop) {
+                        return loop.start_sample == candidate.start_sample &&
+                            loop.end_sample == candidate.end_sample;
+                    })) {
+                continue;
+            }
+            rendered_loops.push_back({
+                .kind = AcbRenderedLoopKind::native_waveform,
+                .plan_block_index = range.plan_block_index,
+                .waveform_index = candidate.waveform_index,
+                .start_sample = candidate.start_sample,
+                .end_sample = candidate.end_sample,
+            });
+        }
+    }
+
     // TODO(acb-runtime): Model runtime transitions, live actions, dynamic
     // selector changes, gains, and transition curves after their ordering and
     // scheduling semantics are verified against the official runtime.
@@ -1066,7 +1260,34 @@ std::expected<AcbRenderedCue, std::string> render_cue_plan(
         .channels = output_channels,
         .pcm = std::move(output),
         .block_ranges = std::move(block_ranges),
+        .loops = std::move(rendered_loops),
     };
+}
+
+std::expected<std::vector<uint8_t>, std::string> build_rendered_cue_wav(
+    const AcbRenderedCue& rendered) {
+    std::vector<wav::SampleLoop> loops;
+    loops.reserve(rendered.loops.size());
+    for (size_t index = 0; index < rendered.loops.size(); ++index) {
+        const auto& loop = rendered.loops[index];
+        if (loop.end_sample <= loop.start_sample ||
+            loop.end_sample > std::numeric_limits<uint32_t>::max()) {
+            continue;
+        }
+        loops.push_back({
+            .cue_point_id = static_cast<uint32_t>(index),
+            .type = 0,
+            .start = static_cast<uint32_t>(loop.start_sample),
+            .end = static_cast<uint32_t>(loop.end_sample),
+            .fraction = 0,
+            .play_count = 0,
+        });
+    }
+    return wav::WavContainer::build_bytes(
+        rendered.pcm,
+        rendered.sample_rate,
+        rendered.channels,
+        loops);
 }
 
 std::expected<void, std::string> extract_cue(
@@ -1076,11 +1297,12 @@ std::expected<void, std::string> extract_cue(
     const AcbCueRenderOptions& options) {
     auto rendered = render_cue(acb, cue_index, options);
     if (!rendered) return std::unexpected(rendered.error());
-    return wav::WavContainer::write(
-        output_path.string(),
-        rendered->pcm,
-        rendered->sample_rate,
-        rendered->channels);
+    auto wav = build_rendered_cue_wav(*rendered);
+    if (!wav) return std::unexpected(wav.error());
+    return io::write_file_bytes(
+        output_path,
+        *wav,
+        "ACB cue WAV write failed");
 }
 
 std::expected<void, std::string> extract_cue_plan(
@@ -1090,11 +1312,12 @@ std::expected<void, std::string> extract_cue_plan(
     const AcbCueRenderOptions& options) {
     auto rendered = render_cue_plan(acb, std::move(plan), options);
     if (!rendered) return std::unexpected(rendered.error());
-    return wav::WavContainer::write(
-        output_path.string(),
-        rendered->pcm,
-        rendered->sample_rate,
-        rendered->channels);
+    auto wav = build_rendered_cue_wav(*rendered);
+    if (!wav) return std::unexpected(wav.error());
+    return io::write_file_bytes(
+        output_path,
+        *wav,
+        "ACB cue WAV write failed");
 }
 
 std::string cue_filename(

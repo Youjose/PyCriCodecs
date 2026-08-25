@@ -41,10 +41,7 @@ struct AcbCueRenderOptions {
     std::optional<uint16_t> hca_subkey;
 };
 
-enum class AcbCueAwbBank : uint8_t {
-    memory,
-    stream,
-};
+using AcbCueAwbBank = AcbAwbBank;
 
 struct AcbCueClipPlan {
     uint32_t waveform_index = 0;
@@ -55,6 +52,8 @@ struct AcbCueClipPlan {
     std::optional<uint32_t> awb_stream_index;
     /// Memory or stream bank selected by the ACB, refined after resolving an AWB.
     std::optional<AcbCueAwbBank> awb_bank;
+    /// StreamAwb slot/port used by streamed clips; absent for the memory bank.
+    std::optional<uint16_t> awb_port_no;
 };
 
 struct AcbCueBlockPlan {
@@ -81,6 +80,22 @@ struct AcbRenderedBlockRange {
     /// Index into AcbRenderedCue::plan.blocks.
     uint32_t plan_block_index = 0;
     /// Interleaved-PCM-independent frame offsets in the rendered cue.
+    uint64_t start_sample = 0;
+    uint64_t end_sample = 0;
+};
+
+enum class AcbRenderedLoopKind : uint8_t {
+    authored_block,
+    native_waveform,
+};
+
+/** Loop range that remains valid after cue scheduling and mixing. */
+struct AcbRenderedLoop {
+    AcbRenderedLoopKind kind = AcbRenderedLoopKind::native_waveform;
+    uint32_t plan_block_index = 0;
+    /// Present for a codec loop sourced from one waveform row.
+    std::optional<uint32_t> waveform_index;
+    /// Frame offsets in the fully rendered cue; end_sample is exclusive.
     uint64_t start_sample = 0;
     uint64_t end_sample = 0;
 };
@@ -142,7 +157,13 @@ struct AcbRenderedCue {
     std::vector<int16_t> pcm;
     /// One entry per non-skipped block, covering its first rendered iteration.
     std::vector<AcbRenderedBlockRange> block_ranges;
+    /// Authored block and compatible native codec loops in rendered coordinates.
+    std::vector<AcbRenderedLoop> loops;
 };
+
+/** Builds a loop-aware PCM16 WAV from a rendered cue. */
+[[nodiscard]] std::expected<std::vector<uint8_t>, std::string>
+build_rendered_cue_wav(const AcbRenderedCue& rendered);
 
 [[nodiscard]] std::expected<AcbCuePlaybackPlan, std::string> plan_cue_playback(
     const AcbCueGraph& graph,

@@ -5,7 +5,6 @@
 #include "shared/i18n.hpp"
 
 #include "acb_cue_resolver.hpp"
-#include "wav_container.hpp"
 
 #include <QCoreApplication>
 
@@ -37,6 +36,7 @@ namespace {
         "The selected cue path is no longer available"),
     QT_TRANSLATE_NOOP("Acb.CueView", "ACB rendered cue"),
     QT_TRANSLATE_NOOP("Acb.CueView", "Static cue path preview"),
+    QT_TRANSLATE_NOOP("Acb.CueView", "Native codec loop"),
     QT_TRANSLATE_NOOP("Acb.CueView", "option"),
     QT_TRANSLATE_NOOP("Acb.CueView", "Start"),
     QT_TRANSLATE_NOOP("Acb.CueView", "Path"),
@@ -184,6 +184,7 @@ std::vector<CueBlockView> make_blocks(const AcbCuePlaybackPlan& plan) {
                 .awb_wave_id = clip.awb_wave_id,
                 .awb_stream_index = clip.awb_stream_index,
                 .awb_bank = bank_name(clip.awb_bank),
+                .awb_port_no = clip.awb_port_no,
             });
         }
         result.push_back(std::move(view));
@@ -433,10 +434,7 @@ std::expected<AudioPreview, std::string> render_cue_preview(
     if (!rendered) {
         return std::unexpected(rendered.error());
     }
-    auto wav = cricodecs::wav::WavContainer::build_bytes(
-        rendered->pcm,
-        rendered->sample_rate,
-        rendered->channels);
+    auto wav = cricodecs::acb::build_rendered_cue_wav(*rendered);
     if (!wav) {
         return std::unexpected(wav.error());
     }
@@ -445,21 +443,30 @@ std::expected<AudioPreview, std::string> render_cue_preview(
         : static_cast<uint64_t>(
               rendered->pcm.size() / rendered->channels);
     std::vector<AudioLoop> loops;
-    loops.reserve(rendered->block_ranges.size());
-    for (const auto& range : rendered->block_ranges) {
-        if (range.plan_block_index >= rendered->plan.blocks.size()) {
+    loops.reserve(rendered->loops.size());
+    for (const auto& loop : rendered->loops) {
+        if (loop.plan_block_index >= rendered->plan.blocks.size()) {
             continue;
         }
-        const auto& block = rendered->plan.blocks[range.plan_block_index];
-        if (block.authored_loop_count >= 0 || block.clips.empty() ||
-            range.end_sample <= range.start_sample ||
-            range.end_sample > sample_count) {
+        const auto& block = rendered->plan.blocks[loop.plan_block_index];
+        if (loop.end_sample <= loop.start_sample ||
+            loop.end_sample > sample_count) {
             continue;
+        }
+        auto name = block.name;
+        if (loop.kind ==
+            cricodecs::acb::AcbRenderedLoopKind::native_waveform) {
+            name = cristudio::i18n::translate_utf8(
+                "Acb.CueView",
+                "Native codec loop");
+            if (!block.name.empty()) {
+                name += " - " + block.name;
+            }
         }
         loops.push_back({
-            .name = block.name,
-            .start_sample = range.start_sample,
-            .end_sample = range.end_sample,
+            .name = std::move(name),
+            .start_sample = loop.start_sample,
+            .end_sample = loop.end_sample,
         });
     }
     return make_wav_audio_preview(

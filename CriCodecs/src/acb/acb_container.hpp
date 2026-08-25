@@ -96,10 +96,21 @@ struct WaveNameInfo {
     uint8_t encode_type = 0;
 };
 
+enum class AcbAwbBank : uint8_t {
+    memory,
+    stream,
+};
+
+struct AcbStreamAwbSlot {
+    uint16_t port_no = 0;
+    std::string name;
+};
+
 struct WaveformAwbEntry {
     uint32_t waveform_index = 0;
     uint16_t wave_id = 0xFFFF;
     uint32_t awb_index = 0;
+    uint16_t port_no = 0xFFFF;
     bool stream_bank = false;
 };
 
@@ -139,17 +150,32 @@ public:
     [[nodiscard]] std::string waveform_filename(uint32_t index, bool include_index_prefix = false) const;
     [[nodiscard]] std::optional<std::span<const uint8_t>> embedded_awb() const;
     [[nodiscard]] bool has_embedded_awb() const;
+    [[nodiscard]] const std::vector<AcbStreamAwbSlot>& stream_awb_slots() const noexcept {
+        return m_stream_awb_slots;
+    }
+    [[nodiscard]] std::optional<std::filesystem::path> stream_awb_path(uint16_t port_no = 0) const;
     [[nodiscard]] std::optional<std::filesystem::path> companion_awb_path() const;
+    [[nodiscard]] std::expected<awb::AwbContainer, std::string> load_memory_awb() const;
+    [[nodiscard]] std::expected<awb::AwbContainer, std::string> load_stream_awb(uint16_t port_no = 0) const;
+    /// Load the primary full-audio bank: a stream AWB when present, otherwise the embedded bank.
     [[nodiscard]] std::expected<awb::AwbContainer, std::string> load_awb() const;
     [[nodiscard]] std::expected<uint16_t, std::string> awb_subkey() const;
+    [[nodiscard]] std::expected<uint16_t, std::string> waveform_awb_subkey(uint32_t index) const;
     /// Resolve a waveform row through its AWB ID; row and AWB indices need not match.
     [[nodiscard]] std::expected<WaveformAwbEntry, std::string> waveform_awb_entry(
         uint32_t index,
         bool prefer_stream_bank = false) const;
     [[nodiscard]] std::expected<WaveformAwbEntry, std::string> waveform_awb_entry(
         uint32_t index,
+        AcbAwbBank bank) const;
+    [[nodiscard]] std::expected<WaveformAwbEntry, std::string> waveform_awb_entry(
+        uint32_t index,
         const awb::AwbContainer& awb,
         bool prefer_stream_bank = false) const;
+    [[nodiscard]] std::expected<WaveformAwbEntry, std::string> waveform_awb_entry(
+        uint32_t index,
+        const awb::AwbContainer& awb,
+        AcbAwbBank bank) const;
     /// Replace the resolved entry in the supplied editable bank; the ACB itself is unchanged.
     [[nodiscard]] std::expected<WaveformAwbEntry, std::string> replace_waveform_data(
         uint32_t index,
@@ -196,7 +222,8 @@ private:
     io::SourceView m_source;
     std::filesystem::path m_source_path;
     text::EncodingOptions m_encoding;
-    mutable std::optional<awb::AwbContainer> m_associated_awb;
+    mutable std::optional<awb::AwbContainer> m_memory_awb;
+    mutable std::flat_map<uint16_t, awb::AwbContainer> m_stream_awbs;
     
     // Root "Header" table
     utf::UtfTable m_header;
@@ -242,6 +269,7 @@ private:
     
     // Extracted info
     std::vector<WaveformInfo> m_waveforms;
+    std::vector<AcbStreamAwbSlot> m_stream_awb_slots;
     std::vector<WaveNameInfo> m_wave_names;
     std::vector<std::string> m_waveform_names;
     std::vector<std::string> m_waveform_names_raw;
@@ -258,25 +286,32 @@ private:
         io::SourceView source,
         const text::EncodingOptions& encoding);
     bool preload_waveforms();
+    void preload_stream_awb_slots();
 
     void resolve_all_names();
 
     [[nodiscard]] static uint16_t waveform_id_for_bank(const WaveformInfo& waveform, bool is_memory_bank) noexcept;
-    [[nodiscard]] static bool prefers_memory_bank(const WaveformInfo& waveform) noexcept;
-    [[nodiscard]] bool uses_memory_bank_for_associated_awb(const WaveformInfo& waveform) const;
-    [[nodiscard]] std::expected<std::reference_wrapper<const awb::AwbContainer>, std::string> associated_awb() const;
+    [[nodiscard]] static AcbAwbBank waveform_bank(const WaveformInfo& waveform) noexcept;
+    [[nodiscard]] static uint16_t waveform_stream_port(const WaveformInfo& waveform) noexcept;
+    [[nodiscard]] std::expected<std::reference_wrapper<const awb::AwbContainer>, std::string> awb_for_bank(
+        AcbAwbBank bank,
+        uint16_t port_no = 0) const;
+    [[nodiscard]] std::expected<std::reference_wrapper<const awb::AwbContainer>, std::string> awb_for_waveform(
+        uint32_t index,
+        bool prefer_stream_bank = false) const;
     [[nodiscard]] std::expected<std::span<const uint8_t>, std::string> waveform_data_from_awb(
         uint32_t index,
         const awb::AwbContainer& awb,
-        bool prefer_stream_bank = false) const;
+        AcbAwbBank bank) const;
     [[nodiscard]] std::expected<std::vector<uint8_t>, std::string> extract_waveform_data_from_awb(
         uint32_t index,
         const awb::AwbContainer& awb,
         uint64_t aac_keycode,
-        bool prefer_stream_bank = false) const;
+        AcbAwbBank bank) const;
     [[nodiscard]] std::expected<void, std::string> extract_file_from_awb(
         uint32_t index,
         const awb::AwbContainer& awb,
+        AcbAwbBank bank,
         const std::filesystem::path& output_path,
         uint64_t aac_keycode) const;
 };

@@ -129,6 +129,8 @@ void print_cue_clip(
     } else {
         out << "null";
     }
+    out << ",\"awb_port_no\":";
+    print_optional_integer(out, clip.awb_port_no);
     out << ",\"start_time_us\":" << clip.start_time_us << '}';
 }
 

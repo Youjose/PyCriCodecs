@@ -46,7 +46,7 @@ LoadedDocument summarize(const std::filesystem::path& path, const cricodecs::acb
             "memory " + number(wave.memory_awb_id) + cristudio::i18n::translate_utf8("Acb.AcbBrowse", ", stream ") + number(wave.stream_awb_id),
             bool_text(wave.loop_flag)
         }, path, "ACB", i);
-        entry.hca_subkey = associated_awb_subkey;
+        entry.hca_subkey = acb.waveform_awb_subkey(i).value_or(associated_awb_subkey);
         entry.cells = {
             entry.name,
             entry.type

@@ -328,6 +328,10 @@ void append_cue_plan_details(
                     ? "stream"
                     : "memory";
             }
+            if (clip.awb_port_no) {
+                clip_detail += ", awb_port_no=";
+                clip_detail += std::to_string(*clip.awb_port_no);
+            }
             clip_detail += ", start=";
             clip_detail += std::to_string(clip.start_time_us);
             clip_detail += " us";

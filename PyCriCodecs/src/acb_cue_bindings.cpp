@@ -342,7 +342,8 @@ void bind_acb_cue_types(nb::module_& module) {
         .def_ro("start_time_us", &AcbCueClipPlan::start_time_us)
         .def_ro("awb_wave_id", &AcbCueClipPlan::awb_wave_id)
         .def_ro("awb_stream_index", &AcbCueClipPlan::awb_stream_index)
-        .def_ro("awb_bank", &AcbCueClipPlan::awb_bank);
+        .def_ro("awb_bank", &AcbCueClipPlan::awb_bank)
+        .def_ro("awb_port_no", &AcbCueClipPlan::awb_port_no);
     nb::class_<AcbCueBlockPlan>(module, "AcbCueBlockPlan")
         .def_ro("block_position", &AcbCueBlockPlan::block_position)
         .def_ro("block_index", &AcbCueBlockPlan::block_index)
@@ -370,10 +371,7 @@ void bind_acb_cue_types(nb::module_& module) {
                 auto rendered = unwrap_expected(render_cue_plan(
                     acb, self, plan_audio_options(hca_keycode, hca_subkey)));
                 return to_python_bytes(unwrap_expected(
-                    wav::WavContainer::build_bytes(
-                        rendered.pcm,
-                        rendered.sample_rate,
-                        rendered.channels)));
+                    build_rendered_cue_wav(rendered)));
             },
             nb::arg("acb"),
             nb::arg("hca_keycode") = 0,
@@ -536,7 +534,7 @@ void bind_acb_cue_types(nb::module_& module) {
     install_row_repr<AcbCueNode>(module, "AcbCueNode", {"kind", "index"});
     install_row_repr<AcbCueEdge>(module, "AcbCueEdge", {"from_node", "to_node", "kind", "ordinal"});
     install_row_repr<AcbCueAssembly>(module, "AcbCueAssembly", {"cue_index", "has_cycle", "nodes", "edges", "unresolved"});
-    install_row_repr<AcbCueClipPlan>(module, "AcbCueClipPlan", {"waveform_index", "start_time_us", "awb_wave_id", "awb_stream_index", "awb_bank"});
+    install_row_repr<AcbCueClipPlan>(module, "AcbCueClipPlan", {"waveform_index", "start_time_us", "awb_wave_id", "awb_stream_index", "awb_bank", "awb_port_no"});
     install_row_repr<AcbCueBlockPlan>(module, "AcbCueBlockPlan", {"block_position", "block_index", "name", "duration_us", "authored_loop_count", "render_loop_count"});
     install_row_repr<AcbCuePlaybackPlan>(module, "AcbCuePlaybackPlan", {"cue_index", "cue_id", "cue_name", "block_count"});
     install_row_repr<AcbCueChoiceSelection>(module, "AcbCueChoiceSelection", {"domain", "node_index", "occurrence", "option_index", "selector_name", "selector_value"});

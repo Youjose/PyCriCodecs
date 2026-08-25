@@ -208,10 +208,15 @@ selector_values_from_object(const nb::object& selectors) {
 void bind_acb_module(nb::module_& module) {
     bind_acb_cue_types(module);
 
+    nb::class_<cricodecs::acb::AcbStreamAwbSlot>(module, "StreamAwbSlot")
+        .def_ro("port_no", &cricodecs::acb::AcbStreamAwbSlot::port_no)
+        .def_ro("name", &cricodecs::acb::AcbStreamAwbSlot::name);
+
     nb::class_<cricodecs::acb::WaveformAwbEntry>(module, "WaveformAwbEntry")
         .def_ro("waveform_index", &cricodecs::acb::WaveformAwbEntry::waveform_index)
         .def_ro("wave_id", &cricodecs::acb::WaveformAwbEntry::wave_id)
         .def_ro("awb_index", &cricodecs::acb::WaveformAwbEntry::awb_index)
+        .def_ro("port_no", &cricodecs::acb::WaveformAwbEntry::port_no)
         .def_ro("stream_bank", &cricodecs::acb::WaveformAwbEntry::stream_bank);
 
     nb::class_<cricodecs::acb::AcbContainer>(module, "Acb")
@@ -249,6 +254,11 @@ void bind_acb_module(nb::module_& module) {
             &cricodecs::acb::AcbContainer::cue_graph,
             nb::rv_policy::reference_internal)
         .def_prop_ro("has_embedded_awb", &cricodecs::acb::AcbContainer::has_embedded_awb)
+        .def_prop_ro("stream_awb_slots", &cricodecs::acb::AcbContainer::stream_awb_slots)
+        .def("stream_awb_path", [](const cricodecs::acb::AcbContainer& self, uint16_t port_no) -> nb::object {
+            const auto path = self.stream_awb_path(port_no);
+            return path ? nb::cast(path->generic_string()) : nb::none();
+        }, nb::arg("port_no") = 0)
         .def_prop_ro("companion_awb_path", [](const cricodecs::acb::AcbContainer& self) -> nb::object {
             const auto path = self.companion_awb_path();
             return path ? nb::cast(path->generic_string()) : nb::none();
@@ -269,6 +279,7 @@ void bind_acb_module(nb::module_& module) {
             }
             info.attr("waveforms") = waveforms;
             info.attr("has_embedded_awb") = self.has_embedded_awb();
+            info.attr("stream_awb_slots") = self.stream_awb_slots();
             const auto companion = self.companion_awb_path();
             info.attr("companion_awb_path") = companion.has_value() ? nb::cast(companion->generic_string()) : nb::none();
             info.attr("has_aac_waveforms") = self.has_aac_waveforms();
@@ -603,10 +614,8 @@ void bind_acb_module(nb::module_& module) {
                             hca_subkey,
                             include_empty_holds,
                             block_loop_counts)));
-                auto wav = unwrap_expected(cricodecs::wav::WavContainer::build_bytes(
-                    rendered.pcm,
-                    rendered.sample_rate,
-                    rendered.channels));
+                auto wav = unwrap_expected(
+                    cricodecs::acb::build_rendered_cue_wav(rendered));
                 return to_python_bytes(wav);
             },
             nb::arg("index"),
@@ -787,6 +796,18 @@ void bind_acb_module(nb::module_& module) {
             }
             return nb::cast(unwrap_expected(self.load_awb()));
         })
+        .def("load_memory_awb", [](const cricodecs::acb::AcbContainer& self) -> nb::object {
+            if (!self.has_embedded_awb()) {
+                return nb::none();
+            }
+            return nb::cast(unwrap_expected(self.load_memory_awb()));
+        })
+        .def("load_stream_awb", [](const cricodecs::acb::AcbContainer& self, uint16_t port_no) -> nb::object {
+            if (!self.stream_awb_path(port_no)) {
+                return nb::none();
+            }
+            return nb::cast(unwrap_expected(self.load_stream_awb(port_no)));
+        }, nb::arg("port_no") = 0)
         .def(
             "extract_file",
             [](const cricodecs::acb::AcbContainer& self, uint32_t index, const nb::object& output_path, uint64_t aac_keycode) {
@@ -806,7 +827,8 @@ void bind_acb_module(nb::module_& module) {
         );
 
     install_attr_repr(module, "Acb", {"source_path", "name", "waveform_count", "cue_count", "has_embedded_awb", "companion_awb_path", "has_aac_waveforms"});
-    install_attr_repr(module, "WaveformAwbEntry", {"waveform_index", "wave_id", "awb_index", "stream_bank"});
+    install_attr_repr(module, "StreamAwbSlot", {"port_no", "name"});
+    install_attr_repr(module, "WaveformAwbEntry", {"waveform_index", "wave_id", "awb_index", "port_no", "stream_bank"});
 
     module.def(
         "load",

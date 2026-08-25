@@ -36,6 +36,7 @@ struct CueClipView {
     std::optional<uint16_t> awb_wave_id;
     std::optional<uint32_t> awb_stream_index;
     std::string awb_bank;
+    std::optional<uint16_t> awb_port_no;
 };
 
 struct CueBlockView {

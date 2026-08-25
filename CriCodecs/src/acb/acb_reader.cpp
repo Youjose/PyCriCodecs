@@ -7,6 +7,7 @@
 
 #include "acb_container.hpp"
 
+#include <algorithm>
 #include <initializer_list>
 #include "../utilities/io.hpp"
 #include "../utilities/text_encoding.hpp"
@@ -175,6 +176,7 @@ std::expected<void, std::string> AcbContainer::finish_load_from_source() {
         return std::unexpected("ACB load failed: UTF table is not an ACB header");
     }
     preload_waveforms();
+    preload_stream_awb_slots();
 
     auto graph = AcbCueGraph::load(m_source.bytes, m_encoding);
     if (!graph) {
@@ -265,11 +267,39 @@ bool AcbContainer::preload_waveforms() {
             }
         }
 
-        const bool is_memory_bank = uses_memory_bank_for_associated_awb(waveform);
-        waveform.id = waveform_id_for_bank(waveform, is_memory_bank);
     }
 
     return true;
+}
+
+void AcbContainer::preload_stream_awb_slots() {
+    m_stream_awb_slots.clear();
+    if (auto data = m_header.get_data(0, "StreamAwbHash"); data && !data->empty()) {
+        if (auto table = UtfTable::load(*data); table && table->find_column("Name") >= 0) {
+            const auto rows = std::min<uint32_t>(table->row_count(), 0xFFFFu);
+            m_stream_awb_slots.reserve(rows);
+            for (uint32_t row = 0; row < rows; ++row) {
+                auto raw = table->get_string(row, "Name");
+                if (!raw || raw->empty()) {
+                    continue;
+                }
+                auto decoded = text::decode_to_utf8(
+                    std::span<const uint8_t>(
+                        reinterpret_cast<const uint8_t*>(raw->data()), raw->size()),
+                    m_encoding);
+                m_stream_awb_slots.push_back({
+                    .port_no = static_cast<uint16_t>(row),
+                    .name = decoded ? std::move(*decoded) : std::string(*raw),
+                });
+            }
+        }
+    }
+
+    if (m_stream_awb_slots.empty() && std::ranges::any_of(m_waveforms, [](const auto& waveform) {
+            return waveform.streaming != 0;
+        })) {
+        m_stream_awb_slots.push_back({.port_no = 0, .name = std::string(name())});
+    }
 }
 
 void AcbContainer::resolve_all_names() {
@@ -296,7 +326,7 @@ void AcbContainer::resolve_all_names() {
 
     for (uint32_t waveform_index = 0; waveform_index < m_waveforms.size(); ++waveform_index) {
         const auto& waveform = m_waveforms[waveform_index];
-        const bool is_memory_target = uses_memory_bank_for_associated_awb(waveform);
+        const bool is_memory_target = waveform_bank(waveform) == AcbAwbBank::memory;
         const uint16_t wave_id = waveform_id_for_bank(waveform, is_memory_target);
 
         auto resolved = waveform_name(waveform_index);

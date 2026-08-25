@@ -25,11 +25,8 @@ uint16_t waveform_id_for_bank(const AcbCueWaveform& waveform, bool memory) noexc
     return waveform.memory_awb_id;
 }
 
-bool uses_memory_bank(const AcbCueWaveform& waveform, bool has_embedded_awb) noexcept {
-    if (has_embedded_awb) {
-        return waveform.streaming != 1;
-    }
-    return waveform.streaming == 0 || waveform.stream_awb_id == invalid_acb_index;
+bool uses_memory_bank(const AcbCueWaveform& waveform) noexcept {
+    return waveform.streaming == 0;
 }
 
 bool matches_bank(const AcbCueWaveform& waveform, bool memory) noexcept {
@@ -207,7 +204,7 @@ AcbCueGraph::waveform_cue_views() const {
 
     for (auto& target_view : views) {
         const auto& target = m_waveforms[target_view.waveform_index];
-        const bool memory = uses_memory_bank(target, m_has_embedded_awb);
+        const bool memory = uses_memory_bank(target);
         const auto key = asset_key(memory, waveform_id_for_bank(target, memory));
         if (memory || target.stream_awb_port_no == invalid_acb_index) {
             if (const auto rows = asset_name_rows.find(key); rows != asset_name_rows.end()) {

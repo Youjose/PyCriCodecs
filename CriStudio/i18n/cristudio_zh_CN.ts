@@ -17910,6 +17910,11 @@ Shown bytes: %3
     </message>
     <message>
         <location filename="../src/modules/acb/acb_cue_view.cpp" line="40"/>
+        <source>Native codec loop</source>
+        <translation>编解码器原生循环</translation>
+    </message>
+    <message>
+        <location filename="../src/modules/acb/acb_cue_view.cpp" line="40"/>
         <source>option</source>
         <translation>选项</translation>
     </message>
@@ -18035,6 +18040,11 @@ Shown bytes: %3
         <location filename="../src/main_window/acb_cue_preview.cpp" line="400"/>
         <source>Bank</source>
         <translation>存储库</translation>
+    </message>
+    <message>
+        <location filename="../src/main_window/acb_cue_preview.cpp" line="404"/>
+        <source>AWB port</source>
+        <translation>AWB 端口</translation>
     </message>
     <message>
         <location filename="../src/main_window/acb_cue_preview.cpp" line="404"/>

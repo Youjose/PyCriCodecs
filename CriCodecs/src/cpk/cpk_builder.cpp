@@ -227,7 +227,6 @@ std::expected<std::vector<Cpk::PreparedEntry>, std::string> Cpk::prepare_entries
         }
 
         PreparedEntry prepared;
-        prepared.index = index;
 
         if (source.explicit_id.has_value()) {
             prepared.effective_id = *source.explicit_id;
@@ -253,29 +252,17 @@ std::expected<std::vector<Cpk::PreparedEntry>, std::string> Cpk::prepare_entries
             entry.request_compress == entry.is_compressed;
 
         if (can_preserve_packed) {
-            auto resolved_offset = resolve_entry_offset(entry);
-            if (!resolved_offset) {
-                return std::unexpected(resolved_offset.error());
+            auto packed_span = packed_entry_span(entry);
+            if (!packed_span) {
+                return std::unexpected(packed_span.error());
             }
-            if (*resolved_offset > m_reader.size()) {
-                return std::unexpected("CPK entry offset is out of range");
-            }
-            if (entry.file_size > static_cast<uint64_t>(m_reader.size() - *resolved_offset)) {
-                return std::unexpected("CPK entry data exceeds the archive size");
-            }
-            const auto packed_span = m_reader.subspan(
-                static_cast<size_t>(*resolved_offset),
-                static_cast<size_t>(entry.file_size)
-            );
-            prepared.payload = packed_span;
-            prepared.compressed = entry.is_compressed;
-            prepared.packed_size = prepared.payload.size();
+            prepared.payload = *packed_span;
             prepared.unpacked_size = entry.extract_size;
             prepared_entries.push_back(std::move(prepared));
             continue;
         }
 
-        auto raw_bytes = raw_entry_bytes(index);
+        auto raw_bytes = file_bytes(index);
         if (!raw_bytes) {
             return std::unexpected(raw_bytes.error());
         }
@@ -290,19 +277,13 @@ std::expected<std::vector<Cpk::PreparedEntry>, std::string> Cpk::prepare_entries
             if (compressed.size() < raw_bytes->size()) {
                 prepared.owned_payload = std::move(compressed);
                 prepared.payload = std::span<const uint8_t>(prepared.owned_payload.data(), prepared.owned_payload.size());
-                prepared.compressed = true;
-                prepared.packed_size = prepared.owned_payload.size();
             } else {
                 prepared.owned_payload = std::move(*raw_bytes);
                 prepared.payload = std::span<const uint8_t>(prepared.owned_payload.data(), prepared.owned_payload.size());
-                prepared.compressed = false;
-                prepared.packed_size = prepared.owned_payload.size();
             }
         } else {
             prepared.owned_payload = std::move(*raw_bytes);
             prepared.payload = std::span<const uint8_t>(prepared.owned_payload.data(), prepared.owned_payload.size());
-            prepared.compressed = false;
-            prepared.packed_size = prepared.owned_payload.size();
         }
 
         prepared.crc32 = cpk_crc32(prepared.payload, 0);
@@ -341,9 +322,9 @@ std::expected<std::vector<uint8_t>, std::string> Cpk::build_archive(
     uint64_t enabled_data_size = 0;
     uint64_t content_size = 0;
     for (const auto& prepared : prepared_entries) {
-        enabled_packed_size += prepared.packed_size;
+        enabled_packed_size += prepared.payload.size();
         enabled_data_size += prepared.unpacked_size;
-        content_size += align_up(prepared.packed_size, m_options.align);
+        content_size += align_up(static_cast<uint64_t>(prepared.payload.size()), m_options.align);
     }
 
     std::vector<size_t> toc_order;
@@ -417,7 +398,10 @@ std::expected<std::vector<uint8_t>, std::string> Cpk::build_archive(
             uint64_t running_offset = content_offset - root_chunk_size;
             for (const size_t index : data_order) {
                 entry_offsets[index] = running_offset;
-                running_offset += align_up(prepared_entries[index].packed_size, m_options.align);
+                running_offset += align_up(
+                    static_cast<uint64_t>(prepared_entries[index].payload.size()),
+                    m_options.align
+                );
             }
 
             auto toc_data = generate_toc(prepared_entries, toc_order, entry_offsets);
@@ -450,7 +434,10 @@ std::expected<std::vector<uint8_t>, std::string> Cpk::build_archive(
         uint64_t running_offset = content_offset - root_chunk_size;
         for (const size_t index : data_order) {
             entry_offsets[index] = running_offset;
-            running_offset += align_up(prepared_entries[index].packed_size, m_options.align);
+            running_offset += align_up(
+                static_cast<uint64_t>(prepared_entries[index].payload.size()),
+                m_options.align
+            );
         }
         auto toc_data = generate_toc(prepared_entries, toc_order, entry_offsets);
         if (!toc_data) {
@@ -577,7 +564,7 @@ std::expected<std::vector<uint8_t>, std::string> Cpk::generate_toc(
 
         table.set(row, "DirName", *dirname).value();
         table.set(row, "FileName", *filename).value();
-        table.set(row, "FileSize", static_cast<uint32_t>(prepared.packed_size)).value();
+        table.set(row, "FileSize", static_cast<uint32_t>(prepared.payload.size())).value();
         table.set(row, "ExtractSize", static_cast<uint32_t>(prepared.unpacked_size)).value();
         table.set(row, "FileOffset", entry_offsets[index]).value();
         table.set(row, "ID", prepared.effective_id).value();
@@ -614,13 +601,13 @@ std::vector<uint8_t> Cpk::generate_itoc_mode0(
     uint32_t files_h = 0;
     for (const size_t index : data_order) {
         const auto& prepared = prepared_entries[index];
-        const bool fits_l = prepared.packed_size <= std::numeric_limits<uint16_t>::max() &&
+        const bool fits_l = prepared.payload.size() <= std::numeric_limits<uint16_t>::max() &&
             prepared.unpacked_size <= std::numeric_limits<uint16_t>::max();
 
         if (fits_l) {
             const auto row = data_l.add_row();
             data_l.set(row, "ID", static_cast<uint16_t>(prepared.effective_id)).value();
-            data_l.set(row, "FileSize", static_cast<uint16_t>(prepared.packed_size)).value();
+            data_l.set(row, "FileSize", static_cast<uint16_t>(prepared.payload.size())).value();
             data_l.set(row, "ExtractSize", static_cast<uint16_t>(prepared.unpacked_size)).value();
             if (m_options.enable_crc) {
                 data_l.set(row, "CRC", prepared.crc32).value();
@@ -629,7 +616,7 @@ std::vector<uint8_t> Cpk::generate_itoc_mode0(
         } else {
             const auto row = data_h.add_row();
             data_h.set(row, "ID", static_cast<uint16_t>(prepared.effective_id)).value();
-            data_h.set(row, "FileSize", static_cast<uint32_t>(prepared.packed_size)).value();
+            data_h.set(row, "FileSize", static_cast<uint32_t>(prepared.payload.size())).value();
             data_h.set(row, "ExtractSize", static_cast<uint32_t>(prepared.unpacked_size)).value();
             if (m_options.enable_crc) {
                 data_h.set(row, "CRC", prepared.crc32).value();

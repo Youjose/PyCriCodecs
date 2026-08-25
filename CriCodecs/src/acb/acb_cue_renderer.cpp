@@ -759,6 +759,9 @@ std::string cue_plan_semantic_signature(
 static std::expected<AcbCuePlaybackPlan, std::string> resolve_plan_awb_entries(
     const AcbContainer& acb,
     AcbCuePlaybackPlan plan) {
+    // TODO(acb-multi-awb): Resolve each streamed clip through its
+    // StreamAwbPortNo and named StreamAwb slot. Streaming==2 requires both the
+    // embedded prefetch bank and the external full-stream bank at runtime.
     if (!acb.has_embedded_awb() && !acb.companion_awb_path()) {
         return plan;
     }
@@ -828,6 +831,9 @@ std::expected<AcbRenderedCue, std::string> render_cue_plan(
     const AcbContainer& acb,
     AcbCuePlaybackPlan plan,
     const AcbCueRenderOptions& options) {
+    // TODO(acb-native-loops): Carry codec/waveform loop points through full
+    // cue rendering and CriStudio preview instead of treating decoded PCM as
+    // one finite clip. Keep block-loop scheduling distinct from codec loops.
     uint16_t hca_subkey = options.hca_subkey.value_or(0);
     if (!options.hca_subkey) {
         auto subkey = acb.awb_subkey();
@@ -1105,6 +1111,9 @@ std::expected<AcbRenderedCue, std::string> render_cue_plan(
         }
     }
 
+    // TODO(acb-runtime): Model runtime transitions, live actions, dynamic
+    // selector changes, gains, and transition curves after their ordering and
+    // scheduling semantics are verified against the official runtime.
     plan.diagnostics.push_back(
         "waveform gain, envelopes, transition curves, and runtime selector/action "
         "changes are not applied by the static renderer");

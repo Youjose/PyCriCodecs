@@ -615,43 +615,13 @@ void encode_ms_stereo(HcaFrame& frame) {
         : 4 + 2 + (HCA_SUBFRAMES - 1) * 4;
 }
 
-void calculate_optimal_delta_length(HcaChannel& channel, uint8_t scalefactor_count) {
-    const bool empty = std::all_of(
-        channel.scalefactors.begin(),
-        channel.scalefactors.begin() + scalefactor_count,
-        [](uint8_t value) { return value == 0; }
-    );
-
-    if (empty) {
-        channel.header_length_bits = 3;
-        channel.scalefactor_delta_bits = 0;
-        return;
-    }
-
-    int best_delta_bits = 6;
-    int best_length = 3 + 6 * scalefactor_count;
-
-    for (int delta_bits = 1; delta_bits < 6; ++delta_bits) {
-        const int max_delta = tables::SCALEFACTOR_DELTA_LIMITS[static_cast<size_t>(delta_bits - 1)];
-        int length = 3 + 6;
-        for (uint8_t band = 1; band < scalefactor_count; ++band) {
-            const int delta = static_cast<int>(channel.scalefactors[band]) - static_cast<int>(channel.scalefactors[band - 1]);
-            length += std::abs(delta) > max_delta ? delta_bits + 6 : delta_bits;
-        }
-        if (length < best_length) {
-            best_length = length;
-            best_delta_bits = delta_bits;
-        }
-    }
-
-    channel.header_length_bits = best_length;
-    channel.scalefactor_delta_bits = best_delta_bits;
-}
-
 void calculate_frame_header_length(HcaFrame& frame) {
     for (uint32_t c = 0; c < frame.info.fmt.channel_count; ++c) {
         auto& channel = frame.channels[c];
-        calculate_optimal_delta_length(channel, packing::scalefactor_count_for_header(frame.info, channel));
+        const auto count = packing::scalefactor_count_for_header(frame.info, channel);
+        const auto encoding = packing::scalefactor_encoding(std::span(channel.scalefactors).first(count));
+        channel.header_length_bits = static_cast<int>(encoding.bit_count);
+        channel.scalefactor_delta_bits = encoding.delta_bits;
         if (channel.type == ChannelType::StereoSecondary) {
             channel.header_length_bits += detail::uses_v3_frame_layout(frame.info.file.version)
                 ? v3_intensity_bits(channel)

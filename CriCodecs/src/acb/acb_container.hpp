@@ -191,8 +191,6 @@ public:
     [[nodiscard]] const std::filesystem::path& source_path() const noexcept { return m_source_path; }
 
 private:
-    static constexpr int unresolved_column = -2;
-
     // Source data
     std::span<const uint8_t> m_source;
     std::vector<uint8_t> m_owned_source;
@@ -218,40 +216,6 @@ private:
         
         // Sub-table data must outlive the UtfTable that references it
         std::vector<std::vector<uint8_t>> table_data;
-
-        struct CueColumns {
-            int reference_type = unresolved_column;
-            int reference_index = unresolved_column;
-        } cue_columns;
-
-        struct SynthColumns {
-            int reference_items = unresolved_column;
-        } synth_columns;
-
-        struct SequenceColumns {
-            int num_tracks = unresolved_column;
-            int track_index = unresolved_column;
-        } sequence_columns;
-
-        struct TrackColumns {
-            int event_index = unresolved_column;
-        } track_columns;
-
-        struct CommandColumns {
-            int command = unresolved_column;
-        } track_event_columns, command_columns;
-
-        struct BlockColumns {
-            int num_tracks = unresolved_column;
-            int track_index = unresolved_column;
-        } block_columns;
-
-        struct BlockSequenceColumns {
-            int num_tracks = unresolved_column;
-            int track_index = unresolved_column;
-            int num_blocks = unresolved_column;
-            int block_index = unresolved_column;
-        } block_sequence_columns;
     };
 
     struct SubtableDescriptor {
@@ -291,47 +255,11 @@ private:
     std::optional<std::reference_wrapper<const utf::UtfTable>> load_subtable(std::string_view name) const;
     [[nodiscard]] std::expected<void, std::string> finish_load_from_source();
     bool preload_waveforms();
-    bool preload_cue_names();
-
-    struct ResolveContext {
-        uint16_t target_wave_id = 0;
-        int target_port = -1;
-        bool is_memory = true;
-        int synth_depth = 0;
-        int sequence_depth = 0;
-        std::string current_name;
-        std::string current_name_raw;
-        bool found = false;
-    };
-
-    struct CueNameRow {
-        uint16_t cue_index = 0;
-        std::string name;
-        std::string name_raw;
-    };
-
-    ResolveContext m_resolve_ctx{};
 
     void resolve_all_names();
-    void resolve_waveform_name(
-        uint32_t waveform_index,
-        bool is_memory_target,
-        uint16_t wave_id,
-        int target_port,
-        std::span<const CueNameRow> cue_names);
-    bool load_cue(uint16_t index);
-    bool load_synth(uint16_t index);
-    bool load_sequence(uint16_t index);
-    bool load_track(uint16_t index);
-    bool load_track_command(uint16_t index);
-    bool load_command_tlvs(std::span<const uint8_t> data);
-    bool load_waveform_check(uint16_t index);
-    bool load_block(uint16_t index);
-    bool load_block_sequence(uint16_t index);
 
     [[nodiscard]] static uint16_t waveform_id_for_bank(const WaveformInfo& waveform, bool is_memory_bank) noexcept;
     [[nodiscard]] static bool prefers_memory_bank(const WaveformInfo& waveform) noexcept;
-    [[nodiscard]] static bool waveform_matches_bank(const WaveformInfo& waveform, bool is_memory_bank) noexcept;
     [[nodiscard]] bool uses_memory_bank_for_associated_awb(const WaveformInfo& waveform) const;
     [[nodiscard]] std::expected<std::reference_wrapper<const awb::AwbContainer>, std::string> associated_awb() const;
     [[nodiscard]] std::expected<std::span<const uint8_t>, std::string> waveform_data_from_awb(

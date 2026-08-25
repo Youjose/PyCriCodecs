@@ -8,6 +8,7 @@
 #include "hca_codec.hpp"
 #include "hca_crypto.hpp"
 #include "hca_frame.hpp"
+#include "hca_packing.hpp"
 #include "hca_tables.hpp"
 
 #include "../utilities/io.hpp"
@@ -25,8 +26,8 @@
 #include <numeric>
 #include <optional>
 #include <span>
-#include <thread>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -34,12 +35,19 @@
 namespace cricodecs::hca {
 
 struct HcaRecoveryAccess {
-    [[nodiscard]] static std::span<const uint8_t> stored_bytes(const Hca& hca) noexcept {
-        return hca.m_bytes;
-    }
-
-    [[nodiscard]] static const std::filesystem::path& source_path(const Hca& hca) noexcept {
-        return hca.m_source_path;
+    [[nodiscard]] static std::expected<std::span<const uint8_t>, std::string> source_bytes(
+        const Hca& hca,
+        std::vector<std::vector<uint8_t>>& owned,
+        std::string_view context) {
+        if (!hca.m_bytes.empty()) {
+            return hca.m_bytes;
+        }
+        auto loaded = io::read_file_bytes(hca.m_source_path, context);
+        if (!loaded) {
+            return std::unexpected(loaded.error());
+        }
+        owned.push_back(std::move(*loaded));
+        return owned.back();
     }
 };
 
@@ -51,6 +59,19 @@ constexpr size_t BalancedFrameLimit = 4096;
 constexpr size_t HybridFrameLimit = 256;
 constexpr size_t ValidationFrameLimit = 64;
 constexpr double NegativeInfinity = -std::numeric_limits<double>::infinity();
+
+template <typename Worker>
+void run_workers(size_t count, Worker& worker) {
+    if (count == 1) {
+        worker();
+        return;
+    }
+    std::vector<std::jthread> workers;
+    workers.reserve(count);
+    for (size_t index = 0; index < count; ++index) {
+        workers.emplace_back(worker);
+    }
+}
 
 enum class AnchorKind : uint8_t {
     Absolute,
@@ -73,32 +94,11 @@ struct ModelFeature {
 };
 
 struct Model {
-    std::string_view name;
     uint32_t training_frames;
     std::span<const ModelFeature> features;
 };
 
 #include "hca_key_recovery_models.inc"
-
-constexpr std::array<const Model*, 17> HybridModels{
-    &ModelGlobal,
-    &ModelV2MonoFullband,
-    &ModelV2MonoHfr,
-    &ModelV3MonoFullband,
-    &ModelV3MonoHfr,
-    &ModelV2StereoFullband,
-    &ModelV2StereoStereo,
-    &ModelV2StereoHfr,
-    &ModelV3StereoFullband,
-    &ModelV3StereoStereo,
-    &ModelV3StereoHfr,
-    &ModelV2MultiFullband,
-    &ModelV2MultiStereo,
-    &ModelV2MultiHfr,
-    &ModelV3MultiFullband,
-    &ModelV3MultiStereo,
-    &ModelV3MultiHfr,
-};
 
 struct PreparedFeature {
     Anchor anchor;
@@ -107,10 +107,7 @@ struct PreparedFeature {
     std::array<double, 16> high{};
 };
 
-struct PreparedModel {
-    std::string_view name;
-    std::vector<PreparedFeature> features;
-};
+using PreparedModel = std::vector<PreparedFeature>;
 
 struct Payload {
     std::span<const uint8_t> bytes;
@@ -218,8 +215,8 @@ inline constexpr auto Rows = make_rows();
 }
 
 [[nodiscard]] PreparedModel prepare(const Model& model) {
-    PreparedModel result{.name = model.name, .features = {}};
-    result.features.reserve(model.features.size());
+    PreparedModel result;
+    result.reserve(model.features.size());
     const double denominator = static_cast<double>(model.training_frames) + 128.0;
     for (const auto& source : model.features) {
         PreparedFeature feature{.anchor = source.anchor, .weight = source.weight};
@@ -232,32 +229,32 @@ inline constexpr auto Rows = make_rows();
             const uint32_t count = std::accumulate(begin, begin + 16, uint32_t{0});
             feature.high[high] = std::log((static_cast<double>(count) + 8.0) / denominator);
         }
-        result.features.push_back(std::move(feature));
+        result.push_back(std::move(feature));
     }
     return result;
 }
 
 [[nodiscard]] const PreparedFeature* find_feature(
     const PreparedModel& model, Anchor anchor) noexcept {
-    const auto found = std::ranges::find(model.features, anchor, &PreparedFeature::anchor);
-    return found == model.features.end() ? nullptr : &*found;
+    const auto found = std::ranges::find(model, anchor, &PreparedFeature::anchor);
+    return found == model.end() ? nullptr : &*found;
 }
 
 [[nodiscard]] PreparedModel blend(
     const PreparedModel& global, const PreparedModel& expert) {
     std::vector<Anchor> anchors;
-    anchors.reserve(global.features.size() + expert.features.size());
-    for (const auto& feature : global.features) {
+    anchors.reserve(global.size() + expert.size());
+    for (const auto& feature : global) {
         anchors.push_back(feature.anchor);
     }
-    for (const auto& feature : expert.features) {
+    for (const auto& feature : expert) {
         if (std::ranges::find(anchors, feature.anchor) == anchors.end()) {
             anchors.push_back(feature.anchor);
         }
     }
 
-    PreparedModel result{.name = "blend", .features = {}};
-    result.features.reserve(anchors.size());
+    PreparedModel result;
+    result.reserve(anchors.size());
     double weight_sum = 0.0;
     for (Anchor anchor : anchors) {
         const auto* left = find_feature(global, anchor);
@@ -282,10 +279,10 @@ inline constexpr auto Rows = make_rows();
                 (global_weight * global_value + expert_weight * expert_value) / total;
         }
         weight_sum += total;
-        result.features.push_back(std::move(feature));
+        result.push_back(std::move(feature));
     }
-    const double mean = weight_sum / static_cast<double>(result.features.size());
-    for (auto& feature : result.features) {
+    const double mean = weight_sum / static_cast<double>(result.size());
+    for (auto& feature : result) {
         feature.weight /= mean;
     }
     return result;
@@ -327,7 +324,7 @@ inline constexpr auto Rows = make_rows();
 [[nodiscard]] Scores score_model(
     const PreparedModel& model, std::span<const Frame> frames) {
     Scores scores;
-    for (const auto& feature : model.features) {
+    for (const auto& feature : model) {
         std::array<uint32_t, 256> counts{};
         for (const auto& frame : frames) {
             const size_t position = anchor_position(feature.anchor, frame.bytes.size());
@@ -766,27 +763,6 @@ private:
     bool m_valid{true};
 };
 
-[[nodiscard]] uint8_t optimal_delta_bits(std::span<const uint8_t> scales) noexcept {
-    if (scales.empty() || std::ranges::all_of(scales, [](uint8_t value) { return value == 0; })) {
-        return 0;
-    }
-    uint8_t best = 6;
-    size_t best_length = 3 + 6 * scales.size();
-    for (uint8_t bits = 1; bits < 6; ++bits) {
-        const int maximum_delta = (1 << (bits - 1)) - 1;
-        size_t length = 9;
-        for (size_t index = 1; index < scales.size(); ++index) {
-            const int delta = static_cast<int>(scales[index]) - scales[index - 1];
-            length += bits + (std::abs(delta) > maximum_delta ? 6 : 0);
-        }
-        if (length < best_length) {
-            best_length = length;
-            best = bits;
-        }
-    }
-    return best;
-}
-
 struct ScaleResult {
     std::array<uint8_t, HCA_SAMPLES_PER_SUBFRAME> values{};
     uint32_t wraps{};
@@ -907,8 +883,8 @@ struct FrameMetrics {
         const auto scales = read_scalefactors(reader, coded_count + extra_count);
         wraps += scales.wraps;
         canonical_headers += scales.wraps == 0
-            && scales.delta_bits == optimal_delta_bits(
-                std::span(scales.values).first(coded_count + extra_count));
+            && scales.delta_bits == packing::scalefactor_encoding(
+                std::span(scales.values).first(coded_count + extra_count)).delta_bits;
         if (!skip_intensity(
                 reader, types[channel], header.codec.hfr_group_count, header.file.version)) {
             return {};
@@ -1160,23 +1136,32 @@ struct FrameMetrics {
     return nullptr;
 }
 
-[[nodiscard]] std::string topology_name(const Profile& value) {
-    std::string result = value.version_family == 3 ? "v3-" : "v2-";
-    result += value.channel_count == 1 ? "mono-" : value.channel_count == 2 ? "stereo-" : "multi-";
-    result += value.hfr_group_count != 0
-        ? "hfr"
-        : value.stereo_band_count != 0 ? "stereo" : "fullband";
-    return result;
-}
-
 [[nodiscard]] const Model* hybrid_model(const Profile& value) noexcept {
-    const std::string name = topology_name(value);
-    for (const Model* model : HybridModels) {
-        if (model->name == name) {
-            return model;
+    const bool v3 = value.version_family == 3;
+    if (value.channel_count == 1) {
+        if (value.stereo_band_count != 0) {
+            return nullptr;
         }
+        if (value.hfr_group_count != 0) {
+            return v3 ? &ModelV3MonoHfr : &ModelV2MonoHfr;
+        }
+        return v3 ? &ModelV3MonoFullband : &ModelV2MonoFullband;
     }
-    return nullptr;
+
+    const bool stereo = value.channel_count == 2;
+    if (value.hfr_group_count != 0) {
+        return v3
+            ? (stereo ? &ModelV3StereoHfr : &ModelV3MultiHfr)
+            : (stereo ? &ModelV2StereoHfr : &ModelV2MultiHfr);
+    }
+    if (value.stereo_band_count != 0) {
+        return v3
+            ? (stereo ? &ModelV3StereoStereo : &ModelV3MultiStereo)
+            : (stereo ? &ModelV2StereoStereo : &ModelV2MultiStereo);
+    }
+    return v3
+        ? (stereo ? &ModelV3StereoFullband : &ModelV3MultiFullband)
+        : (stereo ? &ModelV2StereoFullband : &ModelV2MultiFullband);
 }
 
 [[nodiscard]] std::vector<Candidate> joint_refine(
@@ -1228,6 +1213,21 @@ struct FrameMetrics {
     return static_cast<float>(matched) / static_cast<float>(metrics.tested);
 }
 
+[[nodiscard]] std::vector<KeyCandidate> public_candidates(
+    std::span<const Candidate> candidates, size_t source_count) {
+    std::vector<KeyCandidate> result;
+    result.reserve(candidates.size());
+    for (const auto& candidate : candidates) {
+        result.push_back(KeyCandidate{
+            .key = effective_key(candidate.q),
+            .score = validation_score(candidate.metrics),
+            .source_count = source_count,
+            .evidence_count = candidate.metrics.tested,
+        });
+    }
+    return result;
+}
+
 [[nodiscard]] std::expected<std::vector<KeyCandidate>, std::string> recover_profile_key(
     std::span<const Payload> payloads,
     const Profile& common_profile,
@@ -1263,17 +1263,7 @@ struct FrameMetrics {
         if (recovered) {
             append(*recovered);
             if (perfect(candidates.front().metrics)) {
-                std::vector<KeyCandidate> result;
-                result.reserve(candidates.size());
-                for (const auto& candidate : candidates) {
-                    result.push_back(KeyCandidate{
-                        .key = effective_key(candidate.q),
-                        .score = validation_score(candidate.metrics),
-                        .source_count = payloads.size(),
-                        .evidence_count = candidate.metrics.tested,
-                    });
-                }
-                return result;
+                return public_candidates(candidates, payloads.size());
             }
         }
     }
@@ -1299,17 +1289,7 @@ struct FrameMetrics {
     if (allow_joint_refine && !perfect(candidates.front().metrics)) {
         append(joint_refine(candidates.front(), validation));
     }
-    std::vector<KeyCandidate> result;
-    result.reserve(candidates.size());
-    for (const auto& candidate : candidates) {
-        result.push_back(KeyCandidate{
-            .key = effective_key(candidate.q),
-            .score = validation_score(candidate.metrics),
-            .source_count = payloads.size(),
-            .evidence_count = candidate.metrics.tested,
-        });
-    }
-    return result;
+    return public_candidates(candidates, payloads.size());
 }
 
 } // namespace
@@ -1340,23 +1320,15 @@ namespace {
         if (source == nullptr) {
             return std::unexpected("HCA key recovery failed: null HCA recovery source");
         }
-        std::span<const uint8_t> bytes;
-        if (const auto stored = HcaRecoveryAccess::stored_bytes(*source); !stored.empty()) {
-            bytes = stored;
-        } else {
-            auto loaded = io::read_file_bytes(
-                HcaRecoveryAccess::source_path(*source), "HCA key recovery failed");
-            if (!loaded) {
-                return std::unexpected(loaded.error());
-            }
-            owned.push_back(std::move(*loaded));
-            bytes = owned.back();
+        auto bytes = HcaRecoveryAccess::source_bytes(*source, owned, "HCA key recovery failed");
+        if (!bytes) {
+            return std::unexpected(bytes.error());
         }
         const auto& header = source->header();
         if (header.cipher.type != 56) {
             return std::unexpected("HCA key recovery failed: every input must use cipher type 56");
         }
-        if (header.available_frame_count(bytes.size()) == 0) {
+        if (header.available_frame_count(bytes->size()) == 0) {
             return std::unexpected("HCA key recovery failed: input contains no complete frames");
         }
         const Profile current = profile(header);
@@ -1365,7 +1337,7 @@ namespace {
             groups.push_back(ProfileGroup{.profile = current, .payloads = {}});
             group = std::prev(groups.end());
         }
-        const Payload payload{.bytes = bytes, .header = &header};
+        const Payload payload{.bytes = *bytes, .header = &header};
         payloads.push_back(payload);
         group->payloads.push_back(payload);
     }
@@ -1566,7 +1538,6 @@ std::expected<KeyRecoveryResult, std::string> recover_key(
 
     struct GroupRecovery {
         std::vector<KeyCandidate> candidates;
-        size_t evidence_count = 0;
         std::string error;
     };
     std::vector<GroupRecovery> recovered_groups(groups.size());
@@ -1575,7 +1546,6 @@ std::expected<KeyRecoveryResult, std::string> recover_key(
     std::atomic_size_t resolved_groups = 0;
     std::atomic_bool exact_consensus_found = false;
     std::optional<uint64_t> exact_consensus_key;
-    std::vector<uint8_t> processed_groups(groups.size(), 0);
     std::mutex result_mutex;
     std::mutex progress_mutex;
 
@@ -1602,7 +1572,6 @@ std::expected<KeyRecoveryResult, std::string> recover_key(
         if (!effective) {
             result.error = std::move(effective.error());
         } else {
-            result.evidence_count = effective->evidence_count;
             for (const auto& candidate : effective->candidates) {
                 const auto base = normalize_base_key(candidate.key, group.subkey);
                 if (!base) {
@@ -1627,7 +1596,6 @@ std::expected<KeyRecoveryResult, std::string> recover_key(
         {
             const std::scoped_lock lock(result_mutex);
             recovered_groups[index] = std::move(result);
-            processed_groups[index] = true;
             if (fast_shared_pass && !exact_consensus_found.load(std::memory_order_relaxed)) {
                 for (const auto& candidate : recovered_groups[index].candidates) {
                     if (candidate.score < 1.0f || candidate.unknown_high_bits != 0) {
@@ -1681,16 +1649,7 @@ std::expected<KeyRecoveryResult, std::string> recover_key(
         ? std::min<size_t>(4, hardware_threads)
         : options.worker_count;
     const size_t worker_count = std::max<size_t>(1, std::min(groups.size(), requested_workers));
-    if (worker_count == 1) {
-        worker();
-    } else {
-        std::vector<std::jthread> workers;
-        workers.reserve(worker_count);
-        for (size_t index = 0; index < worker_count; ++index) {
-            workers.emplace_back(worker);
-        }
-        workers.clear();
-    }
+    run_workers(worker_count, worker);
     if (options.stop_token.stop_requested()) {
         return std::unexpected("HCA key recovery canceled");
     }
@@ -1703,19 +1662,11 @@ std::expected<KeyRecoveryResult, std::string> recover_key(
             std::vector<Payload> payloads;
             payloads.reserve(group.hcas.size());
             for (const Hca* hca : group.hcas) {
-                std::span<const uint8_t> bytes;
-                if (const auto stored = HcaRecoveryAccess::stored_bytes(*hca); !stored.empty()) {
-                    bytes = stored;
-                } else {
-                    auto loaded = io::read_file_bytes(
-                        HcaRecoveryAccess::source_path(*hca), "HCA key validation failed");
-                    if (!loaded) {
-                        return std::unexpected(loaded.error());
-                    }
-                    owned.push_back(std::move(*loaded));
-                    bytes = owned.back();
+                auto bytes = HcaRecoveryAccess::source_bytes(*hca, owned, "HCA key validation failed");
+                if (!bytes) {
+                    return std::unexpected(bytes.error());
                 }
-                payloads.push_back(Payload{.bytes = bytes, .header = &hca->header()});
+                payloads.push_back(Payload{.bytes = *bytes, .header = &hca->header()});
             }
             const auto validation = sample_frames(payloads, ValidationFrameLimit);
             if (validation.empty()) {
@@ -1742,14 +1693,13 @@ std::expected<KeyRecoveryResult, std::string> recover_key(
                 if (index >= groups.size()) {
                     return;
                 }
-                const bool was_processed = processed_groups[index];
+                const bool was_processed = !recovered_groups[index].candidates.empty()
+                    || !recovered_groups[index].error.empty();
                 auto validated = validate_group(index);
                 if (validated && *validated) {
                     auto candidate = std::move(**validated);
-                    const auto candidate_evidence = candidate.evidence_count;
                     recovered_groups[index] = GroupRecovery{
                         .candidates = {std::move(candidate)},
-                        .evidence_count = candidate_evidence,
                         .error = {},
                     };
                     if (!was_processed) {
@@ -1767,15 +1717,7 @@ std::expected<KeyRecoveryResult, std::string> recover_key(
                 }
             }
         };
-        if (worker_count == 1) {
-            validation_worker();
-        } else {
-            std::vector<std::jthread> validation_workers;
-            validation_workers.reserve(worker_count);
-            for (size_t index = 0; index < worker_count; ++index) {
-                validation_workers.emplace_back(validation_worker);
-            }
-        }
+        run_workers(worker_count, validation_worker);
         if (options.stop_token.stop_requested()) {
             return std::unexpected("HCA key recovery canceled");
         }
@@ -1816,15 +1758,7 @@ std::expected<KeyRecoveryResult, std::string> recover_key(
             };
             const auto retry_worker_count = std::max<size_t>(
                 1, std::min(retry_indices.size(), worker_count));
-            if (retry_worker_count == 1) {
-                retry_worker();
-            } else {
-                std::vector<std::jthread> retry_workers;
-                retry_workers.reserve(retry_worker_count);
-                for (size_t index = 0; index < retry_worker_count; ++index) {
-                    retry_workers.emplace_back(retry_worker);
-                }
-            }
+            run_workers(retry_worker_count, retry_worker);
             if (options.stop_token.stop_requested()) {
                 return std::unexpected("HCA key recovery canceled");
             }
@@ -1844,7 +1778,7 @@ std::expected<KeyRecoveryResult, std::string> recover_key(
             continue;
         }
         resolved_indices.push_back(index);
-        evidence_count += recovered.evidence_count;
+        evidence_count += recovered.candidates.front().evidence_count;
     }
     if (resolved_indices.empty()) {
         return std::unexpected(first_error.empty()

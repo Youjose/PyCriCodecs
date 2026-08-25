@@ -677,22 +677,24 @@ private:
     std::expected<void, std::string> parse_sfsh_file();
     [[nodiscard]] std::expected<const OutputNameMap*, std::string> output_name_map() const;
     void refresh_audio_codecs();
-    [[nodiscard]] bool chunk_needs_masking(const UsmChunk& chunk, const AudioCodecMap& audio_codecs) const;
+    [[nodiscard]] bool chunk_needs_masking(const UsmChunk& chunk) const;
     [[nodiscard]] std::vector<uint8_t> decrypt_chunk_payload(const UsmChunk& chunk) const;
+    [[nodiscard]] std::span<const uint8_t> demuxed_payload(
+        const UsmChunk& chunk,
+        std::vector<uint8_t>& storage
+    ) const;
     [[nodiscard]] std::expected<void, std::string> visit_demuxed_payloads_impl(
         void* context,
         PayloadVisitor visitor
     ) const;
-    [[nodiscard]] std::expected<void, std::string> append_stream_payloads(
+    void append_stream_payloads(
         UsmStreamId id,
-        const AudioCodecMap& audio_codecs,
         std::vector<uint8_t>& output,
         size_t max_bytes = static_cast<size_t>(-1)
     ) const;
     [[nodiscard]] std::expected<std::vector<uint8_t>, std::string> transform_container(bool encrypt) const;
     [[nodiscard]] std::expected<void, std::string> write_stream_payloads(
         UsmStreamId id,
-        const AudioCodecMap& audio_codecs,
         const std::filesystem::path& output_path
     ) const;
 };

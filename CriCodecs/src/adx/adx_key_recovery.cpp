@@ -120,6 +120,20 @@ struct ValidationMetrics {
     return total;
 }
 
+template <typename Worker>
+void run_recovery_workers(Worker worker) {
+    const unsigned worker_count = std::max(
+        1u, std::min(8u, std::thread::hardware_concurrency()));
+    std::vector<std::thread> workers;
+    workers.reserve(worker_count);
+    for (unsigned index = 0; index < worker_count; ++index) {
+        workers.emplace_back(worker);
+    }
+    for (auto& thread : workers) {
+        thread.join();
+    }
+}
+
 } // namespace
 
 std::expected<AdxRecoveryResult, std::string> recover_key(
@@ -153,50 +167,41 @@ std::expected<AdxRecoveryResult, std::string> recover_key(
     std::mutex recovered_mutex;
     std::atomic<size_t> next_seed{0};
     std::atomic<bool> found{false};
-    const unsigned worker_count = std::max(
-        1u, std::min(8u, std::thread::hardware_concurrency()));
-    std::vector<std::thread> workers;
-    workers.reserve(worker_count);
-    for (unsigned worker = 0; worker < worker_count; ++worker) {
-        workers.emplace_back([&] {
-            while (!found.load(std::memory_order_relaxed)) {
-                const size_t seed_index = next_seed.fetch_add(1, std::memory_order_relaxed);
-                if (seed_index >= KEY8_PRIMES.size()) {
+    run_recovery_workers([&] {
+        while (!found.load(std::memory_order_relaxed)) {
+            const size_t seed_index = next_seed.fetch_add(1, std::memory_order_relaxed);
+            if (seed_index >= KEY8_PRIMES.size()) {
+                return;
+            }
+            const uint16_t seed = KEY8_PRIMES[seed_index];
+            if (first.front() != 0u && ((first.front() ^ seed) & Type8Mask) != 0u) {
+                continue;
+            }
+            for (const uint16_t mult : KEY8_PRIMES) {
+                for (const uint16_t add : KEY8_PRIMES) {
+                    const AdxKeyState candidate{seed, mult, add};
+                    const auto validation = validate_candidate(
+                        candidate, parsed, Type8Mask, Type8ConfidenceFrames);
+                    if (!validation.valid) {
+                        continue;
+                    }
+                    const auto full_validation = validate_candidate(
+                        candidate, parsed, Type8Mask, UnlimitedFrames);
+                    if (!full_validation.valid) {
+                        continue;
+                    }
+                    if (!found.exchange(true, std::memory_order_relaxed)) {
+                        std::lock_guard lock(recovered_mutex);
+                        recovered = RecoveredCandidate{candidate, full_validation};
+                    }
                     return;
                 }
-                const uint16_t seed = KEY8_PRIMES[seed_index];
-                if (first.front() != 0u && ((first.front() ^ seed) & Type8Mask) != 0u) {
-                    continue;
-                }
-                for (const uint16_t mult : KEY8_PRIMES) {
-                    for (const uint16_t add : KEY8_PRIMES) {
-                        const AdxKeyState candidate{seed, mult, add};
-                        const auto validation = validate_candidate(
-                            candidate, parsed, Type8Mask, Type8ConfidenceFrames);
-                        if (!validation.valid) {
-                            continue;
-                        }
-                        const auto full_validation = validate_candidate(
-                            candidate, parsed, Type8Mask, UnlimitedFrames);
-                        if (!full_validation.valid) {
-                            continue;
-                        }
-                        if (!found.exchange(true, std::memory_order_relaxed)) {
-                            std::lock_guard lock(recovered_mutex);
-                            recovered = RecoveredCandidate{candidate, full_validation};
-                        }
-                        return;
-                    }
-                    if (found.load(std::memory_order_relaxed)) {
-                        return;
-                    }
+                if (found.load(std::memory_order_relaxed)) {
+                    return;
                 }
             }
-        });
-    }
-    for (auto& worker : workers) {
-        worker.join();
-    }
+        }
+    });
     if (recovered) {
         AdxRecoveryResult result{
             .key = recovered->key,
@@ -403,47 +408,39 @@ std::expected<AdxRecoveryResult, std::string> recover_key_type9(
     std::vector<Type9Candidate> candidates;
     std::mutex candidates_mutex;
     std::atomic<int> next_multiplier{1};
-    const unsigned worker_count = std::max(1u, std::min(8u, std::thread::hardware_concurrency()));
-    std::vector<std::thread> workers;
-    workers.reserve(worker_count);
-    for (unsigned worker = 0; worker < worker_count; ++worker) {
-        workers.emplace_back([&] {
-            std::vector<Type9Candidate> local;
-            Type9LagTables correlation{};
-            std::array<uint16_t, Type9SignatureLags> offset_factors{};
-            for (int multiplier = next_multiplier.fetch_add(4); multiplier < 0x2000;
-                 multiplier = next_multiplier.fetch_add(4)) {
-                uint16_t power = 1;
-                uint16_t offset_factor = 0;
-                for (size_t lag = 0; lag < Type9SignatureLags; ++lag) {
-                    offset_factor = static_cast<uint16_t>(
-                        (offset_factor + power) & Type9Mask);
-                    power = static_cast<uint16_t>(
-                        (static_cast<uint32_t>(power) * multiplier) & Type9Mask);
-                    offset_factors[lag] = offset_factor;
-                    build_high_bit_equal_table(power, correlation[lag]);
+    run_recovery_workers([&] {
+        std::vector<Type9Candidate> local;
+        Type9LagTables correlation{};
+        std::array<uint16_t, Type9SignatureLags> offset_factors{};
+        for (int multiplier = next_multiplier.fetch_add(4); multiplier < 0x2000;
+             multiplier = next_multiplier.fetch_add(4)) {
+            uint16_t power = 1;
+            uint16_t offset_factor = 0;
+            for (size_t lag = 0; lag < Type9SignatureLags; ++lag) {
+                offset_factor = static_cast<uint16_t>(
+                    (offset_factor + power) & Type9Mask);
+                power = static_cast<uint16_t>(
+                    (static_cast<uint32_t>(power) * multiplier) & Type9Mask);
+                offset_factors[lag] = offset_factor;
+                build_high_bit_equal_table(power, correlation[lag]);
+            }
+            for (uint16_t add = 1; add < 0x2000; add = static_cast<uint16_t>(add + 2u)) {
+                uint64_t distance = 0;
+                for (size_t i = 0; i < Type9SignatureLags; ++i) {
+                    const uint16_t equal = correlation[i][
+                        static_cast<uint32_t>(add) * offset_factors[i] & Type9Mask];
+                    distance += equal > observed[i]
+                        ? equal - observed[i]
+                        : observed[i] - equal;
                 }
-                for (uint16_t add = 1; add < 0x2000; add = static_cast<uint16_t>(add + 2u)) {
-                    uint64_t distance = 0;
-                    for (size_t i = 0; i < Type9SignatureLags; ++i) {
-                        const uint16_t equal = correlation[i][
-                            static_cast<uint32_t>(add) * offset_factors[i] & Type9Mask];
-                        distance += equal > observed[i]
-                            ? equal - observed[i]
-                            : observed[i] - equal;
-                    }
-                    if (distance <= tolerance) {
-                        local.push_back({static_cast<uint16_t>(multiplier), add});
-                    }
+                if (distance <= tolerance) {
+                    local.push_back({static_cast<uint16_t>(multiplier), add});
                 }
             }
-            std::lock_guard lock(candidates_mutex);
-            candidates.insert(candidates.end(), local.begin(), local.end());
-        });
-    }
-    for (auto& worker : workers) {
-        worker.join();
-    }
+        }
+        std::lock_guard lock(candidates_mutex);
+        candidates.insert(candidates.end(), local.begin(), local.end());
+    });
 
     AdxRecoveryResult best{
         .encryption_type = 9u,

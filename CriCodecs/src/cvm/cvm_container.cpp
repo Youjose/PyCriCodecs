@@ -78,19 +78,6 @@ constexpr size_t sector_size = CvmContainer::sector_length();
     return uppercase_ascii(std::move(normalized));
 }
 
-[[nodiscard]] std::string default_disc_name(
-    const std::filesystem::path& source_path,
-    const CvmPrimaryVolume& primary_volume
-) {
-    if (!source_path.empty() && source_path.has_filename()) {
-        return source_path.filename().generic_string();
-    }
-    if (!primary_volume.volume_identifier.empty()) {
-        return primary_volume.volume_identifier + ".cvm";
-    }
-    return "image.cvm";
-}
-
 } // namespace
 
 std::expected<void, std::string> CvmContainer::ensure_contents_accessible() const {
@@ -469,7 +456,7 @@ std::expected<std::vector<uint8_t>, std::string> CvmContainer::save(std::string_
     }
 
     CvmBuildInput input;
-    input.disc_name = m_disc_name.empty() ? default_disc_name(m_source_path, m_primary_volume) : m_disc_name;
+    input.disc_name = m_disc_name.empty() ? default_disc_name(m_source_path, m_primary_volume.volume_identifier) : m_disc_name;
     input.recording_date = m_recording_date_text;
     input.media = m_media.empty() ? "DVD" : m_media;
     input.system_identifier = m_primary_volume.system_identifier.empty() ? "CRI ROFS" : m_primary_volume.system_identifier;
@@ -522,7 +509,7 @@ std::expected<std::string, std::string> CvmContainer::export_script_text() const
     }
 
     CvmBuildScriptExport script{
-        .disc_name = m_disc_name.empty() ? default_disc_name(m_source_path, m_primary_volume) : m_disc_name,
+        .disc_name = m_disc_name.empty() ? default_disc_name(m_source_path, m_primary_volume.volume_identifier) : m_disc_name,
         .recording_date = m_recording_date_text,
         .media = m_media.empty() ? "DVD" : m_media,
         .system_identifier = m_primary_volume.system_identifier.empty() ? "CRI ROFS" : m_primary_volume.system_identifier,

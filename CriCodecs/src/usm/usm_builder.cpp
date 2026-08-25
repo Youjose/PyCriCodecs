@@ -357,14 +357,6 @@ UsmSubtitleFormat resolve_subtitle_format(const std::filesystem::path& path, Usm
     return UsmSubtitleFormat::SourceText;
 }
 
-std::expected<std::string, std::string> read_text_file(const std::filesystem::path& path) {
-    auto bytes = io::read_file_bytes(path, "USM build subtitle input read failed");
-    if (!bytes) {
-        return std::unexpected(bytes.error());
-    }
-    return std::string(bytes->begin(), bytes->end());
-}
-
 std::expected<std::vector<uint8_t>, std::string> build_subtitle_payload(
     const UsmBuildInput::SubtitleTrack& track
 ) {
@@ -381,17 +373,18 @@ std::expected<std::vector<uint8_t>, std::string> build_subtitle_payload(
         return bytes;
     }
 
-    auto text = read_text_file(track.path);
-    if (!text) {
-        return std::unexpected(text.error());
+    auto bytes = io::read_file_bytes(track.path, "USM build subtitle input read failed");
+    if (!bytes) {
+        return std::unexpected(bytes.error());
     }
+    const std::string text(bytes->begin(), bytes->end());
     switch (format) {
     case UsmSubtitleFormat::SourceText:
-        return subtitle_source_text_to_sbt(*text, track.language_id);
+        return subtitle_source_text_to_sbt(text, track.language_id);
     case UsmSubtitleFormat::Srt:
-        return srt_to_sbt(*text, track.language_id);
+        return srt_to_sbt(text, track.language_id);
     case UsmSubtitleFormat::Ass:
-        return ass_to_sbt(*text, track.language_id);
+        return ass_to_sbt(text, track.language_id);
     case UsmSubtitleFormat::Auto:
     case UsmSubtitleFormat::Sbt:
         break;
@@ -601,21 +594,21 @@ std::expected<VideoBuildInfo, std::string> build_ivf_video_chunks(
     return info;
 }
 
-std::expected<VideoBuildInfo, std::string> build_mpeg_video_chunks(
+template <class Reader, class Configure>
+std::expected<VideoBuildInfo, std::string> build_elementary_video_chunks(
     const std::filesystem::path& path,
     const UsmCrypto* crypto,
     const text::EncodingOptions& encoding,
     UsmChunkType stream_type,
-    std::string_view logical_filename
+    std::string_view logical_filename,
+    Configure configure
 ) {
-    video::MpegVideoReader reader;
+    Reader reader;
     if (auto result = reader.open(path); !result) {
         return std::unexpected(result.error());
     }
 
-    const auto& header = reader.sequence_header();
     const auto [fps_n, fps_d] = reader.frame_rate();
-
     VideoBuildInfo info;
     info.stream_type = stream_type;
     auto filename = encode_path_filename(path, encoding, logical_filename);
@@ -624,14 +617,8 @@ std::expected<VideoBuildInfo, std::string> build_mpeg_video_chunks(
     }
     info.filename = *filename;
     info.filesize = static_cast<uint32_t>(std::filesystem::file_size(path));
-    info.width = header.width;
-    info.height = header.height;
     info.frame_count = reader.frame_count();
-    info.framerate_n = fps_n;
-    info.framerate_d = fps_d;
-    info.fmtver = mpeg_fmtver;
-    info.codec_id = mpeg1_codec_id;
-    info.dcprec = mpeg_dcprec;
+    configure(info, reader, fps_n, fps_d);
 
     const double frame_interval = fps_n != 0
         ? (static_cast<double>(base_frame_rate) * static_cast<double>(fps_d) / static_cast<double>(fps_n))
@@ -650,7 +637,6 @@ std::expected<VideoBuildInfo, std::string> build_mpeg_video_chunks(
             return std::unexpected(frame.error());
         }
 
-        std::vector<uint8_t> payload(frame->record_bytes.begin(), frame->record_bytes.end());
         BuiltChunk chunk;
         chunk.scheduler_time = static_cast<uint32_t>(std::llround(current_interval));
         chunk.priority = stream_type == UsmChunkType::SFV ? 0u : 1u;
@@ -662,7 +648,7 @@ std::expected<VideoBuildInfo, std::string> build_mpeg_video_chunks(
             0,
             static_cast<uint32_t>(std::llround(current_interval)),
             base_frame_rate,
-            payload);
+            frame->record_bytes);
         transform_stream_chunk_payload_with_padding(chunk.chunk, crypto, false);
         max_chunk_size = std::max(max_chunk_size, static_cast<uint32_t>(chunk.chunk.packed_size()));
         info.chunks.push_back(std::move(chunk));
@@ -690,6 +676,32 @@ std::expected<VideoBuildInfo, std::string> build_mpeg_video_chunks(
     return info;
 }
 
+std::expected<VideoBuildInfo, std::string> build_mpeg_video_chunks(
+    const std::filesystem::path& path,
+    const UsmCrypto* crypto,
+    const text::EncodingOptions& encoding,
+    UsmChunkType stream_type,
+    std::string_view logical_filename
+) {
+    return build_elementary_video_chunks<video::MpegVideoReader>(
+        path,
+        crypto,
+        encoding,
+        stream_type,
+        logical_filename,
+        [](VideoBuildInfo& info, const video::MpegVideoReader& reader, uint32_t fps_n, uint32_t fps_d) {
+            const auto& header = reader.sequence_header();
+            info.width = header.width;
+            info.height = header.height;
+            info.framerate_n = fps_n;
+            info.framerate_d = fps_d;
+            info.fmtver = mpeg_fmtver;
+            info.codec_id = mpeg1_codec_id;
+            info.dcprec = mpeg_dcprec;
+        }
+    );
+}
+
 std::expected<VideoBuildInfo, std::string> build_h264_video_chunks(
     const std::filesystem::path& path,
     const UsmCrypto* crypto,
@@ -697,89 +709,26 @@ std::expected<VideoBuildInfo, std::string> build_h264_video_chunks(
     UsmChunkType stream_type,
     std::string_view logical_filename
 ) {
-    video::H264VideoReader reader;
-    if (auto result = reader.open(path); !result) {
-        return std::unexpected(result.error());
-    }
-
-    const auto& sps = reader.sequence_parameter_set();
-    const auto [fps_n, fps_d] = reader.frame_rate();
-
-    VideoBuildInfo info;
-    info.stream_type = stream_type;
-    auto filename = encode_path_filename(path, encoding, logical_filename);
-    if (!filename) {
-        return std::unexpected(filename.error());
-    }
-    info.filename = *filename;
-    info.filesize = static_cast<uint32_t>(std::filesystem::file_size(path));
-    info.width = sps.width;
-    info.height = sps.height;
-    info.frame_count = reader.frame_count();
-    info.fmtver = mpeg_fmtver;
-    info.codec_id = h264_codec_id;
-    info.dcprec = mpeg_dcprec;
-    if (fps_n != 0 && fps_d != 0) {
-        info.framerate_n = static_cast<uint32_t>(std::llround(
-            (static_cast<long double>(fps_n) * 1000.0L) / static_cast<long double>(fps_d)));
-        info.framerate_d = 1000;
-    }
-
-    const double frame_interval = fps_n != 0
-        ? (static_cast<double>(base_frame_rate) * static_cast<double>(fps_d) / static_cast<double>(fps_n))
-        : 99.9;
-    double current_interval = 0.0;
-
-    info.chunks.reserve(static_cast<size_t>(info.frame_count) + 1u);
-    uint32_t max_chunk_size = 0;
-    uint32_t actual_frame_count = 0;
-    while (reader.has_frames()) {
-        auto frame = reader.read_next_frame();
-        if (!frame) {
-            if (frame.error() == "EOF") {
-                break;
+    return build_elementary_video_chunks<video::H264VideoReader>(
+        path,
+        crypto,
+        encoding,
+        stream_type,
+        logical_filename,
+        [](VideoBuildInfo& info, const video::H264VideoReader& reader, uint32_t fps_n, uint32_t fps_d) {
+            const auto& sps = reader.sequence_parameter_set();
+            info.width = sps.width;
+            info.height = sps.height;
+            info.fmtver = mpeg_fmtver;
+            info.codec_id = h264_codec_id;
+            info.dcprec = mpeg_dcprec;
+            if (fps_n != 0 && fps_d != 0) {
+                info.framerate_n = static_cast<uint32_t>(std::llround(
+                    (static_cast<long double>(fps_n) * 1000.0L) / static_cast<long double>(fps_d)));
+                info.framerate_d = 1000;
             }
-            return std::unexpected(frame.error());
         }
-
-        std::vector<uint8_t> payload(frame->record_bytes.begin(), frame->record_bytes.end());
-        BuiltChunk chunk;
-        chunk.scheduler_time = static_cast<uint32_t>(std::llround(current_interval));
-        chunk.priority = stream_type == UsmChunkType::SFV ? 0u : 1u;
-        chunk.is_keyframe = frame->is_keyframe;
-        chunk.frame_index = actual_frame_count;
-        chunk.chunk = make_chunk(
-            stream_type,
-            UsmPayloadType::Stream,
-            0,
-            static_cast<uint32_t>(std::llround(current_interval)),
-            base_frame_rate,
-            payload);
-        transform_stream_chunk_payload_with_padding(chunk.chunk, crypto, false);
-        max_chunk_size = std::max(max_chunk_size, static_cast<uint32_t>(chunk.chunk.packed_size()));
-        info.chunks.push_back(std::move(chunk));
-
-        current_interval += frame_interval;
-        ++actual_frame_count;
-    }
-
-    info.frame_count = actual_frame_count;
-    if (fps_n != 0 && fps_d != 0 && info.frame_count != 0) {
-        const double duration_seconds =
-            (static_cast<double>(fps_d) * static_cast<double>(info.frame_count)) /
-            static_cast<double>(fps_n);
-        if (duration_seconds > 0.0) {
-            info.avbps = static_cast<uint32_t>(std::llround(
-                (static_cast<long double>(info.filesize) * 8.0L) / duration_seconds));
-        }
-    }
-    info.minbuf = max_chunk_size;
-    info.chunks.push_back(BuiltChunk{
-        .chunk = make_end_chunk(stream_type, 0, contents_end_marker),
-        .priority = stream_type == UsmChunkType::SFV ? 0u : 1u,
-    });
-
-    return info;
+    );
 }
 
 std::expected<VideoBuildInfo, std::string> build_video_chunks(

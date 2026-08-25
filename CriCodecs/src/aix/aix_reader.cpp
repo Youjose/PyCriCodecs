@@ -324,11 +324,9 @@ std::expected<void, AixError> Aix::parse() {
                 packet.file_offset = static_cast<uint32_t>(block_offset);
                 packet.total_size = static_cast<uint32_t>(block_size);
                 packet.layer_index = static_cast<int8_t>(view[block_offset + 0x08]);
-                packet.layer_count = view[block_offset + 0x09];
                 packet.payload_size = read_be<uint16_t>(view.data() + block_offset + 0x0A);
-                packet.sequence = read_be<uint32_t>(view.data() + block_offset + 0x0C);
 
-                if (packet.layer_count != parsed_layers.size()) {
+                if (view[block_offset + 0x09] != parsed_layers.size()) {
                     return std::unexpected("AIXP block layer count did not match the AIX header");
                 }
                 if (packet.layer_index < 0 || static_cast<size_t>(packet.layer_index) >= parsed_layers.size()) {

@@ -237,12 +237,9 @@ private:
     };
 
     struct PreparedEntry {
-        size_t index = 0;
         uint32_t effective_id = 0;
         uint64_t unpacked_size = 0;
-        uint64_t packed_size = 0;
         uint32_t crc32 = 0;
-        bool compressed = false;
         std::vector<uint8_t> owned_payload;
         std::span<const uint8_t> payload;
     };
@@ -280,13 +277,13 @@ private:
         std::vector<uint8_t> owned_payload;
     };
 
+    std::expected<void, std::string> load_owned_bytes(std::vector<uint8_t>&& data);
     std::expected<void, std::string> parse();
     std::expected<LoadedUtfChunk, std::string> load_chunk_utf(
         uint64_t offset,
         uint64_t chunk_size,
         std::string_view expected_magic
     ) const;
-    std::expected<uint64_t, std::string> resolve_entry_offset(const CpkEntry& entry) const;
     std::expected<void, std::string> populate_file_entries();
     void normalize_entry_path(CpkEntry& entry, const std::string& cpk_path) const;
     std::expected<std::span<const uint8_t>, std::string> packed_entry_span(const CpkEntry& entry) const;
@@ -294,7 +291,6 @@ private:
         const CpkEntry& entry,
         const std::filesystem::path& output_path
     ) const;
-    std::expected<std::vector<uint8_t>, std::string> raw_entry_bytes(size_t index) const;
     std::expected<void, std::string> rebuild_state(bool encrypt_utf_chunks);
     std::expected<std::vector<uint8_t>, std::string> save_impl(bool encrypt_utf_chunks);
     std::expected<std::vector<PreparedEntry>, std::string> prepare_entries_for_save();

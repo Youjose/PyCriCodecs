@@ -240,9 +240,6 @@ using cricodecs::util::divide_round_up;
 
     std::expected<void, AdxError> AdxDecoder::parse_header() {
         m_loaded = false;
-        m_is_ahx = false;
-        m_has_loops = false;
-        m_alignment_samples = 0;
         m_data_block_size = 0;
         m_samples_per_block = 0;
         m_coefficients[0] = 0;
@@ -276,8 +273,7 @@ using cricodecs::util::divide_round_up;
         }
         const size_t cri_offset = static_cast<size_t>(m_header.data_offset) - 2;
 
-        m_is_ahx = (m_header.encoding_mode == 0x10 || m_header.encoding_mode == 0x11);
-        if (m_is_ahx) {
+        if (is_ahx()) {
             if (m_header.block_size != 0 || m_header.bit_depth != 0 || m_header.version != 0x06) {
                 return std::unexpected(AdxError("Invalid AHX header layout"));
             }
@@ -321,9 +317,7 @@ using cricodecs::util::divide_round_up;
         
         size_t base_offset = 20;
         
-        if (m_header.version == 5) {
-            m_has_loops = false;
-        } else if (m_header.version == 4) {
+        if (m_header.version == 4) {
             base_offset += 4;
             
             size_t history_count = m_header.channels > 1 ? m_header.channels : 2;
@@ -342,23 +336,14 @@ using cricodecs::util::divide_round_up;
             }
             base_offset += history_count * 4;
             
-            if (base_offset + 24 <= m_header.data_offset - 2u) {
-                m_has_loops = true;
-            }
-        } else {
-            if (base_offset + 24 <= m_header.data_offset - 2u) {
-                m_has_loops = true;
-            }
         }
         
-        if (m_has_loops) {
+        if (m_header.version != 5 && base_offset + 24 <= m_header.data_offset - 2u) {
             m_reader.seek(base_offset);
-            m_alignment_samples = m_reader.read_be<uint16_t>();
-            uint16_t loop_count = m_reader.read_be<uint16_t>();
+            m_reader.skip(2);
+            const uint16_t loop_count = m_reader.read_be<uint16_t>();
             
-            if (loop_count == 0) {
-                m_has_loops = false;
-            } else {
+            if (loop_count != 0) {
                 if (base_offset + 4 + loop_count * 20 > m_header.data_offset - 2u) {
                     return std::unexpected(AdxError("Invalid ADX loop metadata"));
                 }
@@ -548,7 +533,7 @@ using cricodecs::util::divide_round_up;
             return std::unexpected(AdxError("ADX data has not been loaded"));
         }
 
-        if (m_is_ahx) {
+        if (is_ahx()) {
             return std::unexpected(AdxError("AHX decode into caller-owned PCM is not implemented"));
         }
 
@@ -655,7 +640,7 @@ using cricodecs::util::divide_round_up;
             return std::unexpected(AdxError("ADX data has not been loaded"));
         }
 
-        if (m_is_ahx) {
+        if (is_ahx()) {
             if (is_encrypted() && !m_ahx_key_set) {
                 return std::unexpected(AdxError("AHX decryption key required"));
             }
@@ -695,7 +680,7 @@ using cricodecs::util::divide_round_up;
         result.sample_rate = m_header.sample_rate;
         result.channels = m_header.channels;
         result.sample_count = m_header.sample_count;
-        result.has_loops = m_has_loops;
+        result.has_loops = has_loops();
         result.loops = m_loops;
         
         if (result.has_loops && !result.loops.empty()) {

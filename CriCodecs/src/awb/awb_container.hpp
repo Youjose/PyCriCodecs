@@ -52,19 +52,12 @@ public:
     AwbContainer() = default;
 
     [[nodiscard]] static std::expected<AwbContainer, std::string> load(std::span<const uint8_t> data) {
-        AwbContainer awb;
-        awb.m_owned_source.assign(data.begin(), data.end());
-        awb.m_source_path.clear();
-        awb.m_source = awb.m_owned_source;
-        auto err = awb.parse_header();
-        if (err != std::nullopt) return std::unexpected(*err);
-        return awb;
+        return load(std::vector<uint8_t>(data.begin(), data.end()));
     }
 
     [[nodiscard]] static std::expected<AwbContainer, std::string> load(std::vector<uint8_t>&& data) {
         AwbContainer awb;
         awb.m_owned_source = std::move(data);
-        awb.m_source_path.clear();
         awb.m_source = awb.m_owned_source;
         auto err = awb.parse_header();
         if (err != std::nullopt) return std::unexpected(*err);
@@ -77,7 +70,6 @@ public:
             return std::unexpected("AWB load failed: failed to open " + path.string() + " (" + result.error() + ")");
         }
         awb.m_source_path = path;
-        awb.m_owned_source.clear();
         awb.m_source = awb.m_reader.data();
         auto err = awb.parse_header();
         if (err != std::nullopt) return std::unexpected(*err);
@@ -335,9 +327,8 @@ public:
     [[nodiscard]] bool is_materialized() const noexcept {
         return !m_entries.empty() &&
                m_file_data.size() == m_entries.size() &&
-               m_file_data_overrides.size() == m_entries.size() &&
-               std::all_of(m_file_data_overrides.begin(), m_file_data_overrides.end(), [](uint8_t owned) {
-                   return owned != 0;
+               std::all_of(m_file_data.begin(), m_file_data.end(), [](const auto& data) {
+                   return data.has_value();
                });
     }
 
@@ -363,8 +354,7 @@ public:
 
     void add_file(std::span<const uint8_t> data, uint64_t wave_id) {
         ensure_payload_slots();
-        m_file_data.emplace_back(data.begin(), data.end());
-        m_file_data_overrides.push_back(1);
+        m_file_data.emplace_back(std::in_place, data.begin(), data.end());
         m_entries.push_back(AwbEntry{wave_id, 0, static_cast<uint64_t>(data.size())});
     }
 
@@ -373,8 +363,7 @@ public:
             return std::unexpected("AWB replace_file failed: file index out of range");
         }
         ensure_payload_slots();
-        m_file_data[index].assign(data.begin(), data.end());
-        m_file_data_overrides[index] = 1;
+        m_file_data[index].emplace(data.begin(), data.end());
         m_entries[index].size = static_cast<uint64_t>(data.size());
         return {};
     }
@@ -385,7 +374,6 @@ public:
         }
         ensure_payload_slots();
         m_file_data.erase(m_file_data.begin() + static_cast<std::ptrdiff_t>(index));
-        m_file_data_overrides.erase(m_file_data_overrides.begin() + static_cast<std::ptrdiff_t>(index));
         m_entries.erase(m_entries.begin() + static_cast<std::ptrdiff_t>(index));
         return {};
     }
@@ -401,15 +389,12 @@ public:
         ensure_payload_slots();
         auto entry = m_entries[from_index];
         auto payload = std::move(m_file_data[from_index]);
-        const auto override_flag = m_file_data_overrides[from_index];
         const auto from = static_cast<std::ptrdiff_t>(from_index);
         const auto to = static_cast<std::ptrdiff_t>(to_index);
         m_entries.erase(m_entries.begin() + from);
         m_file_data.erase(m_file_data.begin() + from);
-        m_file_data_overrides.erase(m_file_data_overrides.begin() + from);
         m_entries.insert(m_entries.begin() + to, std::move(entry));
         m_file_data.insert(m_file_data.begin() + to, std::move(payload));
-        m_file_data_overrides.insert(m_file_data_overrides.begin() + to, override_flag);
         return {};
     }
 
@@ -566,24 +551,17 @@ public:
         if (is_materialized()) {
             return {};
         }
-        if (m_source.empty() && !m_entries.empty()) {
-            return std::unexpected("AWB materialize failed: source data is empty");
-        }
         ensure_payload_slots();
 
         for (uint32_t i = 0; i < m_entries.size(); ++i) {
-            if (m_file_data_overrides[i] != 0) {
+            if (m_file_data[i]) {
                 continue;
             }
-            const auto& e = m_entries[i];
-            if (e.offset > m_source.size() || e.size > m_source.size() - e.offset) {
-                return std::unexpected("AWB materialize failed: entry offset/size is out of range");
+            auto payload = file_payload(i, "materialize");
+            if (!payload) {
+                return std::unexpected(payload.error());
             }
-            m_file_data[i].assign(
-                m_source.begin() + static_cast<std::ptrdiff_t>(e.offset),
-                m_source.begin() + static_cast<std::ptrdiff_t>(e.offset + e.size)
-            );
-            m_file_data_overrides[i] = 1;
+            m_file_data[i].emplace(payload->begin(), payload->end());
         }
         return {};
     }
@@ -624,8 +602,7 @@ private:
     uint16_t m_subkey = 0;
 
     std::vector<AwbEntry> m_entries;
-    std::vector<std::vector<uint8_t>> m_file_data;
-    std::vector<uint8_t> m_file_data_overrides;
+    std::vector<std::optional<std::vector<uint8_t>>> m_file_data;
 
     [[nodiscard]] std::optional<std::string> parse_header() {
         if (m_source.size() < 16) {
@@ -659,32 +636,30 @@ private:
             return "AWB parse failed: header tables exceed source size";
         }
 
-        std::vector<uint64_t> ids(count);
+        m_entries.clear();
+        m_file_data.clear();
+        m_entries.resize(count);
         for (uint32_t i = 0; i < count; ++i) {
-            ids[i] = read_le_n<uint64_t>(m_source.data() + pos, m_id_size);
+            m_entries[i].wave_id = read_le_n<uint64_t>(m_source.data() + pos, m_id_size);
             pos += m_id_size;
         }
 
-        std::vector<uint64_t> raw_offsets(count + 1ull);
-        for (uint32_t i = 0; i <= count; ++i) {
-            raw_offsets[i] = read_le_n<uint64_t>(m_source.data() + pos, m_offset_size);
-            pos += m_offset_size;
-        }
-
-        m_entries.clear();
-        m_file_data.clear();
-        m_file_data_overrides.clear();
-        m_entries.resize(count);
+        const auto* offsets = m_source.data() + pos;
         for (uint32_t i = 0; i < count; ++i) {
             // Parse side follows the same AFS2 rule: align table offsets to the
             // stored m_alignment value before payload access.
-            const uint64_t actual_offset = align_up(raw_offsets[i], m_alignment);
-            const uint64_t raw_end = raw_offsets[i + 1];
+            const uint64_t actual_offset = align_up(
+                read_le_n<uint64_t>(offsets + static_cast<size_t>(i) * m_offset_size, m_offset_size),
+                m_alignment
+            );
+            const uint64_t raw_end = read_le_n<uint64_t>(
+                offsets + static_cast<size_t>(i + 1) * m_offset_size,
+                m_offset_size
+            );
             if (raw_end < actual_offset || raw_end > m_source.size()) {
                 return "AWB parse failed: file entry offset/size is out of range";
             }
 
-            m_entries[i].wave_id = ids[i];
             m_entries[i].offset = actual_offset;
             m_entries[i].size = raw_end - actual_offset;
         }
@@ -706,18 +681,12 @@ private:
         if (m_file_data.size() < m_entries.size()) {
             m_file_data.resize(m_entries.size());
         }
-        if (m_file_data_overrides.size() < m_entries.size()) {
-            m_file_data_overrides.resize(m_entries.size(), 0);
-        }
     }
 
     [[nodiscard]] std::expected<std::span<const uint8_t>, std::string> file_payload(uint32_t index,
                                                                                     std::string_view operation) const {
-        if (index < m_file_data_overrides.size() && m_file_data_overrides[index] != 0) {
-            if (index >= m_file_data.size()) {
-                return std::unexpected("AWB " + std::string(operation) + " failed: owned file data is missing");
-            }
-            return std::span<const uint8_t>(m_file_data[index].data(), m_file_data[index].size());
+        if (index < m_file_data.size() && m_file_data[index]) {
+            return std::span<const uint8_t>(*m_file_data[index]);
         }
 
         if (m_source.empty()) {

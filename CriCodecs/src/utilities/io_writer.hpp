@@ -85,6 +85,9 @@ private:
     bool m_buffer_zeroed = false;
     bool m_write_failed = false;
 
+    std::expected<void, const char*> open_file(const std::filesystem::path& path);
+    std::expected<void, const char*> close_file() noexcept;
+    bool write_direct(const uint8_t* data, size_t size) noexcept;
     void write_to_buffer(const uint8_t* data, size_t size) noexcept;
     std::expected<void, const char*> flush_buffer();
 };

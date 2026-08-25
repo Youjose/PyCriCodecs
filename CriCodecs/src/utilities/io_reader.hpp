@@ -292,7 +292,6 @@ private:
     size_t m_data_size = 0;
     size_t m_cursor = 0;
     access_pattern m_pattern = access_pattern::normal;
-    bool m_owns_mapping = false;  // true if we mmap'd/allocated, false if external memory
     bool m_has_external_source = false;  // true when bound to caller-owned memory, including empty spans
 };
 

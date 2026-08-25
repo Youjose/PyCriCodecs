@@ -39,6 +39,10 @@ constexpr size_t zone_offset = 0x0800;
 constexpr uint32_t pvd_sector = 16;
 constexpr size_t pvd_root_record_offset = 156;
 
+[[nodiscard]] std::optional<CvmKey> key_from_string(std::string_view key) {
+    return key.empty() ? std::nullopt : std::optional<CvmKey>{crypto::calc_key_from_string(key)};
+}
+
 struct IsoDirectoryRecord {
     uint8_t record_length = 0;
     uint8_t ext_attr_length = 0;
@@ -220,19 +224,6 @@ template <typename T>
     return formatted;
 }
 
-[[nodiscard]] std::string default_disc_name(
-    const std::filesystem::path& source_path,
-    const CvmPrimaryVolume& primary_volume
-) {
-    if (!source_path.empty() && source_path.has_filename()) {
-        return source_path.filename().generic_string();
-    }
-    if (!primary_volume.volume_identifier.empty()) {
-        return primary_volume.volume_identifier + ".cvm";
-    }
-    return "image.cvm";
-}
-
 [[nodiscard]] std::expected<void, std::string> validate_primary_volume_descriptor(std::span<const uint8_t> source, size_t iso_offset) {
     const size_t pvd_offset = iso_offset + static_cast<size_t>(pvd_sector) * sector_size;
     if (pvd_offset + sector_size > source.size()) {
@@ -363,85 +354,54 @@ template <typename T>
 
 } // namespace
 
-std::expected<CvmContainer, std::string> CvmContainer::load(std::span<const uint8_t> data, std::string_view key) {
+std::expected<CvmContainer, std::string> CvmContainer::load_owned(
+    std::vector<uint8_t>&& data,
+    std::filesystem::path source_path,
+    std::optional<CvmKey> key
+) {
     CvmContainer container;
-    container.m_owned_source.assign(data.begin(), data.end());
+    container.m_owned_source = std::move(data);
+    container.m_source_path = std::move(source_path);
     container.m_source = container.m_owned_source;
-    const auto effective_key = key.empty()
-        ? std::optional<CvmKey>{}
-        : std::optional<CvmKey>{crypto::calc_key_from_string(key)};
-    if (auto parsed = container.parse(effective_key); !parsed) {
+    if (auto parsed = container.parse(key); !parsed) {
         return std::unexpected(parsed.error());
     }
     return container;
+}
+
+std::expected<CvmContainer, std::string> CvmContainer::load_path(
+    const std::filesystem::path& path,
+    std::optional<CvmKey> key
+) {
+    auto bytes = io::read_file_bytes(path, "CVM load failed");
+    if (!bytes) {
+        return std::unexpected(bytes.error());
+    }
+    return load_owned(std::move(*bytes), path, key);
+}
+
+std::expected<CvmContainer, std::string> CvmContainer::load(std::span<const uint8_t> data, std::string_view key) {
+    return load_owned(std::vector<uint8_t>(data.begin(), data.end()), {}, key_from_string(key));
 }
 
 std::expected<CvmContainer, std::string> CvmContainer::load(std::vector<uint8_t>&& data, std::string_view key) {
-    CvmContainer container;
-    container.m_owned_source = std::move(data);
-    container.m_source = container.m_owned_source;
-    const auto effective_key = key.empty()
-        ? std::optional<CvmKey>{}
-        : std::optional<CvmKey>{crypto::calc_key_from_string(key)};
-    if (auto parsed = container.parse(effective_key); !parsed) {
-        return std::unexpected(parsed.error());
-    }
-    return container;
+    return load_owned(std::move(data), {}, key_from_string(key));
 }
 
 std::expected<CvmContainer, std::string> CvmContainer::load(const std::filesystem::path& path, std::string_view key) {
-    auto bytes = io::read_file_bytes(path, "CVM load failed");
-    if (!bytes) {
-        return std::unexpected(bytes.error());
-    }
-
-    CvmContainer container;
-    container.m_owned_source = std::move(*bytes);
-    container.m_source_path = path;
-    container.m_source = container.m_owned_source;
-    const auto effective_key = key.empty()
-        ? std::optional<CvmKey>{}
-        : std::optional<CvmKey>{crypto::calc_key_from_string(key)};
-    if (auto parsed = container.parse(effective_key); !parsed) {
-        return std::unexpected(parsed.error());
-    }
-    return container;
+    return load_path(path, key_from_string(key));
 }
 
 std::expected<CvmContainer, std::string> CvmContainer::load(std::span<const uint8_t> data, const CvmKey& key) {
-    CvmContainer container;
-    container.m_owned_source.assign(data.begin(), data.end());
-    container.m_source = container.m_owned_source;
-    if (auto parsed = container.parse(key); !parsed) {
-        return std::unexpected(parsed.error());
-    }
-    return container;
+    return load_owned(std::vector<uint8_t>(data.begin(), data.end()), {}, key);
 }
 
 std::expected<CvmContainer, std::string> CvmContainer::load(std::vector<uint8_t>&& data, const CvmKey& key) {
-    CvmContainer container;
-    container.m_owned_source = std::move(data);
-    container.m_source = container.m_owned_source;
-    if (auto parsed = container.parse(key); !parsed) {
-        return std::unexpected(parsed.error());
-    }
-    return container;
+    return load_owned(std::move(data), {}, key);
 }
 
 std::expected<CvmContainer, std::string> CvmContainer::load(const std::filesystem::path& path, const CvmKey& key) {
-    auto bytes = io::read_file_bytes(path, "CVM load failed");
-    if (!bytes) {
-        return std::unexpected(bytes.error());
-    }
-
-    CvmContainer container;
-    container.m_owned_source = std::move(*bytes);
-    container.m_source_path = path;
-    container.m_source = container.m_owned_source;
-    if (auto parsed = container.parse(key); !parsed) {
-        return std::unexpected(parsed.error());
-    }
-    return container;
+    return load_path(path, key);
 }
 
 std::expected<void, std::string> CvmContainer::parse(std::optional<CvmKey> key) {
@@ -520,7 +480,7 @@ std::expected<void, std::string> CvmContainer::parse(std::optional<CvmKey> key) 
             if (!recovered_key) {
                 m_contents_accessible = false;
                 m_recording_date_text = format_recording_date(m_header.recording_date);
-                m_disc_name = default_disc_name(m_source_path, m_primary_volume);
+                m_disc_name = default_disc_name(m_source_path, m_primary_volume.volume_identifier);
                 return {};
             }
             key = *recovered_key;
@@ -612,7 +572,7 @@ std::expected<void, std::string> CvmContainer::parse(std::optional<CvmKey> key) 
     }
 
     m_recording_date_text = format_recording_date(m_header.recording_date);
-    m_disc_name = default_disc_name(m_source_path, m_primary_volume);
+    m_disc_name = default_disc_name(m_source_path, m_primary_volume.volume_identifier);
     return {};
 }
 

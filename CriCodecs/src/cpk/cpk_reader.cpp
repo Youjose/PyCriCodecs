@@ -109,34 +109,6 @@ std::optional<T> value_to_unsigned(const utf::Value& value) {
 }
 
 template<typename T>
-std::expected<std::optional<T>, std::string> get_optional_unsigned(
-    const utf::UtfTable& table,
-    uint32_t row,
-    std::string_view column_name
-) {
-    const int column_index = table.find_column(column_name);
-    if (column_index < 0) {
-        return std::optional<T>{};
-    }
-
-    auto value = table.get_value(row, static_cast<uint32_t>(column_index));
-    if (!value) {
-        return std::unexpected(value.error());
-    }
-
-    if (std::holds_alternative<std::monostate>(*value)) {
-        return std::optional<T>{};
-    }
-
-    auto converted = value_to_unsigned<T>(*value);
-    if (!converted.has_value()) {
-        return std::unexpected("CPK UTF column has an unexpected numeric type: " + std::string(column_name));
-    }
-
-    return converted;
-}
-
-template<typename T>
 std::expected<std::optional<T>, std::string> get_optional_unsigned_at(
     const utf::UtfTable& table,
     uint32_t row,
@@ -165,19 +137,12 @@ std::expected<std::optional<T>, std::string> get_optional_unsigned_at(
 }
 
 template<typename T>
-std::expected<T, std::string> get_required_unsigned(
+std::expected<std::optional<T>, std::string> get_optional_unsigned(
     const utf::UtfTable& table,
     uint32_t row,
     std::string_view column_name
 ) {
-    auto value = get_optional_unsigned<T>(table, row, column_name);
-    if (!value) {
-        return std::unexpected(value.error());
-    }
-    if (!value->has_value()) {
-        return std::unexpected("CPK UTF column is missing: " + std::string(column_name));
-    }
-    return **value;
+    return get_optional_unsigned_at<T>(table, row, table.find_column(column_name), column_name);
 }
 
 template<typename T>
@@ -197,30 +162,13 @@ std::expected<T, std::string> get_required_unsigned_at(
     return **value;
 }
 
-std::expected<std::string, std::string> get_optional_string(
+template<typename T>
+std::expected<T, std::string> get_required_unsigned(
     const utf::UtfTable& table,
     uint32_t row,
     std::string_view column_name
 ) {
-    const int column_index = table.find_column(column_name);
-    if (column_index < 0) {
-        return std::string{};
-    }
-
-    auto value = table.get_value(row, static_cast<uint32_t>(column_index));
-    if (!value) {
-        return std::unexpected(value.error());
-    }
-
-    if (std::holds_alternative<std::monostate>(*value)) {
-        return std::string{};
-    }
-
-    if (const auto* text = std::get_if<std::string>(&*value)) {
-        return *text;
-    }
-
-    return std::unexpected("CPK UTF column has an unexpected string type: " + std::string(column_name));
+    return get_required_unsigned_at<T>(table, row, table.find_column(column_name), column_name);
 }
 
 std::expected<std::string, std::string> get_optional_string_at(
@@ -247,6 +195,14 @@ std::expected<std::string, std::string> get_optional_string_at(
     }
 
     return std::unexpected("CPK UTF column has an unexpected string type: " + std::string(column_name));
+}
+
+std::expected<std::string, std::string> get_optional_string(
+    const utf::UtfTable& table,
+    uint32_t row,
+    std::string_view column_name
+) {
+    return get_optional_string_at(table, row, table.find_column(column_name), column_name);
 }
 
 std::expected<std::string, std::string> decode_cri_string(
@@ -410,16 +366,14 @@ std::expected<void, std::string> Cpk::load_from_path(const std::filesystem::path
 }
 
 std::expected<void, std::string> Cpk::load_from_bytes(std::span<const uint8_t> data) {
-    m_source_path.clear();
-    m_reader = io::reader{};
-    m_owned_archive_bytes.assign(data.begin(), data.end());
-    if (auto result = m_reader.open(std::span<const uint8_t>(m_owned_archive_bytes)); !result) {
-        return std::unexpected(std::string(result.error()));
-    }
-    return parse();
+    return load_owned_bytes(std::vector<uint8_t>(data.begin(), data.end()));
 }
 
 std::expected<void, std::string> Cpk::load_from_bytes(std::vector<uint8_t>&& data) {
+    return load_owned_bytes(std::move(data));
+}
+
+std::expected<void, std::string> Cpk::load_owned_bytes(std::vector<uint8_t>&& data) {
     m_source_path.clear();
     m_reader = io::reader{};
     m_owned_archive_bytes = std::move(data);
@@ -596,20 +550,15 @@ std::expected<void, std::string> Cpk::replace_bytes(
 }
 
 std::expected<std::span<const uint8_t>, std::string> Cpk::packed_entry_span(const CpkEntry& entry) const {
-    auto resolved_offset = resolve_entry_offset(entry);
-    if (!resolved_offset) {
-        return std::unexpected(resolved_offset.error());
-    }
-
-    if (*resolved_offset > m_reader.size()) {
+    if (entry.file_offset > m_reader.size()) {
         return std::unexpected("CPK entry offset is out of range");
     }
-    if (entry.file_size > static_cast<uint64_t>(m_reader.size() - *resolved_offset)) {
+    if (entry.file_size > static_cast<uint64_t>(m_reader.size() - entry.file_offset)) {
         return std::unexpected("CPK entry data exceeds the archive size");
     }
 
     return m_reader.subspan(
-        static_cast<size_t>(*resolved_offset),
+        static_cast<size_t>(entry.file_offset),
         static_cast<size_t>(entry.file_size)
     );
 }
@@ -972,13 +921,6 @@ std::expected<Cpk::LoadedUtfChunk, std::string> Cpk::load_chunk_utf(
     return chunk;
 }
 
-std::expected<uint64_t, std::string> Cpk::resolve_entry_offset(const CpkEntry& entry) const {
-    if (entry.file_offset > m_reader.size()) {
-        return std::unexpected("CPK entry offset is out of range");
-    }
-    return entry.file_offset;
-}
-
 std::expected<void, std::string> Cpk::populate_file_entries() {
     m_files.clear();
     m_sources.clear();
@@ -1205,30 +1147,6 @@ void Cpk::normalize_entry_path(CpkEntry& entry, const std::string& cpk_path) con
             entry.dirname = dirname;
         }
     }
-}
-
-std::expected<std::vector<uint8_t>, std::string> Cpk::raw_entry_bytes(size_t index) const {
-    if (index >= m_files.size()) {
-        return std::unexpected("CPK file index out of range");
-    }
-
-    const auto& source = m_sources[index];
-    switch (source.kind) {
-        case EntrySourceKind::Archive:
-            return extract_to_memory(m_files[index]);
-        case EntrySourceKind::FilePath: {
-            io::reader reader;
-            if (auto result = reader.open(source.path); !result) {
-                return std::unexpected("CPK entry load failed: could not open input file: " + source.path.string());
-            }
-            const auto data = reader.data();
-            return std::vector<uint8_t>(data.begin(), data.end());
-        }
-        case EntrySourceKind::OwnedBytes:
-            return source.bytes;
-    }
-
-    return std::unexpected("CPK entry load failed: unsupported entry source");
 }
 
 std::expected<void, std::string> CpkReader::load(const std::filesystem::path& path) {

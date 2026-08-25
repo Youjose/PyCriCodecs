@@ -280,7 +280,6 @@ std::expected<void, std::string> AaxContainer::parse() {
     m_channels = 0;
     m_sample_rate = 0;
     m_sample_count = 0;
-    m_has_loop_segments = false;
 
     if (m_table.row_count() == 0) {
         return std::unexpected("AAX table has no rows");
@@ -328,10 +327,6 @@ std::expected<void, std::string> AaxContainer::parse() {
         info.sample_count = segment_sample_count;
         info.loop_segment = (*loop_flag != 0);
 
-        if (info.loop_segment) {
-            m_has_loop_segments = true;
-        }
-
         m_segments.push_back(std::move(info));
     }
 
@@ -341,6 +336,10 @@ std::expected<void, std::string> AaxContainer::parse() {
 
     m_looped_segment_data.resize(m_segments.size());
     return {};
+}
+
+bool AaxContainer::has_loop_segments() const noexcept {
+    return std::ranges::any_of(m_segments, &AaxSegmentInfo::loop_segment);
 }
 
 std::expected<std::span<const uint8_t>, std::string> AaxContainer::raw_segment_data(uint32_t index) const {
@@ -561,22 +560,11 @@ std::expected<std::vector<uint8_t>, std::string> AaxContainer::adx_data() const 
 }
 
 std::expected<std::vector<uint8_t>, std::string> AaxContainer::save() const {
-    std::vector<AaxBuildEntry> entries;
-    entries.reserve(m_segments.size());
-
-    for (uint32_t index = 0; index < m_segments.size(); ++index) {
-        auto data = raw_segment_data(index);
-        if (!data) {
-            return std::unexpected(data.error());
-        }
-
-        entries.push_back({
-            .adx_data = std::vector<uint8_t>(data->begin(), data->end()),
-            .loop_segment = m_segments[index].loop_segment,
-        });
+    auto entries = build_entries();
+    if (!entries) {
+        return std::unexpected(entries.error());
     }
-
-    return build(entries);
+    return build(*entries);
 }
 
 std::expected<void, std::string> AaxContainer::save_to_file(const std::filesystem::path& output_path) const {

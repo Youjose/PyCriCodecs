@@ -255,6 +255,15 @@ private:
     bool m_contents_accessible = true;
     bool m_layout_is_current = true;
 
+    [[nodiscard]] static std::expected<CvmContainer, std::string> load_owned(
+        std::vector<uint8_t>&& data,
+        std::filesystem::path source_path,
+        std::optional<CvmKey> key
+    );
+    [[nodiscard]] static std::expected<CvmContainer, std::string> load_path(
+        const std::filesystem::path& path,
+        std::optional<CvmKey> key
+    );
     [[nodiscard]] std::expected<void, std::string> parse(std::optional<CvmKey> key);
     [[nodiscard]] std::expected<uint32_t, std::string> index_of(const std::filesystem::path& archive_path) const;
     [[nodiscard]] std::expected<void, std::string> ensure_contents_accessible() const;

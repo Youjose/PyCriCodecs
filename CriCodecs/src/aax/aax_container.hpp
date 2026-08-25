@@ -54,7 +54,7 @@ public:
     [[nodiscard]] uint8_t channels() const noexcept { return m_channels; }
     [[nodiscard]] uint32_t sample_rate() const noexcept { return m_sample_rate; }
     [[nodiscard]] uint32_t sample_count() const noexcept { return m_sample_count; }
-    [[nodiscard]] bool has_loop_segments() const noexcept { return m_has_loop_segments; }
+    [[nodiscard]] bool has_loop_segments() const noexcept;
 
     [[nodiscard]] std::expected<std::span<const uint8_t>, std::string> segment_data(uint32_t index) const;
     [[nodiscard]] std::expected<void, std::string> extract_file(
@@ -94,7 +94,6 @@ private:
     uint8_t m_channels = 0;
     uint32_t m_sample_rate = 0;
     uint32_t m_sample_count = 0;
-    bool m_has_loop_segments = false;
 
     [[nodiscard]] std::expected<void, std::string> parse();
     [[nodiscard]] std::expected<std::span<const uint8_t>, std::string> raw_segment_data(uint32_t index) const;

@@ -93,13 +93,6 @@ bool AcbContainer::prefers_memory_bank(const WaveformInfo& waveform) noexcept {
     return waveform.streaming == 0 || waveform.stream_awb_id == invalid_wave_id;
 }
 
-bool AcbContainer::waveform_matches_bank(const WaveformInfo& waveform, bool is_memory_bank) noexcept {
-    if (is_memory_bank) {
-        return waveform.streaming != 1;
-    }
-    return waveform.streaming != 0;
-}
-
 bool AcbContainer::uses_memory_bank_for_associated_awb(const WaveformInfo& waveform) const {
     if (has_embedded_awb()) {
         return waveform.streaming != 1;

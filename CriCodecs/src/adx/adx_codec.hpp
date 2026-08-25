@@ -87,10 +87,10 @@ namespace cricodecs::adx {
         std::expected<void, AdxError> decode_into(std::span<int16_t> pcm_output);
 
         const AdxHeader& header() const { return m_header; }
-        bool has_loops() const { return m_has_loops; }
+        bool has_loops() const { return !m_loops.empty(); }
         const std::vector<AdxLoop>& loops() const { return m_loops; }
         bool is_encrypted() const { return m_header.flags == 0x08 || m_header.flags == 0x09; }
-        bool is_ahx() const { return m_is_ahx; }
+        bool is_ahx() const { return m_header.encoding_mode == 0x10 || m_header.encoding_mode == 0x11; }
         
         void set_key_type8(std::string_view key);
         void set_key_type9(uint64_t key, uint16_t subkey = 0);
@@ -103,9 +103,6 @@ namespace cricodecs::adx {
         std::vector<AdxLoop> m_loops;
         std::vector<AdpcmHistory> m_history;
         bool m_loaded = false;
-        bool m_has_loops = false;
-        bool m_is_ahx = false;
-        uint16_t m_alignment_samples = 0;
         
         uint32_t m_data_block_size = 0;
         uint32_t m_samples_per_block = 0;

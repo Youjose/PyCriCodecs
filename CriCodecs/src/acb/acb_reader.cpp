@@ -7,11 +7,7 @@
 
 #include "acb_container.hpp"
 
-#include "acb_commands.hpp"
-
-#include <algorithm>
 #include <initializer_list>
-#include <concepts>
 #include "../utilities/io.hpp"
 #include "../utilities/text_encoding.hpp"
 
@@ -20,8 +16,6 @@ namespace cricodecs::acb {
 using utf::UtfTable;
 
 namespace {
-
-constexpr uint16_t INVALID_WAVE_ID = 0xFFFF;
 
 [[nodiscard]] bool has_any_column(const UtfTable& table, std::initializer_list<std::string_view> names) {
     for (const auto name : names) {
@@ -56,15 +50,6 @@ constexpr uint16_t INVALID_WAVE_ID = 0xFFFF;
     const bool has_identity = has_any_column(*waveform_table, {"Id", "MemoryAwbId", "StreamAwbId"});
     const bool has_audio_shape = has_any_column(*waveform_table, {"EncodeType", "Streaming", "LoopFlag"});
     return has_identity && has_audio_shape;
-}
-
-template <std::invocable<uint16_t> Visit>
-bool visit_u16_index_list(std::span<const uint8_t> data, uint16_t count_limit, Visit&& visit) {
-    const uint16_t count = std::min(count_limit, static_cast<uint16_t>(data.size() / 2));
-    for (uint16_t i = 0; i < count; ++i) {
-        visit(io::read_be<uint16_t>(data, i * 2));
-    }
-    return true;
 }
 
 } // namespace
@@ -135,16 +120,7 @@ std::expected<AcbContainer, std::string> AcbContainer::load(
     std::span<const uint8_t> data,
     const text::EncodingOptions& encoding
 ) {
-    AcbContainer acb;
-    acb.m_encoding = encoding;
-    acb.m_owned_source.assign(data.begin(), data.end());
-    acb.m_source_path.clear();
-    acb.m_source = acb.m_owned_source;
-
-    if (auto result = acb.finish_load_from_source(); !result) {
-        return std::unexpected(result.error());
-    }
-    return acb;
+    return load(std::vector<uint8_t>(data.begin(), data.end()), encoding);
 }
 
 std::expected<AcbContainer, std::string> AcbContainer::load(
@@ -154,7 +130,6 @@ std::expected<AcbContainer, std::string> AcbContainer::load(
     AcbContainer acb;
     acb.m_encoding = encoding;
     acb.m_owned_source = std::move(data);
-    acb.m_source_path.clear();
     acb.m_source = acb.m_owned_source;
 
     if (auto result = acb.finish_load_from_source(); !result) {
@@ -172,15 +147,11 @@ std::expected<AcbContainer, std::string> AcbContainer::load(
         return std::unexpected(bytes.error());
     }
 
-    AcbContainer acb;
-    acb.m_encoding = encoding;
-    acb.m_owned_source = std::move(*bytes);
-    acb.m_source_path = path;
-    acb.m_source = acb.m_owned_source;
-
-    if (auto result = acb.finish_load_from_source(); !result) {
-        return std::unexpected(result.error());
+    auto acb = load(std::move(*bytes), encoding);
+    if (!acb) {
+        return std::unexpected(acb.error());
     }
+    acb->m_source_path = path;
     return acb;
 }
 
@@ -198,7 +169,6 @@ std::expected<void, std::string> AcbContainer::finish_load_from_source() {
         return std::unexpected("ACB load failed: UTF table is not an ACB header");
     }
     preload_waveforms();
-    preload_cue_names();
 
     auto graph = AcbCueGraph::load(m_source, m_encoding);
     if (!graph) {
@@ -223,8 +193,6 @@ bool AcbContainer::preload_waveforms() {
     auto& wt = *m_sub.waveform_table;
     const uint32_t rows = wt.row_count();
     m_waveforms.resize(rows);
-    m_waveform_names.assign(rows, {});
-    m_waveform_names_raw.assign(rows, {});
 
     const int c_Id = wt.find_column("Id");
     const int c_MemoryAwbId = wt.find_column("MemoryAwbId");
@@ -298,49 +266,6 @@ bool AcbContainer::preload_waveforms() {
     return true;
 }
 
-bool AcbContainer::preload_cue_names() {
-    return load_subtable("CueNameTable").has_value();
-}
-
-void AcbContainer::resolve_waveform_name(uint32_t waveform_index,
-                                         bool is_memory_target,
-                                         uint16_t wave_id,
-                                         int target_port,
-                                         std::span<const CueNameRow> cue_names) {
-    if (wave_id == INVALID_WAVE_ID || cue_names.empty()) {
-        return;
-    }
-
-    m_resolve_ctx.target_wave_id = wave_id;
-    m_resolve_ctx.target_port = target_port;
-    m_resolve_ctx.is_memory = is_memory_target;
-
-    for (const auto& cue_name : cue_names) {
-        m_resolve_ctx.current_name_raw = cue_name.name_raw;
-        m_resolve_ctx.current_name = cue_name.name;
-        m_resolve_ctx.synth_depth = 0;
-        m_resolve_ctx.sequence_depth = 0;
-        m_resolve_ctx.found = false;
-
-        load_cue(cue_name.cue_index);
-        if (!m_resolve_ctx.found) {
-            continue;
-        }
-
-        auto& resolved = m_waveform_names[waveform_index];
-        auto& resolved_raw = m_waveform_names_raw[waveform_index];
-        if (!resolved.empty() && resolved.find(m_resolve_ctx.current_name) == std::string::npos) {
-            resolved += "; ";
-            resolved += m_resolve_ctx.current_name;
-            resolved_raw += "; ";
-            resolved_raw += m_resolve_ctx.current_name_raw;
-        } else if (resolved.empty()) {
-            resolved = m_resolve_ctx.current_name;
-            resolved_raw = m_resolve_ctx.current_name_raw;
-        }
-    }
-}
-
 void AcbContainer::resolve_all_names() {
     m_wave_names.clear();
     m_name_map.clear();
@@ -348,24 +273,20 @@ void AcbContainer::resolve_all_names() {
         return;
     }
     const auto& cue_names = m_cue_graph.cue_names();
-    const auto collect_names = [&](bool raw) {
-        std::vector<std::string> names(m_waveform_cue_views.size());
-        for (const auto& view : m_waveform_cue_views) {
-            auto& name = names[view.waveform_index];
-            for (const auto name_row : view.preferred_cue_name_rows) {
-                if (name_row >= cue_names.size()) continue;
-                const auto& part = raw
-                    ? cue_names[name_row].name_raw
-                    : cue_names[name_row].name;
-                if (part.empty()) continue;
-                if (!name.empty()) name += "; ";
-                name += part;
-            }
-        }
-        return names;
+    m_waveform_names.assign(m_waveforms.size(), {});
+    m_waveform_names_raw.assign(m_waveforms.size(), {});
+    const auto append_name = [](std::string& name, const std::string& part) {
+        if (part.empty()) return;
+        if (!name.empty()) name += "; ";
+        name += part;
     };
-    m_waveform_names = collect_names(false);
-    m_waveform_names_raw = collect_names(true);
+    for (const auto& view : m_waveform_cue_views) {
+        for (const auto name_row : view.preferred_cue_name_rows) {
+            if (name_row >= cue_names.size()) continue;
+            append_name(m_waveform_names[view.waveform_index], cue_names[name_row].name);
+            append_name(m_waveform_names_raw[view.waveform_index], cue_names[name_row].name_raw);
+        }
+    }
 
     for (uint32_t waveform_index = 0; waveform_index < m_waveforms.size(); ++waveform_index) {
         const auto& waveform = m_waveforms[waveform_index];
@@ -395,323 +316,6 @@ void AcbContainer::resolve_all_names() {
             .encode_type = waveform.encode_type,
         });
     }
-}
-
-bool AcbContainer::load_cue(uint16_t index) {
-    if (!load_subtable("CueTable")) {
-        return false;
-    }
-    auto& cue_table = *m_sub.cue_table;
-    if (index >= cue_table.row_count()) {
-        return false;
-    }
-
-    auto& columns = m_sub.cue_columns;
-    if (columns.reference_type == unresolved_column) {
-        columns.reference_type = cue_table.find_column("ReferenceType");
-        columns.reference_index = cue_table.find_column("ReferenceIndex");
-    }
-    if (columns.reference_type < 0 || columns.reference_index < 0) {
-        return false;
-    }
-
-    auto ref_type = cue_table.get<uint8_t>(index, static_cast<uint32_t>(columns.reference_type));
-    auto ref_index = cue_table.get<uint16_t>(index, static_cast<uint32_t>(columns.reference_index));
-    if (!ref_type || !ref_index) {
-        return false;
-    }
-
-    switch (*ref_type) {
-        case 1:
-            return load_waveform_check(*ref_index);
-        case 2:
-            return load_synth(*ref_index);
-        case 3:
-            return load_sequence(*ref_index);
-        case 8:
-            return load_block_sequence(*ref_index);
-        default:
-            return true;
-    }
-}
-
-bool AcbContainer::load_synth(uint16_t index) {
-    if (!load_subtable("SynthTable")) {
-        return false;
-    }
-    auto& synth_table = *m_sub.synth_table;
-    if (index >= synth_table.row_count()) {
-        return false;
-    }
-
-    m_resolve_ctx.synth_depth++;
-    if (m_resolve_ctx.synth_depth > MAX_SYNTH_DEPTH) {
-        m_resolve_ctx.synth_depth--;
-        return false;
-    }
-
-    auto& columns = m_sub.synth_columns;
-    if (columns.reference_items == unresolved_column) {
-        columns.reference_items = synth_table.find_column("ReferenceItems");
-    }
-    if (columns.reference_items < 0) {
-        m_resolve_ctx.synth_depth--;
-        return false;
-    }
-
-    auto ri_data = synth_table.get_data(index, static_cast<uint32_t>(columns.reference_items));
-    if (!ri_data || ri_data->empty()) {
-        m_resolve_ctx.synth_depth--;
-        return true;
-    }
-
-    auto items = *ri_data;
-    const size_t count = items.size() / 4;
-    for (size_t i = 0; i < count; ++i) {
-        const uint16_t item_type = io::read_be<uint16_t>(items, i * 4);
-        const uint16_t item_index = io::read_be<uint16_t>(items, i * 4 + 2);
-
-        switch (item_type) {
-            case 0x00:
-                i = count;
-                break;
-            case 0x01:
-                load_waveform_check(item_index);
-                break;
-            case 0x02:
-                load_synth(item_index);
-                break;
-            case 0x03:
-                load_sequence(item_index);
-                break;
-            default:
-                i = count;
-                break;
-        }
-    }
-
-    m_resolve_ctx.synth_depth--;
-    return true;
-}
-
-bool AcbContainer::load_sequence(uint16_t index) {
-    if (!load_subtable("SequenceTable")) {
-        return false;
-    }
-    auto& sequence_table = *m_sub.sequence_table;
-    if (index >= sequence_table.row_count()) {
-        return false;
-    }
-
-    m_resolve_ctx.sequence_depth++;
-    if (m_resolve_ctx.sequence_depth > MAX_SEQUENCE_DEPTH) {
-        m_resolve_ctx.sequence_depth--;
-        return false;
-    }
-
-    auto& columns = m_sub.sequence_columns;
-    if (columns.num_tracks == unresolved_column) {
-        columns.num_tracks = sequence_table.find_column("NumTracks");
-        columns.track_index = sequence_table.find_column("TrackIndex");
-    }
-
-    if (columns.num_tracks >= 0 && columns.track_index >= 0) {
-        auto num_tracks = sequence_table.get<uint16_t>(index, static_cast<uint32_t>(columns.num_tracks));
-        auto track_data = sequence_table.get_data(index, static_cast<uint32_t>(columns.track_index));
-        if (num_tracks && track_data && !track_data->empty()) {
-            visit_u16_index_list(*track_data, *num_tracks, [&](uint16_t track_index) {
-                load_track(track_index);
-            });
-        }
-    }
-
-    m_resolve_ctx.sequence_depth--;
-    return true;
-}
-
-bool AcbContainer::load_track(uint16_t index) {
-    if (!load_subtable("TrackTable")) {
-        return false;
-    }
-    auto& track_table = *m_sub.track_table;
-    if (index >= track_table.row_count()) {
-        return false;
-    }
-
-    auto& columns = m_sub.track_columns;
-    if (columns.event_index == unresolved_column) {
-        columns.event_index = track_table.find_column("EventIndex");
-    }
-    if (columns.event_index < 0) {
-        return true;
-    }
-
-    auto event_index = track_table.get<uint16_t>(index, static_cast<uint32_t>(columns.event_index));
-    if (!event_index || *event_index == 0xFFFF) {
-        return true;
-    }
-
-    return load_track_command(*event_index);
-}
-
-bool AcbContainer::load_track_command(uint16_t index) {
-    if (!load_subtable("TrackEventTable")) {
-        if (!load_subtable("CommandTable")) {
-            return false;
-        }
-    }
-
-    auto& table = m_sub.track_event_table ? *m_sub.track_event_table : *m_sub.command_table;
-    auto& columns = m_sub.track_event_table ? m_sub.track_event_columns : m_sub.command_columns;
-    if (index >= table.row_count()) {
-        return false;
-    }
-
-    if (columns.command == unresolved_column) {
-        columns.command = table.find_column("Command");
-    }
-    if (columns.command < 0) {
-        return true;
-    }
-
-    auto cmd_data = table.get_data(index, static_cast<uint32_t>(columns.command));
-    if (!cmd_data || cmd_data->empty()) {
-        return true;
-    }
-
-    return load_command_tlvs(*cmd_data);
-}
-
-bool AcbContainer::load_command_tlvs(std::span<const uint8_t> data) {
-    // The official runtime handles a broad command space. Name resolution only
-    // needs target-reference commands, so all other parsed records are preserved
-    // by acb_commands but ignored here.
-    auto commands = parse_command_stream(data);
-    if (!commands) {
-        return false;
-    }
-
-    for (const AcbCommand& command : *commands) {
-        const auto target = command_target_reference(command);
-        if (!target) {
-            continue;
-        }
-
-        switch (target->type) {
-            case AcbCommandTargetType::synth:
-                load_synth(target->index);
-                break;
-            case AcbCommandTargetType::sequence:
-                load_sequence(target->index);
-                break;
-            case AcbCommandTargetType::waveform:
-                load_waveform_check(target->index);
-                break;
-            case AcbCommandTargetType::none:
-            case AcbCommandTargetType::outside_link:
-            case AcbCommandTargetType::direct_synth:
-            case AcbCommandTargetType::direct_sequence:
-            case AcbCommandTargetType::block_sequence:
-            case AcbCommandTargetType::direct_block_sequence:
-            case AcbCommandTargetType::special_11:
-            case AcbCommandTargetType::special_12:
-            default:
-                break;
-        }
-    }
-
-    return true;
-}
-
-bool AcbContainer::load_waveform_check(uint16_t index) {
-    if (index >= m_waveforms.size()) {
-        return false;
-    }
-
-    const auto& waveform = m_waveforms[index];
-    if (!waveform_matches_bank(waveform, m_resolve_ctx.is_memory)) {
-        return true;
-    }
-
-    const uint16_t waveform_id = waveform_id_for_bank(waveform, m_resolve_ctx.is_memory);
-    if (waveform_id != m_resolve_ctx.target_wave_id) {
-        return true;
-    }
-
-    if (m_resolve_ctx.target_port >= 0 && waveform.port_no != 0xFFFF && waveform.port_no != m_resolve_ctx.target_port) {
-        return true;
-    }
-
-    m_resolve_ctx.found = true;
-    return true;
-}
-
-bool AcbContainer::load_block(uint16_t index) {
-    if (!load_subtable("BlockTable")) {
-        return false;
-    }
-    auto& block_table = *m_sub.block_table;
-    if (index >= block_table.row_count()) {
-        return false;
-    }
-
-    auto& columns = m_sub.block_columns;
-    if (columns.num_tracks == unresolved_column) {
-        columns.num_tracks = block_table.find_column("NumTracks");
-        columns.track_index = block_table.find_column("TrackIndex");
-    }
-
-    if (columns.num_tracks >= 0 && columns.track_index >= 0) {
-        auto num_tracks = block_table.get<uint16_t>(index, static_cast<uint32_t>(columns.num_tracks));
-        auto track_data = block_table.get_data(index, static_cast<uint32_t>(columns.track_index));
-        if (num_tracks && track_data && !track_data->empty()) {
-            visit_u16_index_list(*track_data, *num_tracks, [&](uint16_t track_index) {
-                load_track(track_index);
-            });
-        }
-    }
-
-    return true;
-}
-
-bool AcbContainer::load_block_sequence(uint16_t index) {
-    if (!load_subtable("BlockSequenceTable")) {
-        return false;
-    }
-    auto& block_sequence_table = *m_sub.block_sequence_table;
-    if (index >= block_sequence_table.row_count()) {
-        return false;
-    }
-
-    auto& columns = m_sub.block_sequence_columns;
-    if (columns.num_tracks == unresolved_column) {
-        columns.num_tracks = block_sequence_table.find_column("NumTracks");
-        columns.track_index = block_sequence_table.find_column("TrackIndex");
-        columns.num_blocks = block_sequence_table.find_column("NumBlocks");
-        columns.block_index = block_sequence_table.find_column("BlockIndex");
-    }
-
-    if (columns.num_tracks >= 0 && columns.track_index >= 0) {
-        auto num_tracks = block_sequence_table.get<uint16_t>(index, static_cast<uint32_t>(columns.num_tracks));
-        auto track_data = block_sequence_table.get_data(index, static_cast<uint32_t>(columns.track_index));
-        if (num_tracks && track_data && !track_data->empty()) {
-            visit_u16_index_list(*track_data, *num_tracks, [&](uint16_t track_index) {
-                load_track(track_index);
-            });
-        }
-    }
-
-    if (columns.num_blocks >= 0 && columns.block_index >= 0) {
-        auto num_blocks = block_sequence_table.get<uint16_t>(index, static_cast<uint32_t>(columns.num_blocks));
-        auto block_data = block_sequence_table.get_data(index, static_cast<uint32_t>(columns.block_index));
-        if (num_blocks && block_data && !block_data->empty()) {
-            visit_u16_index_list(*block_data, *num_blocks, [&](uint16_t block_index) {
-                load_block(block_index);
-            });
-        }
-    }
-
-    return true;
 }
 
 } // namespace cricodecs::acb

@@ -475,7 +475,7 @@ void UsmReader::refresh_audio_codecs() {
     }
 }
 
-bool UsmReader::chunk_needs_masking(const UsmChunk& chunk, const AudioCodecMap& audio_codecs) const {
+bool UsmReader::chunk_needs_masking(const UsmChunk& chunk) const {
     if (!m_crypto.has_key()) {
         return false;
     }
@@ -489,8 +489,8 @@ bool UsmReader::chunk_needs_masking(const UsmChunk& chunk, const AudioCodecMap& 
         return false;
     }
 
-    const auto codec = audio_codecs.find(chunk.stream_id());
-    return codec != audio_codecs.end() && codec->second == UsmAudioCodec::Adx;
+    const auto codec = m_audio_codecs.find(chunk.stream_id());
+    return codec != m_audio_codecs.end() && codec->second == UsmAudioCodec::Adx;
 }
 
 std::vector<uint8_t> UsmReader::decrypt_chunk_payload(const UsmChunk& chunk) const {
@@ -508,6 +508,17 @@ std::vector<uint8_t> UsmReader::decrypt_chunk_payload(const UsmChunk& chunk) con
     return padded_payload;
 }
 
+std::span<const uint8_t> UsmReader::demuxed_payload(
+    const UsmChunk& chunk,
+    std::vector<uint8_t>& storage
+) const {
+    if (!chunk_needs_masking(chunk)) {
+        return chunk.payload;
+    }
+    storage = decrypt_chunk_payload(chunk);
+    return storage;
+}
+
 std::expected<void, std::string> UsmReader::visit_demuxed_payloads_impl(
     void* context,
     PayloadVisitor visitor
@@ -516,8 +527,6 @@ std::expected<void, std::string> UsmReader::visit_demuxed_payloads_impl(
     if (!output_names) {
         return std::unexpected(output_names.error());
     }
-    const auto& audio_codecs = m_audio_codecs;
-
     for (const auto& chunk : m_chunks) {
         if (chunk.payload_type() != UsmPayloadType::Stream) {
             continue;
@@ -528,39 +537,28 @@ std::expected<void, std::string> UsmReader::visit_demuxed_payloads_impl(
             continue;
         }
 
-        if (chunk_needs_masking(chunk, audio_codecs)) {
-            const auto chunk_bytes = decrypt_chunk_payload(chunk);
-            auto result = visitor(context, UsmPayloadView{
-                .output_name = output_name->second,
-                .stream_id = chunk.stream_id(),
-                .payload = chunk_bytes,
-            });
-            if (!result) {
-                return std::unexpected(result.error());
-            }
-        } else {
-            auto result = visitor(context, UsmPayloadView{
-                .output_name = output_name->second,
-                .stream_id = chunk.stream_id(),
-                .payload = chunk.payload,
-            });
-            if (!result) {
-                return std::unexpected(result.error());
-            }
+        std::vector<uint8_t> storage;
+        const auto payload = demuxed_payload(chunk, storage);
+        auto result = visitor(context, UsmPayloadView{
+            .output_name = output_name->second,
+            .stream_id = chunk.stream_id(),
+            .payload = payload,
+        });
+        if (!result) {
+            return std::unexpected(result.error());
         }
     }
 
     return {};
 }
 
-std::expected<void, std::string> UsmReader::append_stream_payloads(
+void UsmReader::append_stream_payloads(
     UsmStreamId id,
-    const AudioCodecMap& audio_codecs,
     std::vector<uint8_t>& output,
     size_t max_bytes
 ) const {
     if (max_bytes == 0) {
-        return {};
+        return;
     }
 
     for (const auto& chunk : m_chunks) {
@@ -568,26 +566,18 @@ std::expected<void, std::string> UsmReader::append_stream_payloads(
             continue;
         }
 
-        if (chunk_needs_masking(chunk, audio_codecs)) {
-            const auto chunk_bytes = decrypt_chunk_payload(chunk);
-            const auto remaining = max_bytes - output.size();
-            const auto count = std::min(chunk_bytes.size(), remaining);
-            output.insert(output.end(), chunk_bytes.begin(), chunk_bytes.begin() + static_cast<std::ptrdiff_t>(count));
-        } else {
-            const auto remaining = max_bytes - output.size();
-            const auto count = std::min(chunk.payload.size(), remaining);
-            output.insert(output.end(), chunk.payload.begin(), chunk.payload.begin() + static_cast<std::ptrdiff_t>(count));
-        }
+        std::vector<uint8_t> storage;
+        const auto payload = demuxed_payload(chunk, storage);
+        const auto count = std::min(payload.size(), max_bytes - output.size());
+        output.insert(output.end(), payload.begin(), payload.begin() + static_cast<std::ptrdiff_t>(count));
         if (output.size() >= max_bytes) {
             break;
         }
     }
-    return {};
 }
 
 std::expected<void, std::string> UsmReader::write_stream_payloads(
     UsmStreamId id,
-    const AudioCodecMap& audio_codecs,
     const std::filesystem::path& output_path
 ) const {
     if (output_path.has_parent_path()) {
@@ -608,13 +598,8 @@ std::expected<void, std::string> UsmReader::write_stream_payloads(
             continue;
         }
 
-        if (chunk_needs_masking(chunk, audio_codecs)) {
-            const auto chunk_bytes = decrypt_chunk_payload(chunk);
-            if (auto result = writer.write(chunk_bytes); !result) {
-                (void)writer.close();
-                return std::unexpected("USM extract failed: could not write export output: " + output_path.string());
-            }
-        } else if (auto result = writer.write(chunk.payload); !result) {
+        std::vector<uint8_t> storage;
+        if (auto result = writer.write(demuxed_payload(chunk, storage)); !result) {
             (void)writer.close();
             return std::unexpected("USM extract failed: could not write export output: " + output_path.string());
         }
@@ -635,10 +620,7 @@ std::expected<std::vector<uint8_t>, std::string> UsmReader::extract_stream(uint3
     if (m_streams[index].filesize != 0) {
         output.reserve(m_streams[index].filesize);
     }
-    auto result = append_stream_payloads(m_streams[index].id(), m_audio_codecs, output);
-    if (!result) {
-        return std::unexpected(result.error());
-    }
+    append_stream_payloads(m_streams[index].id(), output);
     return output;
 }
 
@@ -653,10 +635,7 @@ std::expected<std::vector<uint8_t>, std::string> UsmReader::extract_stream_sampl
     std::vector<uint8_t> output;
     const auto declared_size = static_cast<size_t>(m_streams[index].filesize);
     output.reserve(std::min(declared_size, max_bytes));
-    auto result = append_stream_payloads(m_streams[index].id(), m_audio_codecs, output, max_bytes);
-    if (!result) {
-        return std::unexpected(result.error());
-    }
+    append_stream_payloads(m_streams[index].id(), output, max_bytes);
     return output;
 }
 
@@ -721,7 +700,7 @@ std::expected<void, std::string> UsmReader::extract_file(
     if (index >= m_streams.size()) {
         return std::unexpected("USM stream index is out of range");
     }
-    return write_stream_payloads(m_streams[index].id(), m_audio_codecs, output_path);
+    return write_stream_payloads(m_streams[index].id(), output_path);
 }
 
 std::expected<void, std::string> UsmReader::extract(const std::filesystem::path& output_dir) {
@@ -735,8 +714,6 @@ std::expected<void, std::string> UsmReader::extract(const std::filesystem::path&
     if (!output_names) {
         return std::unexpected(output_names.error());
     }
-    const auto& audio_codecs = m_audio_codecs;
-
     for (const auto& stream : m_streams) {
         const auto output_name = (*output_names)->find(stream.id());
         const auto output_path = output_dir / (
@@ -744,7 +721,7 @@ std::expected<void, std::string> UsmReader::extract(const std::filesystem::path&
                 ? fallback_stream_name(stream.id())
                 : output_name->second
         );
-        auto export_result = write_stream_payloads(stream.id(), audio_codecs, output_path);
+        auto export_result = write_stream_payloads(stream.id(), output_path);
         if (!export_result) {
             return std::unexpected(export_result.error());
         }
@@ -759,8 +736,6 @@ std::expected<std::map<std::string, std::vector<uint8_t>>, std::string> UsmReade
     if (!output_names) {
         return std::unexpected(output_names.error());
     }
-    const auto& audio_codecs = m_audio_codecs;
-
     for (const auto& stream : m_streams) {
         const auto output_name = (*output_names)->find(stream.id());
         if (output_name == (*output_names)->end()) {
@@ -785,12 +760,9 @@ std::expected<std::map<std::string, std::vector<uint8_t>>, std::string> UsmReade
                 continue;
             }
 
-            if (chunk_needs_masking(chunk, audio_codecs)) {
-                const auto chunk_bytes = decrypt_chunk_payload(chunk);
-                stream_bytes->second.insert(stream_bytes->second.end(), chunk_bytes.begin(), chunk_bytes.end());
-            } else {
-                stream_bytes->second.insert(stream_bytes->second.end(), chunk.payload.begin(), chunk.payload.end());
-            }
+            std::vector<uint8_t> storage;
+            const auto payload = demuxed_payload(chunk, storage);
+            stream_bytes->second.insert(stream_bytes->second.end(), payload.begin(), payload.end());
             break;
         }
         case UsmPayloadType::Header:

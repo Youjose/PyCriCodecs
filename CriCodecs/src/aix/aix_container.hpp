@@ -113,9 +113,7 @@ private:
         uint32_t file_offset = 0;
         uint32_t total_size = 0;
         uint16_t payload_size = 0;
-        uint32_t sequence = 0;
         int8_t layer_index = -1;
-        uint8_t layer_count = 0;
     };
 
     struct LayerPayloads {

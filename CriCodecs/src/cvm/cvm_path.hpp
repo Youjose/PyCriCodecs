@@ -9,6 +9,7 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "../utilities/string.hpp"
@@ -33,6 +34,16 @@ namespace cricodecs::cvm {
 
 [[nodiscard]] inline bool is_root_archive_path(const std::filesystem::path& path) {
     return normalize_archive_path(path).empty();
+}
+
+[[nodiscard]] inline std::string default_disc_name(
+    const std::filesystem::path& source_path,
+    std::string_view volume_identifier
+) {
+    if (!source_path.empty() && source_path.has_filename()) {
+        return source_path.filename().generic_string();
+    }
+    return volume_identifier.empty() ? "image.cvm" : std::string(volume_identifier) + ".cvm";
 }
 
 [[nodiscard]] inline std::filesystem::path resolve_directory_relative_path(

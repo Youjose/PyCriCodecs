@@ -299,6 +299,15 @@ struct ParsedIsoDirectoryRecord {
         });
 }
 
+[[nodiscard]] std::vector<CvmRofsFileInfo> make_rofs_file_info(const CvmDirectoryRecord& directory) {
+    std::vector<CvmRofsFileInfo> info;
+    info.reserve(directory.entries.size());
+    for (const auto& entry : directory.entries) {
+        info.push_back({entry.name, entry.size, entry.is_directory});
+    }
+    return info;
+}
+
 } // namespace
 
 std::optional<std::string_view> CvmVolumeSet::default_volume_name() const noexcept {
@@ -978,21 +987,17 @@ std::expected<uint32_t, std::string> CvmVolumeSet::rofs_num_files(
 std::expected<uint32_t, std::string> CvmVolumeSet::rofs_num_files(
     const std::filesystem::path& runtime_path
 ) const {
-    auto entries = rofs_directory_info(runtime_path);
-    if (!entries) {
-        return std::unexpected(entries.error());
-    }
-    return static_cast<uint32_t>(entries->size());
+    return directory_record(runtime_path).transform([](const CvmDirectoryRecord& directory) {
+        return static_cast<uint32_t>(directory.entries.size());
+    });
 }
 
 std::expected<uint32_t, std::string> CvmVolumeSet::rofs_num_files_for_volume(
     std::string_view volume_name
 ) const {
-    auto entries = rofs_directory_info_for_volume(volume_name);
-    if (!entries) {
-        return std::unexpected(entries.error());
-    }
-    return static_cast<uint32_t>(entries->size());
+    return directory_record_for_volume(volume_name).transform([](const CvmDirectoryRecord& directory) {
+        return static_cast<uint32_t>(directory.entries.size());
+    });
 }
 
 std::expected<std::vector<CvmRofsFileInfo>, std::string> CvmVolumeSet::rofs_directory_info(
@@ -1004,41 +1009,13 @@ std::expected<std::vector<CvmRofsFileInfo>, std::string> CvmVolumeSet::rofs_dire
 std::expected<std::vector<CvmRofsFileInfo>, std::string> CvmVolumeSet::rofs_directory_info(
     const std::filesystem::path& runtime_path
 ) const {
-    auto directory = directory_record(runtime_path);
-    if (!directory) {
-        return std::unexpected(directory.error());
-    }
-
-    std::vector<CvmRofsFileInfo> info;
-    info.reserve(directory->entries.size());
-    for (const auto& entry : directory->entries) {
-        info.push_back({
-            .name = entry.name,
-            .size = entry.size,
-            .is_directory = entry.is_directory,
-        });
-    }
-    return info;
+    return directory_record(runtime_path).transform(make_rofs_file_info);
 }
 
 std::expected<std::vector<CvmRofsFileInfo>, std::string> CvmVolumeSet::rofs_directory_info_for_volume(
     std::string_view volume_name
 ) const {
-    auto directory = directory_record_for_volume(volume_name);
-    if (!directory) {
-        return std::unexpected(directory.error());
-    }
-
-    std::vector<CvmRofsFileInfo> info;
-    info.reserve(directory->entries.size());
-    for (const auto& entry : directory->entries) {
-        info.push_back({
-            .name = entry.name,
-            .size = entry.size,
-            .is_directory = entry.is_directory,
-        });
-    }
-    return info;
+    return directory_record_for_volume(volume_name).transform(make_rofs_file_info);
 }
 
 std::expected<std::vector<uint8_t>, std::string> CvmVolumeSet::load_iso_directory_record(

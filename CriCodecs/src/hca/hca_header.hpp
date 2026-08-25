@@ -37,7 +37,7 @@ struct HcaCodecChunk {
     uint8_t min_resolution = 1;
     uint8_t max_resolution = 15;
     uint8_t track_count : 4 = 1;
-    uint8_t channel_config : 4 = 0;
+    uint8_t channel_config = 0;
     uint8_t total_band_count = 0;
     uint8_t base_band_count = 0;
     uint8_t stereo_band_count = 0;

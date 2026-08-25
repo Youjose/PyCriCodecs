@@ -75,7 +75,7 @@ void crypt_header(uint8_t* data, size_t header_size, uint16_t cipher_type) noexc
         if (chunk_size == 0 || chunk_size > payload_end - offset) {
             break;
         }
-        write_be<uint32_t>(data + offset, cipher_type == 0 ? id : masked_chunk_id(id));
+        write_be<uint32_t>(data + offset, cipher_type == 56 ? masked_chunk_id(id) : id);
         offset += chunk_size;
     }
 

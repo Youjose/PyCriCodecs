@@ -1,205 +1,119 @@
 /**
  * @file hca_transform.cpp
- * @brief Shared HCA DCT4 transform implementation.
- *
- * The staged DCT-IV shape is HCA-specific and was compared against the public
- * decoder/encoder implementations.
+ * @brief Shared HCA DCT-IV transform implementation.
  */
 
 #include "hca_transform.hpp"
-#include "../utilities/numeric.hpp"
 
-#include <cstddef>
+#include <bit>
+#include <cmath>
 #include <numbers>
+#include <utility>
 
 namespace cricodecs::hca::transform {
 
 namespace {
 
-template <int... Bits>
-struct PackedDctTrigRows {
-    static constexpr size_t value_count = ((size_t{1} << Bits) + ...);
+constexpr int DCT_STAGES = HCA_MDCT_BITS;
+constexpr int COEFFICIENTS_PER_STAGE = HCA_SAMPLES_PER_SUBFRAME / 2;
 
-    std::array<float, value_count> values{};
+struct DctTables {
+    std::array<float, DCT_STAGES * COEFFICIENTS_PER_STAGE> sine{};
+    std::array<float, DCT_STAGES * COEFFICIENTS_PER_STAGE> cosine{};
 };
 
-consteval int bit_reverse(int value, int bits) noexcept {
-    int reversed = 0;
-    for (int i = 0; i < bits; ++i) {
-        reversed = (reversed << 1) | ((value >> i) & 1);
-    }
-    return reversed;
-}
+consteval DctTables generate_dct_tables() {
+    DctTables tables{};
 
-template <int Bits>
-consteval float dct4_angle(int index) noexcept {
-    constexpr int size = 1 << Bits;
-    return std::numbers::pi_v<float> * static_cast<float>(4 * index + 1) / static_cast<float>(4 * size);
-}
+    for (int stage = 0, width = 2; stage < DCT_STAGES; ++stage, width <<= 1) {
+        const int half = width / 2;
+        const int group_count = HCA_SAMPLES_PER_SUBFRAME / width;
+        const double scale = stage == 0
+            ? static_cast<double>(HCA_DCT4_MDCT_SCALE) / std::numbers::sqrt2_v<double>
+            : 1.0;
+        const size_t stage_offset = static_cast<size_t>(stage * COEFFICIENTS_PER_STAGE);
 
-template <int Bits, int... RowBits>
-consteval void fill_sine_rows(PackedDctTrigRows<RowBits...>& rows, size_t& offset) {
-    constexpr int size = 1 << Bits;
-    for (int i = 0; i < size; ++i) {
-        rows.values[offset + static_cast<size_t>(i)] = util::sin(dct4_angle<Bits>(i));
-    }
-    offset += size;
-}
-
-template <int Bits, int... RowBits>
-consteval void fill_cosine_rows(PackedDctTrigRows<RowBits...>& rows, size_t& offset) {
-    constexpr int size = 1 << Bits;
-    for (int i = 0; i < size; ++i) {
-        rows.values[offset + static_cast<size_t>(i)] = util::cos(dct4_angle<Bits>(i));
-    }
-    offset += size;
-}
-
-template <int... Bits>
-consteval PackedDctTrigRows<Bits...> generate_hca_dct4_sine_rows() {
-    PackedDctTrigRows<Bits...> rows{};
-    size_t offset = 0;
-    (fill_sine_rows<Bits>(rows, offset), ...);
-    return rows;
-}
-
-template <int... Bits>
-consteval PackedDctTrigRows<Bits...> generate_hca_dct4_cosine_rows() {
-    PackedDctTrigRows<Bits...> rows{};
-    size_t offset = 0;
-    (fill_cosine_rows<Bits>(rows, offset), ...);
-    return rows;
-}
-
-template <int Bits>
-consteval std::array<int, 1 << Bits> generate_shuffle_row() {
-    std::array<int, 1 << Bits> row{};
-    for (int i = 0; i < (1 << Bits); ++i) {
-        row[static_cast<size_t>(i)] = bit_reverse(i ^ (i / 2), Bits);
-    }
-    return row;
-}
-
-// HCA's 128-point DCT4 uses trig rows 7, 5, 4, 3, 2, 1, and 0.
-// The staged transform never uses trig row 6, and only the bit-7 shuffle row is needed.
-inline constexpr auto HCA_DCT4_SINE_ROWS = generate_hca_dct4_sine_rows<7, 5, 4, 3, 2, 1, 0>();
-inline constexpr auto HCA_DCT4_COSINE_ROWS = generate_hca_dct4_cosine_rows<7, 5, 4, 3, 2, 1, 0>();
-inline constexpr auto HCA_DCT4_SHUFFLE_ROW = generate_shuffle_row<HCA_MDCT_BITS>();
-
-template <int Bits>
-[[nodiscard]] constexpr const float* sine_row() noexcept {
-    if constexpr (Bits == 7) {
-        return HCA_DCT4_SINE_ROWS.values.data();
-    } else if constexpr (Bits == 5) {
-        return HCA_DCT4_SINE_ROWS.values.data() + 128;
-    } else if constexpr (Bits == 4) {
-        return HCA_DCT4_SINE_ROWS.values.data() + 160;
-    } else if constexpr (Bits == 3) {
-        return HCA_DCT4_SINE_ROWS.values.data() + 176;
-    } else if constexpr (Bits == 2) {
-        return HCA_DCT4_SINE_ROWS.values.data() + 184;
-    } else if constexpr (Bits == 1) {
-        return HCA_DCT4_SINE_ROWS.values.data() + 188;
-    } else {
-        static_assert(Bits == 0);
-        return HCA_DCT4_SINE_ROWS.values.data() + 190;
-    }
-}
-
-template <int Bits>
-[[nodiscard]] constexpr const float* cosine_row() noexcept {
-    if constexpr (Bits == 7) {
-        return HCA_DCT4_COSINE_ROWS.values.data();
-    } else if constexpr (Bits == 5) {
-        return HCA_DCT4_COSINE_ROWS.values.data() + 128;
-    } else if constexpr (Bits == 4) {
-        return HCA_DCT4_COSINE_ROWS.values.data() + 160;
-    } else if constexpr (Bits == 3) {
-        return HCA_DCT4_COSINE_ROWS.values.data() + 176;
-    } else if constexpr (Bits == 2) {
-        return HCA_DCT4_COSINE_ROWS.values.data() + 184;
-    } else if constexpr (Bits == 1) {
-        return HCA_DCT4_COSINE_ROWS.values.data() + 188;
-    } else {
-        static_assert(Bits == 0);
-        return HCA_DCT4_COSINE_ROWS.values.data() + 190;
-    }
-}
-
-template <int Bits>
-constexpr void initial_rotation(
-    const std::array<float, HCA_SAMPLES_PER_SUBFRAME>& input,
-    std::array<float, HCA_SAMPLES_PER_SUBFRAME>& temp
-) {
-    constexpr int size = 1 << Bits;
-    const float* sine = sine_row<Bits>();
-    const float* cosine = cosine_row<Bits>();
-
-    for (int i = 0; i < size / 2; ++i) {
-        const int i2 = i * 2;
-        const float a = input[static_cast<size_t>(i2)];
-        const float b = input[static_cast<size_t>(size - 1 - i2)];
-        const float sin = sine[static_cast<size_t>(i)];
-        const float cos = cosine[static_cast<size_t>(i)];
-        temp[static_cast<size_t>(i2)] = a * cos + b * sin;
-        temp[static_cast<size_t>(i2 + 1)] = a * sin - b * cos;
-    }
-}
-
-template <int HalfBits>
-constexpr void stage_pass(std::array<float, HCA_SAMPLES_PER_SUBFRAME>& temp) {
-    constexpr int block_half_size = 1 << HalfBits;
-    constexpr int block_size = block_half_size * 2;
-    constexpr int block_count = HCA_SAMPLES_PER_SUBFRAME / (block_size * 2);
-    const float* sine = sine_row<HalfBits>();
-    const float* cosine = cosine_row<HalfBits>();
-
-    for (int block = 0; block < block_count; ++block) {
-        for (int i = 0; i < block_half_size; ++i) {
-            const int front_pos = (block * block_size + i) * 2;
-            const int back_pos = front_pos + block_size;
-            const float a = temp[static_cast<size_t>(front_pos)] - temp[static_cast<size_t>(back_pos)];
-            const float b = temp[static_cast<size_t>(front_pos + 1)] - temp[static_cast<size_t>(back_pos + 1)];
-            const float sin = sine[static_cast<size_t>(i)];
-            const float cos = cosine[static_cast<size_t>(i)];
-
-            temp[static_cast<size_t>(front_pos)] += temp[static_cast<size_t>(back_pos)];
-            temp[static_cast<size_t>(front_pos + 1)] += temp[static_cast<size_t>(back_pos + 1)];
-            temp[static_cast<size_t>(back_pos)] = a * cos + b * sin;
-            temp[static_cast<size_t>(back_pos + 1)] = a * sin - b * cos;
+        for (int group = 0; group < group_count; ++group) {
+            const float sign = (std::popcount(static_cast<unsigned>(group)) & 1) != 0
+                ? 1.0f
+                : -1.0f;
+            for (int i = 0; i < half; ++i) {
+                const double angle = std::numbers::pi_v<double> * static_cast<double>(2 * i + 1)
+                    / static_cast<double>(4 * width);
+                const size_t index = stage_offset + static_cast<size_t>(group * half + i);
+                tables.sine[index] = static_cast<float>(std::sin(angle) * scale) * sign;
+                tables.cosine[index] = static_cast<float>(std::cos(angle) * scale);
+            }
         }
     }
+
+    return tables;
 }
 
-[[nodiscard]] constexpr std::array<float, HCA_SAMPLES_PER_SUBFRAME> finish_shuffle(
-    const std::array<float, HCA_SAMPLES_PER_SUBFRAME>& temp,
-    const float scale
-) {
-    std::array<float, HCA_SAMPLES_PER_SUBFRAME> output{};
-    for (int i = 0; i < HCA_SAMPLES_PER_SUBFRAME; ++i) {
-        output[static_cast<size_t>(i)] =
-            temp[static_cast<size_t>(HCA_DCT4_SHUFFLE_ROW[static_cast<size_t>(i)])] * scale;
-    }
-    return output;
-}
+inline constexpr auto DCT_TABLES = generate_dct_tables();
 
 } // namespace
 
+#if defined(__GNUC__) && !defined(__clang__)
+__attribute__((optimize("fp-contract=off")))
+#endif
 std::array<float, HCA_SAMPLES_PER_SUBFRAME> dct4(
     const std::array<float, HCA_SAMPLES_PER_SUBFRAME>& input,
     const float scale
 ) {
-    std::array<float, HCA_SAMPLES_PER_SUBFRAME> temp{};
+    auto source_storage = input;
+    std::array<float, HCA_SAMPLES_PER_SUBFRAME> destination_storage{};
+    auto* source = &source_storage;
+    auto* destination = &destination_storage;
 
-    initial_rotation<HCA_MDCT_BITS>(input, temp);
-    stage_pass<5>(temp);
-    stage_pass<4>(temp);
-    stage_pass<3>(temp);
-    stage_pass<2>(temp);
-    stage_pass<1>(temp);
-    stage_pass<0>(temp);
+    for (int half = HCA_SAMPLES_PER_SUBFRAME / 2, group_count = 1;
+         half != 0;
+         half >>= 1, group_count <<= 1) {
+        for (int group = 0; group < group_count; ++group) {
+            const int base = group * half * 2;
+            for (int i = 0; i < half; ++i) {
+                const float a = (*source)[static_cast<size_t>(base + i * 2)];
+                const float b = (*source)[static_cast<size_t>(base + i * 2 + 1)];
+                (*destination)[static_cast<size_t>(base + i)] = a + b;
+                (*destination)[static_cast<size_t>(base + half + i)] = a - b;
+            }
+        }
+        std::swap(source, destination);
+    }
 
-    return finish_shuffle(temp, scale);
+    for (int stage = 0, width = 2; stage < DCT_STAGES; ++stage, width <<= 1) {
+        const int half = width / 2;
+        const int group_count = HCA_SAMPLES_PER_SUBFRAME / width;
+        const size_t stage_offset = static_cast<size_t>(stage * COEFFICIENTS_PER_STAGE);
+
+        for (int group = 0; group < group_count; ++group) {
+            const int base = group * width;
+            for (int i = 0; i < half; ++i) {
+                const size_t table_index = stage_offset + static_cast<size_t>(group * half + i);
+                const float sine = DCT_TABLES.sine[table_index];
+                const float cosine = DCT_TABLES.cosine[table_index];
+                const float low = (*source)[static_cast<size_t>(base + i)];
+                const float high = (*source)[static_cast<size_t>(base + half + i)];
+                const float low_cosine = low * cosine;
+                const float high_sine = high * sine;
+                const float low_sine = low * sine;
+                const float high_cosine = high * cosine;
+
+                (*destination)[static_cast<size_t>(base + i)] = low_cosine - high_sine;
+                (*destination)[static_cast<size_t>(base + width - 1 - i)] = low_sine + high_cosine;
+            }
+        }
+        std::swap(source, destination);
+    }
+
+    auto output = *source;
+    if (scale != HCA_DCT4_MDCT_SCALE) {
+        const float relative_scale = scale / HCA_DCT4_MDCT_SCALE;
+        for (float& value : output) {
+            value *= relative_scale;
+        }
+    }
+    return output;
 }
 
 } // namespace cricodecs::hca::transform

@@ -59,6 +59,12 @@ constexpr float ONE_OVER_SQRT2 = 0.70710677f;
 [[nodiscard]] uint32_t calculate_bitrate(const HcaHeader& info, HcaQuality quality) {
     const uint32_t pcm_bitrate = info.fmt.sample_rate * info.fmt.channel_count * 16;
     const uint32_t max_bitrate = pcm_bitrate / 4;
+    const bool joint_coding = info.fmt.channel_count != 1 &&
+        info.codec.track_count != info.fmt.channel_count &&
+        info.codec.channel_config < CHANNEL_CONFIG_DISABLES_STEREO_HFR;
+    const uint32_t min_bitrate = std::min(
+        pcm_bitrate / 6,
+        info.fmt.channel_count * (joint_coding ? 32'000u : 42'666u));
 
     int ratio = 6;
     switch (quality) {
@@ -70,7 +76,7 @@ constexpr float ONE_OVER_SQRT2 = 0.70710677f;
         default: break;
     }
 
-    return std::min(pcm_bitrate / static_cast<uint32_t>(ratio), max_bitrate);
+    return std::clamp(pcm_bitrate / static_cast<uint32_t>(ratio), min_bitrate, max_bitrate);
 }
 
 void calculate_band_counts(HcaHeader& info, uint32_t bitrate, uint32_t cutoff_freq) {
@@ -137,8 +143,10 @@ void calculate_band_counts(HcaHeader& info, uint32_t bitrate, uint32_t cutoff_fr
         }
     }
 
-    const uint32_t group_count = divide_round_up(hfr_band_count, HFR_GROUP_TARGET_BANDS);
-    const uint32_t bands_per_group = group_count > 0 ? divide_round_up(hfr_band_count, group_count) : 0;
+    const uint32_t bands_per_group = divide_round_up(hfr_band_count, HFR_GROUP_TARGET_BANDS);
+    const uint32_t group_count = bands_per_group > 0
+        ? divide_round_up(hfr_band_count, bands_per_group)
+        : 0;
 
     info.codec.total_band_count = static_cast<uint8_t>(total_band_count);
     info.codec.base_band_count = static_cast<uint8_t>(base_band_count);
@@ -262,18 +270,29 @@ void mdct_transform(EncoderChannel& channel, int subframe) {
     const auto& window = tables::IMDCT_WINDOW;
     float* wave = channel.wave[subframe].data();
     float* previous = channel.imdct_previous.data();
-    std::array<float, size> scratch{};
+    std::array<float, size * 2> windowed{};
+    std::array<float, size> first{};
+    std::array<float, size> second{};
 
-    for (int i = 0; i < half; ++i) {
-        const float a = -window[half - i - 1] * wave[half + i];
-        const float b = -window[half + i] * wave[half - i - 1];
-        const float c = window[i] * previous[i];
-        const float d = -window[size - i - 1] * previous[size - i - 1];
-        scratch[i] = a - b;
-        scratch[half + i] = c - d;
+    for (int i = 0; i < size; ++i) {
+        windowed[static_cast<size_t>(i)] = std::abs(window[static_cast<size_t>(i)]) * previous[i];
+        windowed[static_cast<size_t>(size + i)] =
+            std::abs(window[static_cast<size_t>(size - i - 1)]) * wave[i];
     }
 
-    channel.spectra[subframe] = transform::dct4(scratch, transform::HCA_DCT4_MDCT_SCALE);
+    for (int i = 0; i < size; ++i) {
+        first[static_cast<size_t>(i)] = -windowed[static_cast<size_t>(size + half - i - 1)];
+        second[static_cast<size_t>(i)] = i < half
+            ? -windowed[static_cast<size_t>(size + half + i)]
+            : windowed[static_cast<size_t>(i - half)];
+    }
+
+    const auto first_dct = transform::dct4(first, transform::HCA_DCT4_MDCT_SCALE);
+    const auto second_dct = transform::dct4(second, transform::HCA_DCT4_MDCT_SCALE);
+    for (int i = 0; i < size; ++i) {
+        channel.spectra[subframe][static_cast<size_t>(i)] =
+            first_dct[static_cast<size_t>(i)] + second_dct[static_cast<size_t>(i)];
+    }
 
     std::memcpy(previous, wave, size * sizeof(float));
 }
@@ -296,34 +315,39 @@ void mdct_transform(EncoderChannel& channel, int subframe) {
 void calculate_scalefactors(EncoderFrame& frame) {
     for (uint32_t c = 0; c < frame.info.fmt.channel_count; ++c) {
         auto& channel = frame.channels[c];
-        for (uint8_t band = 0; band < channel.coded_count; ++band) {
+        const uint8_t analysis_count = channel.type == ChannelType::StereoSecondary
+            ? channel.coded_count
+            : frame.info.codec.total_band_count;
+        for (uint8_t band = 0; band < analysis_count; ++band) {
             float max_value = 0.0f;
             for (int subframe = 0; subframe < HCA_SUBFRAMES; ++subframe) {
                 max_value = std::max(max_value, std::abs(channel.spectra[subframe][band]));
             }
             channel.scalefactors[band] = static_cast<uint8_t>(find_scalefactor(max_value));
         }
-        std::fill(channel.scalefactors.begin() + channel.coded_count, channel.scalefactors.end(), uint8_t{0});
+        std::fill(channel.scalefactors.begin() + analysis_count, channel.scalefactors.end(), uint8_t{0});
     }
 }
 
-[[nodiscard]] int calculate_resolution(int scalefactor, int noise_level) noexcept {
+[[nodiscard]] int calculate_resolution(
+    int scalefactor, int noise_level, int min_resolution, int max_resolution) noexcept {
     if (scalefactor == 0) {
         return 0;
     }
 
-    int position = noise_level - 5 * scalefactor / 2 + 2;
-    position = cricodecs::util::clamp(position, 0, 58);
-    return tables::SCALE_TO_RESOLUTION_CURVE[position];
+    const int position = noise_level - 5 * scalefactor / 2 + 1;
+    if (position < 0) {
+        return max_resolution;
+    }
+    if (position >= static_cast<int>(tables::RESOLUTION_INVERT_TABLE.size())) {
+        return min_resolution;
+    }
+    return std::min<int>(tables::RESOLUTION_INVERT_TABLE[static_cast<size_t>(position)], max_resolution);
 }
 
 void scale_spectra(EncoderFrame& frame) {
     const auto& info = frame.info;
     const int hfr_start_band = info.codec.base_band_count + info.codec.stereo_band_count;
-    const int hfr_band_count = std::min(
-        static_cast<int>(info.codec.total_band_count - hfr_start_band),
-        hfr_start_band
-    );
 
     for (uint32_t c = 0; c < info.fmt.channel_count; ++c) {
         auto& channel = frame.channels[c];
@@ -335,17 +359,21 @@ void scale_spectra(EncoderFrame& frame) {
                 float sum = 0.0f;
                 int count = 0;
                 for (int i = 0; i < info.codec.bands_per_hfr_group
-                     && band < HCA_SAMPLES_PER_SUBFRAME; ++i, ++band) {
+                     && band < info.codec.total_band_count; ++i, ++band) {
                     for (int subframe = 0; subframe < HCA_SUBFRAMES; ++subframe) {
-                        sum += std::abs(channel.spectra[subframe][band]);
+                        const float value = channel.spectra[subframe][band];
+                        sum += value * value;
                     }
                     count += HCA_SUBFRAMES;
                 }
-                hfr_averages[group] = count > 0 ? sum / count : 0.0f;
+                hfr_averages[group] = count > 0 ? std::sqrt(sum / count) : 0.0f;
             }
         }
 
-        for (uint8_t band = 0; band < channel.coded_count; ++band) {
+        const uint8_t analysis_count = channel.type == ChannelType::StereoSecondary
+            ? channel.coded_count
+            : info.codec.total_band_count;
+        for (uint8_t band = 0; band < analysis_count; ++band) {
             const uint8_t scalefactor = channel.scalefactors[band];
             const float scale = tables::QUANTIZER_SCALING_TABLE[scalefactor];
             for (int subframe = 0; subframe < HCA_SUBFRAMES; ++subframe) {
@@ -360,23 +388,32 @@ void scale_spectra(EncoderFrame& frame) {
         if (channel.type == ChannelType::StereoSecondary) {
             continue;
         }
-        for (int group = 0, band = 0;
+        int low_band = hfr_start_band - 1;
+        int high_band = hfr_start_band;
+        const int group_half = info.codec.hfr_group_count >> 1;
+        for (int group = 0;
              group < info.codec.hfr_group_count;
-             ++group) {
-            float sum = 0.0f;
-            int count = 0;
-            for (int i = 0; i < info.codec.bands_per_hfr_group && band < hfr_band_count; ++i, ++band) {
-                const int low_band = hfr_start_band - band - 1;
-                for (int subframe = 0; subframe < HCA_SUBFRAMES; ++subframe) {
-                    sum += std::abs(channel.spectra[subframe][low_band]);
+            ++group) {
+            float low_sum = 0.0f;
+            float high_sum = 0.0f;
+            const bool ascending = detail::uses_v3_frame_layout(info.file.version) && group >= group_half;
+            for (int i = 0; i < info.codec.bands_per_hfr_group && high_band < info.codec.total_band_count;
+                 ++i, ++high_band) {
+                if (low_band < 0 || low_band >= hfr_start_band) {
+                    break;
                 }
-                count += HCA_SUBFRAMES;
+                for (int subframe = 0; subframe < HCA_SUBFRAMES; ++subframe) {
+                    const float low = channel.spectra[subframe][low_band];
+                    const float high = channel.spectra[subframe][high_band];
+                    low_sum += low * low;
+                    high_sum += high * high;
+                }
+                low_band += ascending ? 1 : -1;
             }
 
-            float average = count > 0 ? sum / count : 0.0f;
             float group_average = hfr_averages[group];
-            if (average > 0.0f) {
-                group_average *= std::min(1.0f / average, std::numbers::sqrt2_v<float>);
+            if (low_sum > 0.0f && high_sum > 0.0f) {
+                group_average *= std::min(std::sqrt(high_sum / low_sum), std::numbers::sqrt2_v<float>);
             }
             channel.hfr_scales[group] = static_cast<uint8_t>(find_scalefactor(group_average));
         }
@@ -546,9 +583,7 @@ void calculate_frame_header_length(EncoderFrame& frame) {
 }
 
 [[nodiscard]] int calculate_used_bits(const EncoderFrame& frame, int noise_level, int evaluation_boundary) {
-    // The SDK estimator byte-aligns this result and adds 16 before comparing
-    // against the frame budget; this local search uses the raw bit estimate.
-    int total_bits = 16 + 16 + 16;
+    int total_bits = 16 + 16;
 
     for (uint32_t c = 0; c < frame.info.fmt.channel_count; ++c) {
         const auto& channel = frame.channels[c];
@@ -556,30 +591,34 @@ void calculate_frame_header_length(EncoderFrame& frame) {
 
         for (uint8_t band = 0; band < channel.coded_count; ++band) {
             const int noise = band < evaluation_boundary ? noise_level - 1 : noise_level;
-            const uint8_t resolution = static_cast<uint8_t>(calculate_resolution(channel.scalefactors[band], noise));
+            const uint8_t resolution = static_cast<uint8_t>(calculate_resolution(
+                channel.scalefactors[band], noise,
+                frame.info.codec.min_resolution, frame.info.codec.max_resolution));
             const int bits = band_bit_count(channel, band, resolution);
             if (bits == std::numeric_limits<int>::max()) return bits;
             total_bits += bits;
         }
     }
 
-    return total_bits;
+    return ((total_bits + 7) & ~7) + 16;
 }
 
 [[nodiscard]] std::array<int, HCA_SAMPLES_PER_SUBFRAME> boundary_bit_counts(
     const EncoderFrame& frame, int noise_level) {
     std::array<int64_t, HCA_SAMPLES_PER_SUBFRAME> deltas{};
     std::array<int, HCA_SAMPLES_PER_SUBFRAME> invalid_deltas{};
-    int64_t base = 16 + 16 + 16;
+    int64_t base = 16 + 16;
     int invalid = 0;
     for (uint32_t c = 0; c < frame.info.fmt.channel_count; ++c) {
         const auto& channel = frame.channels[c];
         base += channel.header_length_bits;
         for (uint8_t band = 0; band < channel.coded_count; ++band) {
             const auto normal_resolution = static_cast<uint8_t>(
-                calculate_resolution(channel.scalefactors[band], noise_level));
+                calculate_resolution(channel.scalefactors[band], noise_level,
+                    frame.info.codec.min_resolution, frame.info.codec.max_resolution));
             const auto boosted_resolution = static_cast<uint8_t>(
-                calculate_resolution(channel.scalefactors[band], noise_level - 1));
+                calculate_resolution(channel.scalefactors[band], noise_level - 1,
+                    frame.info.codec.min_resolution, frame.info.codec.max_resolution));
             const int normal = band_bit_count(channel, band, normal_resolution);
             const int boosted = band_bit_count(channel, band, boosted_resolution);
             const bool normal_invalid = normal == std::numeric_limits<int>::max();
@@ -594,7 +633,8 @@ void calculate_frame_header_length(EncoderFrame& frame) {
     std::array<int, HCA_SAMPLES_PER_SUBFRAME> result{};
     for (size_t boundary = 0; boundary < result.size(); ++boundary) {
         result[boundary] = invalid == 0
-            ? static_cast<int>(std::min<int64_t>(base, std::numeric_limits<int>::max()))
+            ? static_cast<int>(std::min<int64_t>(((base + 7) & ~int64_t{7}) + 16,
+                                                 std::numeric_limits<int>::max()))
             : std::numeric_limits<int>::max();
         base += deltas[boundary];
         invalid += invalid_deltas[boundary];
@@ -624,23 +664,25 @@ void calculate_frame_header_length(EncoderFrame& frame) {
     int available_bits,
     int low,
     int high) {
-    const int max = high;
+    int low_value = bit_counts[low];
+    int high_value = bit_counts[high];
 
-    while (std::abs(high - low) > 1) {
+    do {
         const int mid = (low + high) / 2;
         const int mid_value = bit_counts[mid];
-        if (available_bits < mid_value) {
-            high = mid - 1;
+        if (mid_value > available_bits) {
+            high = mid;
+            high_value = mid_value;
         } else {
             low = mid;
+            low_value = mid_value;
         }
-    }
+    } while (high - low > 1);
 
-    if (low == high) {
-        return low < max ? low : -1;
+    if (low_value > available_bits) {
+        return -1;
     }
-
-    return bit_counts[high] > available_bits ? low : high;
+    return high_value > available_bits ? low : high;
 }
 
 [[nodiscard]] bool calculate_noise_level(EncoderFrame& frame) {
@@ -698,7 +740,9 @@ void calculate_frame_resolutions(EncoderFrame& frame) {
             const int noise = band < frame.evaluation_boundary
                 ? frame.acceptable_noise_level - 1
                 : frame.acceptable_noise_level;
-            channel.resolution[band] = static_cast<uint8_t>(calculate_resolution(channel.scalefactors[band], noise));
+            channel.resolution[band] = static_cast<uint8_t>(calculate_resolution(
+                channel.scalefactors[band], noise,
+                frame.info.codec.min_resolution, frame.info.codec.max_resolution));
         }
         std::fill(channel.resolution.begin() + channel.coded_count, channel.resolution.end(), uint8_t{0});
     }
@@ -899,11 +943,9 @@ std::expected<std::vector<uint8_t>, std::string> encode(
 
                 for (uint32_t channel = 0; channel < info.fmt.channel_count; ++channel) {
                     float pcm_sample = 0.0f;
-                    if (encoded_index >= info.fmt.encoder_delay) {
-                        const size_t source_index = encoded_index - info.fmt.encoder_delay;
-                        if (source_index < encoded_sample_count) {
-                            pcm_sample = source_pcm[source_index * info.fmt.channel_count + channel] / 32768.0f;
-                        }
+                    const size_t source_index = encoded_index;
+                    if (source_index < encoded_sample_count) {
+                        pcm_sample = source_pcm[source_index * info.fmt.channel_count + channel] / 32768.0f;
                     }
                     frame.channels[channel].wave[subframe][sample] = pcm_sample;
                 }

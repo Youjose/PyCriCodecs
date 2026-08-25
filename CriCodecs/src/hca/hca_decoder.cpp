@@ -149,12 +149,12 @@ void calculate_resolution(DecodeChannel& ch, int packed_noise_level, const uint8
             } else if (new_resolution < min_res) {
                 new_resolution = static_cast<uint8_t>(min_res);
             }
-        }
 
-        if (new_resolution < 1) {
-            ch.noises[noise_count++] = static_cast<uint8_t>(i);
-        } else {
-            ch.noises[HCA_SAMPLES_PER_SUBFRAME - 1 - valid_count++] = static_cast<uint8_t>(i);
+            if (new_resolution < 1) {
+                ch.noises[noise_count++] = static_cast<uint8_t>(i);
+            } else {
+                ch.noises[HCA_SAMPLES_PER_SUBFRAME - 1 - valid_count++] = static_cast<uint8_t>(i);
+            }
         }
 
         ch.resolution[i] = new_resolution;
@@ -208,7 +208,7 @@ void reconstruct_noise(DecodeChannel& ch, int min_res, bool ms_stereo, uint32_t&
     for (uint8_t i = 0; i < ch.noise_count; ++i) {
         random = 0x343FDu * random + 0x269EC3u;
         const int random_index = HCA_SAMPLES_PER_SUBFRAME - ch.valid_count +
-            static_cast<int>(((random & 0x7FFFu) * ch.valid_count) >> 15);
+            static_cast<int>((((random >> 16) & 0x7FFFu) * ch.valid_count) >> 15);
         const int noise_index = ch.noises[i];
         const int valid_index = ch.noises[random_index];
         const int sf_noise = ch.scalefactors[noise_index];
@@ -223,16 +223,15 @@ void reconstruct_hfr(DecodeChannel& ch, const HcaHeader& info, int subframe) {
         return;
     }
 
-    const int total_band_count = std::min(static_cast<int>(info.codec.total_band_count), 127);
+    const int total_band_count = info.codec.total_band_count;
     const int start_band = info.codec.base_band_count + info.codec.stereo_band_count;
     int high_band = start_band;
     int low_band = start_band - 1;
-    const int group_limit = info.file.version <= HCA_VERSION_V200
-        ? info.codec.hfr_group_count
-        : (info.codec.hfr_group_count >> 1);
+    const int group_half = info.codec.hfr_group_count >> 1;
 
     for (int group = 0; group < info.codec.hfr_group_count; ++group) {
-        const int low_band_step = group < group_limit ? 1 : 0;
+        const bool ascending = info.file.version > HCA_VERSION_V200 &&
+            group >= group_half && group < group_half * 2;
         for (int i = 0; i < info.codec.bands_per_hfr_group; ++i) {
             if (high_band >= total_band_count || low_band < 0) {
                 break;
@@ -241,7 +240,7 @@ void reconstruct_hfr(DecodeChannel& ch, const HcaHeader& info, int subframe) {
             const int scale_index = std::max(0, static_cast<int>(ch.hfr_scales[group]) - ch.scalefactors[low_band] + 63);
             ch.spectra[subframe][high_band] = scale_conversion(scale_index) * ch.spectra[subframe][low_band];
             ++high_band;
-            low_band -= low_band_step;
+            low_band += ascending ? 1 : -1;
         }
     }
 
@@ -264,13 +263,13 @@ void apply_intensity_stereo(DecodeChannel* ch_pair, int subframe, int base_band,
     }
 }
 
-void apply_ms_stereo(DecodeChannel* ch_pair, bool ms_stereo, int base_band, int total_band, int subframe) {
+void apply_ms_stereo(DecodeChannel* ch_pair, bool ms_stereo, int base_band, int subframe) {
     if (!ms_stereo || ch_pair[0].type != ChannelType::StereoPrimary) {
         return;
     }
 
     constexpr float ratio = 0.70710676908493f;
-    for (int band = base_band; band < total_band; ++band) {
+    for (int band = 0; band < base_band; ++band) {
         const float left = ch_pair[0].spectra[subframe][band];
         const float right = ch_pair[1].spectra[subframe][band];
         ch_pair[0].spectra[subframe][band] = (left + right) * ratio;
@@ -278,6 +277,9 @@ void apply_ms_stereo(DecodeChannel* ch_pair, bool ms_stereo, int base_band, int 
     }
 }
 
+#if defined(__GNUC__) && !defined(__clang__)
+__attribute__((optimize("fp-contract=off")))
+#endif
 void imdct_transform(DecodeChannel& ch, int subframe) {
     const auto& window = tables::IMDCT_WINDOW;
     const auto dct_out = transform::dct4(ch.spectra[subframe], transform::HCA_DCT4_IMDCT_SCALE);
@@ -327,7 +329,10 @@ std::expected<void, std::string> decode_frame(DecodeFrame& frame, const uint8_t*
             dequantize_coefficients(frame.channels[ch], br, subframe);
         }
 
-        for (uint32_t ch = 0; ch < info.fmt.channel_count; ++ch) {
+        const uint32_t reconstruction_channel_count = (info.codec.channel_config & 0x80u) != 0
+            ? 1u
+            : info.fmt.channel_count;
+        for (uint32_t ch = 0; ch < reconstruction_channel_count; ++ch) {
             reconstruct_noise(frame.channels[ch], info.codec.min_resolution, info.codec.uses_ms_stereo(), frame.random, subframe);
             reconstruct_hfr(frame.channels[ch], info, subframe);
         }
@@ -335,7 +340,8 @@ std::expected<void, std::string> decode_frame(DecodeFrame& frame, const uint8_t*
         if (info.codec.stereo_band_count > 0) {
             for (uint32_t ch = 0; ch + 1 < info.fmt.channel_count; ++ch) {
                 apply_intensity_stereo(&frame.channels[ch], subframe, info.codec.base_band_count, info.codec.total_band_count);
-                apply_ms_stereo(&frame.channels[ch], info.codec.uses_ms_stereo(), info.codec.base_band_count, info.codec.total_band_count, subframe);
+                apply_ms_stereo(
+                    &frame.channels[ch], info.codec.uses_ms_stereo(), info.codec.base_band_count, subframe);
             }
         }
 

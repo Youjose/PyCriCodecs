@@ -1,7 +1,7 @@
 #pragma once
 /**
  * @file acb_cue_resolver.hpp
- * @brief Selector/action-aware projection of an authored ACB cue sheet.
+ * @brief Resolve selectors and actions into playable ACB cue paths.
  */
 
 #include "acb_cue_renderer.hpp"
@@ -36,7 +36,6 @@ struct AcbResolvedCuePlan {
 struct AcbCueSheetResolution {
     std::vector<AcbResolvedCuePlan> plans;
     std::vector<uint32_t> non_playable_cues;
-    std::vector<std::string> diagnostics;
 };
 
 struct AcbCueSheetResolveOptions {
@@ -77,7 +76,7 @@ resolve_cue_playback_paths(
 /**
  * Builds stable, filesystem-safe WAV names for a resolved plan set.
  *
- * Selector labels are added when one authored cue name resolves to multiple
+ * Selector labels are added when one cue name resolves to multiple
  * distinct plans. A variant ordinal remains as the collision fallback.
  */
 [[nodiscard]] std::vector<std::string> cue_plan_filenames(

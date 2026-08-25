@@ -9,10 +9,9 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdint>
-#include <functional>
 #include <limits>
-#include <ranges>
 #include <utility>
 #include <vector>
 
@@ -107,17 +106,19 @@ uint16_t advance_state(uint16_t state, uint16_t mul, uint16_t add, uint32_t coun
     return static_cast<uint16_t>((static_cast<uint32_t>(result_mul) * state) + result_add);
 }
 
-uint16_t state_at(uint32_t offset, const Seeds& seeds) noexcept {
-    const uint16_t initial = static_cast<uint16_t>((2u * seeds.k3) | 1u);
+std::pair<uint16_t, uint16_t> parameters_at(uint32_t offset, const Seeds& seeds) noexcept {
     uint16_t mul = static_cast<uint16_t>((4u * seeds.k1) | 1u);
-    uint16_t add = initial;
-
-    const uint32_t block_count = offset >> 16u;
-    for (uint32_t block = 0; block <= block_count; ++block) {
+    uint16_t add = static_cast<uint16_t>((2u * seeds.k3) | 1u);
+    for (uint32_t block = 0; block <= (offset >> 16u); ++block) {
         mul = next_mul(mul, seeds);
         add = next_add(add, seeds);
     }
+    return {mul, add};
+}
 
+uint16_t state_at(uint32_t offset, const Seeds& seeds) noexcept {
+    const auto [mul, add] = parameters_at(offset, seeds);
+    const uint16_t initial = static_cast<uint16_t>((2u * seeds.k3) | 1u);
     return advance_state(initial, mul, add, (offset & 0xFFFFu) + 1u);
 }
 
@@ -136,14 +137,7 @@ uint32_t plaintext_be32(std::span<const uint8_t> bytes, uint32_t offset, const S
 std::vector<uint8_t> decrypt_range(
     std::span<const uint8_t> bytes, uint32_t offset, size_t size, const Seeds& seeds) {
     const uint16_t initial = static_cast<uint16_t>((2u * seeds.k3) | 1u);
-    uint16_t mul = static_cast<uint16_t>((4u * seeds.k1) | 1u);
-    uint16_t add = initial;
-    const uint32_t block_count = offset >> 16u;
-    for (uint32_t block = 0; block <= block_count; ++block) {
-        mul = next_mul(mul, seeds);
-        add = next_add(add, seeds);
-    }
-
+    auto [mul, add] = parameters_at(offset, seeds);
     uint16_t state = advance_state(initial, mul, add, offset & 0xFFFFu);
     std::vector<uint8_t> clear(size);
     for (size_t i = 0; i < size; ++i) {
@@ -158,22 +152,24 @@ std::vector<uint8_t> decrypt_range(
     return clear;
 }
 
+bool plaintext_matches(
+    std::span<const uint8_t> bytes,
+    uint32_t offset,
+    std::span<const uint8_t> expected,
+    const Seeds& seeds) noexcept {
+    for (uint32_t i = 0; i < expected.size(); ++i) {
+        if (plaintext_at(bytes, offset + i, seeds) != expected[i]) return false;
+    }
+    return true;
+}
+
 bool prefix_matches(std::span<const uint8_t> bytes, const Seeds& seeds) noexcept {
     if (bytes.size() < MinimumM4aSize) {
         return false;
     }
-    for (uint32_t i = 0; i < CriM4aPrefix.size(); ++i) {
-        if (plaintext_at(bytes, i, seeds) != CriM4aPrefix[i]) {
-            return false;
-        }
-    }
     constexpr std::array<uint8_t, 4> Mdat{'m', 'd', 'a', 't'};
-    for (uint32_t i = 0; i < Mdat.size(); ++i) {
-        if (plaintext_at(bytes, 36u + i, seeds) != Mdat[i]) {
-            return false;
-        }
-    }
-    return true;
+    return plaintext_matches(bytes, 0, CriM4aPrefix, seeds)
+        && plaintext_matches(bytes, 36, Mdat, seeds);
 }
 
 bool exact_top_level_layout(std::span<const uint8_t> bytes, const Seeds& seeds) noexcept {
@@ -191,10 +187,8 @@ bool exact_top_level_layout(std::span<const uint8_t> bytes, const Seeds& seeds) 
     }
 
     constexpr std::array<uint8_t, 4> Moov{'m', 'o', 'o', 'v'};
-    for (uint32_t i = 0; i < Moov.size(); ++i) {
-        if (plaintext_at(bytes, static_cast<uint32_t>(moov_offset) + 4u + i, seeds) != Moov[i]) {
-            return false;
-        }
+    if (!plaintext_matches(bytes, static_cast<uint32_t>(moov_offset) + 4u, Moov, seeds)) {
+        return false;
     }
 
     const uint32_t moov_size = plaintext_be32(bytes, static_cast<uint32_t>(moov_offset), seeds);
@@ -310,39 +304,11 @@ uint64_t key_from_seeds(const Seeds& seeds) noexcept {
         | ((static_cast<uint64_t>(seeds.k3 - 1u) / 2u) << 38u);
 }
 
-struct Mp4Features {
-    bool bounded = false;
-    bool mvhd = false;
-    bool trak = false;
-    bool mdia = false;
-    bool minf = false;
-    bool stbl = false;
-    bool stsd = false;
-    bool mp4a = false;
-    bool esds = false;
-    bool stts = false;
-    bool stsc = false;
-    bool stsz = false;
-    bool stco = false;
+constexpr std::array RequiredBoxes{
+    BoxType::Mvhd, BoxType::Trak, BoxType::Mdia, BoxType::Minf,
+    BoxType::Stbl, BoxType::Stsd, BoxType::Mp4a, BoxType::Esds,
+    BoxType::Stts, BoxType::Stsc, BoxType::Stsz, BoxType::Stco,
 };
-
-void mark_feature(BoxType type, Mp4Features& features) noexcept {
-    switch (type) {
-        case BoxType::Mvhd: features.mvhd = true; break;
-        case BoxType::Trak: features.trak = true; break;
-        case BoxType::Mdia: features.mdia = true; break;
-        case BoxType::Minf: features.minf = true; break;
-        case BoxType::Stbl: features.stbl = true; break;
-        case BoxType::Stsd: features.stsd = true; break;
-        case BoxType::Mp4a: features.mp4a = true; break;
-        case BoxType::Esds: features.esds = true; break;
-        case BoxType::Stts: features.stts = true; break;
-        case BoxType::Stsc: features.stsc = true; break;
-        case BoxType::Stsz: features.stsz = true; break;
-        case BoxType::Stco: features.stco = true; break;
-        default: break;
-    }
-}
 
 bool is_plain_container(BoxType type) noexcept {
     return type == BoxType::Moov
@@ -355,7 +321,7 @@ bool is_plain_container(BoxType type) noexcept {
         || type == BoxType::Udta;
 }
 
-bool parse_boxes(std::span<const uint8_t> bytes, size_t begin, size_t end, Mp4Features& features) {
+bool parse_boxes(std::span<const uint8_t> bytes, size_t begin, size_t end, uint16_t& features) {
     size_t position = begin;
     while (position < end) {
         if (end - position < 8) {
@@ -377,7 +343,9 @@ bool parse_boxes(std::span<const uint8_t> bytes, size_t begin, size_t end, Mp4Fe
             return false;
         }
 
-        mark_feature(type, features);
+        if (const auto feature = std::ranges::find(RequiredBoxes, type); feature != RequiredBoxes.end()) {
+            features |= uint16_t{1} << (feature - RequiredBoxes.begin());
+        }
         size_t child_begin = 0;
         if (is_plain_container(type)) {
             child_begin = position + header_size;
@@ -404,13 +372,13 @@ bool parse_boxes(std::span<const uint8_t> bytes, size_t begin, size_t end, Mp4Fe
 
 struct StructuralScore {
     size_t points = 0;
-    size_t maximum = 0;
     bool complete = false;
 };
 
+constexpr size_t MaximumStructuralScore = 6 + RequiredBoxes.size();
+
 StructuralScore score_m4a(std::span<const uint8_t> bytes, const Seeds& seeds) {
-    constexpr size_t RequiredFeatures = 12;
-    StructuralScore score{0, 6 + RequiredFeatures, false};
+    StructuralScore score;
     if (!exact_top_level_layout(bytes, seeds)) {
         return score;
     }
@@ -418,16 +386,11 @@ StructuralScore score_m4a(std::span<const uint8_t> bytes, const Seeds& seeds) {
 
     const uint32_t moov_offset = MdatOffset + plaintext_be32(bytes, MdatOffset, seeds);
     const auto moov = decrypt_range(bytes, moov_offset, bytes.size() - moov_offset, seeds);
-    Mp4Features features;
-    features.bounded = parse_boxes(moov, 0, moov.size(), features);
-    score.points += features.bounded ? 1u : 0u;
-    const std::array present{
-        features.mvhd, features.trak, features.mdia, features.minf,
-        features.stbl, features.stsd, features.mp4a, features.esds,
-        features.stts, features.stsc, features.stsz, features.stco,
-    };
-    score.points += static_cast<size_t>(std::ranges::count(present, true));
-    score.complete = features.bounded && std::ranges::all_of(present, std::identity{});
+    uint16_t features = 0;
+    const bool bounded = parse_boxes(moov, 0, moov.size(), features);
+    score.points += bounded ? 1u : 0u;
+    score.points += static_cast<size_t>(std::popcount(features));
+    score.complete = bounded && std::popcount(features) == RequiredBoxes.size();
     return score;
 }
 
@@ -470,7 +433,6 @@ std::expected<KeyRecoveryResult, std::string> recover_aac_key(
     struct RankedCandidate {
         uint64_t key = 0;
         size_t points = 0;
-        size_t maximum = 0;
         size_t validated_sources = 0;
     };
 
@@ -497,7 +459,6 @@ std::expected<KeyRecoveryResult, std::string> recover_aac_key(
             for (const auto& source : sources) {
                 const auto score = score_m4a(source.bytes, seeds);
                 candidate.points += score.points;
-                candidate.maximum += score.maximum;
                 candidate.validated_sources += score.complete ? 1u : 0u;
             }
 
@@ -532,9 +493,8 @@ std::expected<KeyRecoveryResult, std::string> recover_aac_key(
     for (const auto& candidate : ranked) {
         candidates.push_back(KeyCandidate{
             .key = candidate.key,
-            .score = candidate.maximum == 0
-                ? 0.0f
-                : static_cast<float>(candidate.points) / static_cast<float>(candidate.maximum),
+            .score = static_cast<float>(candidate.points) /
+                static_cast<float>(MaximumStructuralScore * sources.size()),
             .validated_sources = candidate.validated_sources,
             .source_count = sources.size(),
             .candidate_count = accepted_candidates,

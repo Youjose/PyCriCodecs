@@ -86,7 +86,6 @@ std::expected<void, std::string> IvfReader::parse_header() {
         return std::unexpected("IVF parse failed: file is too small for header");
     }
 
-    m_raw_header = m_reader.data().first(32);
     m_reader.seek(0);
     m_header.magic = m_reader.read_le<uint32_t>();
     if (m_header.magic != IvfMagic.le_value()) {
@@ -101,7 +100,6 @@ std::expected<void, std::string> IvfReader::parse_header() {
     m_header.scale = m_reader.read_le<uint32_t>();
     m_header.num_frames = m_reader.read_le<uint32_t>();
     m_header.unused = m_reader.read_le<uint32_t>();
-    m_current_frame = 0;
     return {};
 }
 
@@ -131,7 +129,6 @@ std::expected<IvfFrame, std::string> IvfReader::read_next_frame() {
     frame.is_keyframe = is_vp9_keyframe(frame.data);
     frame.record_bytes = m_reader.subspan(frame_offset, 12 + size);
 
-    ++m_current_frame;
     return frame;
 }
 

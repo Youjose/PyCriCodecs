@@ -21,9 +21,11 @@ namespace cricodecs::adx {
         uint16_t mult = 0;
         uint16_t add = 0;
 
-        void advance() {
+        constexpr void advance() noexcept {
             xor_value = static_cast<uint16_t>((xor_value * mult + add) & 0x7FFF);
         }
+
+        friend bool operator==(const AdxKeyState&, const AdxKeyState&) = default;
     };
 
     inline AdxKeyState key8_derive(std::string_view key_string) {
@@ -31,15 +33,12 @@ namespace cricodecs::adx {
             return {};
         }
 
-        size_t len = key_string.size();
         uint16_t start = KEY8_PRIMES[0x100];
         uint16_t mult = KEY8_PRIMES[0x200];
         uint16_t add = KEY8_PRIMES[0x300];
 
-        for (size_t i = 0; i < len; ++i) {
-            uint8_t c = (uint8_t)key_string[i];
-            
-            uint32_t p = KEY8_PRIMES[c + 0x80];
+        for (const unsigned char c : key_string) {
+            const uint32_t p = KEY8_PRIMES[c + 0x80];
             
             start = KEY8_PRIMES[(start * p) % 0x400];
             mult = KEY8_PRIMES[(mult * p) % 0x400];

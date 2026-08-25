@@ -4,6 +4,19 @@ namespace cricodecs::cli::detail {
 
 namespace {
 
+template <std::ranges::input_range Range, class Print>
+void print_json_array(std::ostream& out, const Range& values, Print print) {
+    out << '[';
+    bool first = true;
+    for (const auto& value : values) {
+        if (!std::exchange(first, false)) {
+            out << ',';
+        }
+        print(value);
+    }
+    out << ']';
+}
+
 [[nodiscard]] constexpr std::string_view listing_mode_key(
     OutputListingMode mode) noexcept {
     switch (mode) {
@@ -49,14 +62,7 @@ void print_optional_integer(std::ostream& out, const std::optional<T>& value) {
 void print_u32_array(
     std::ostream& out,
     std::span<const uint32_t> values) {
-    out << '[';
-    for (size_t index = 0; index < values.size(); ++index) {
-        if (index != 0) {
-            out << ',';
-        }
-        out << values[index];
-    }
-    out << ']';
+    print_json_array(out, values, [&](uint32_t value) { out << value; });
 }
 
 void print_choice(
@@ -75,49 +81,25 @@ void print_choice(
 void print_choice_paths(
     std::ostream& out,
     std::span<const std::vector<acb::AcbCueChoiceSelection>> paths) {
-    out << '[';
-    for (size_t path_index = 0; path_index < paths.size(); ++path_index) {
-        if (path_index != 0) {
-            out << ',';
-        }
-        out << '[';
-        for (size_t choice_index = 0;
-             choice_index < paths[path_index].size();
-             ++choice_index) {
-            if (choice_index != 0) {
-                out << ',';
-            }
-            print_choice(out, paths[path_index][choice_index]);
-        }
-        out << ']';
-    }
-    out << ']';
+    print_json_array(out, paths, [&](const auto& path) {
+        print_json_array(out, path, [&](const auto& choice) { print_choice(out, choice); });
+    });
 }
 
 void print_selector_values(
     std::ostream& out,
     std::span<const acb::AcbCueSelectorValue> selectors) {
-    out << '[';
-    for (size_t index = 0; index < selectors.size(); ++index) {
-        if (index != 0) {
-            out << ',';
-        }
-        out << "{\"name\":" << quote_json(selectors[index].name)
-            << ",\"value\":" << quote_json(selectors[index].value)
+    print_json_array(out, selectors, [&](const auto& selector) {
+        out << "{\"name\":" << quote_json(selector.name)
+            << ",\"value\":" << quote_json(selector.value)
             << '}';
-    }
-    out << ']';
+    });
 }
 
 void print_cue_sources(
     std::ostream& out,
     std::span<const acb::AcbCuePlanSource> sources) {
-    out << '[';
-    for (size_t index = 0; index < sources.size(); ++index) {
-        if (index != 0) {
-            out << ',';
-        }
-        const auto& source = sources[index];
+    print_json_array(out, sources, [&](const auto& source) {
         out << "{\"source_cue_index\":" << source.source_cue_index
             << ",\"source_cue_id\":" << source.source_cue_id
             << ",\"source_cue_name\":"
@@ -130,8 +112,7 @@ void print_cue_sources(
         out << ",\"paths\":";
         print_choice_paths(out, source.paths);
         out << '}';
-    }
-    out << ']';
+    });
 }
 
 void print_cue_clip(
@@ -163,14 +144,9 @@ void print_cue_block(
         << ",\"render_loop_count\":" << block.render_loop_count
         << ",\"forced_advance\":" << bool_text(block.forced_advance)
         << ",\"skipped_empty_hold\":" << bool_text(block.skipped_empty_hold)
-        << ",\"clips\":[";
-    for (size_t index = 0; index < block.clips.size(); ++index) {
-        if (index != 0) {
-            out << ',';
-        }
-        print_cue_clip(out, block.clips[index]);
-    }
-    out << "],\"duration_us\":" << block.duration_us << '}';
+        << ",\"clips\":";
+    print_json_array(out, block.clips, [&](const auto& clip) { print_cue_clip(out, clip); });
+    out << ",\"duration_us\":" << block.duration_us << '}';
 }
 
 void print_cue_plan(
@@ -183,14 +159,8 @@ void print_cue_plan(
     if (!detailed) {
         return;
     }
-    out << ",\"blocks\":[";
-    for (size_t index = 0; index < plan.blocks.size(); ++index) {
-        if (index != 0) {
-            out << ',';
-        }
-        print_cue_block(out, plan.blocks[index]);
-    }
-    out << ']';
+    out << ",\"blocks\":";
+    print_json_array(out, plan.blocks, [&](const auto& block) { print_cue_block(out, block); });
 }
 
 void print_listing_item(
@@ -232,14 +202,9 @@ void print_item_list_json(
             << ",\"non_playable_cues\":";
         print_u32_array(out, listing.acb_cues->non_playable_cues);
     }
-    out << ",\"items\":[";
-    for (size_t index = 0; index < listing.items.size(); ++index) {
-        if (index != 0) {
-            out << ',';
-        }
-        print_listing_item(out, listing.items[index]);
-    }
-    out << "]}";
+    out << ",\"items\":";
+    print_json_array(out, listing.items, [&](const auto& item) { print_listing_item(out, item); });
+    out << '}';
 }
 
 } // namespace cricodecs::cli::detail

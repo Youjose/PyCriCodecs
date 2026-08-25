@@ -37,19 +37,17 @@ struct AdxLayout {
 };
 
 struct TrackEvidence {
-    AdxLayout layout;
+    uint8_t block_size = 0;
     std::vector<ByteHistogram> plain_by_frame_byte;
     std::vector<ByteHistogram> cipher_by_mask_and_frame_byte;
+    std::array<size_t, mask_size> column_observations{};
     size_t audio_chunks = 0;
-    size_t cipher_bytes = 0;
     std::vector<AudioMask> zero_window_masks;
 };
 
 struct ScoredMask {
     AudioMask mask{};
-    double score = -std::numeric_limits<double>::infinity();
     double confidence = 0.0;
-    bool used_zero_window = false;
 };
 
 [[nodiscard]] std::optional<AdxLayout> inspect_adx(std::span<const uint8_t> bytes) {
@@ -93,7 +91,7 @@ struct ScoredMask {
     }
 
     TrackEvidence evidence;
-    evidence.layout = *layout;
+    evidence.block_size = layout->block_size;
     evidence.plain_by_frame_byte.resize(layout->block_size);
     evidence.cipher_by_mask_and_frame_byte.resize(mask_size * layout->block_size);
 
@@ -148,13 +146,13 @@ struct ScoredMask {
                 ++evidence.cipher_by_mask_and_frame_byte[
                     cipher_histogram_index(column, frame_byte, layout->block_size)
                 ][payload[local]];
-                ++evidence.cipher_bytes;
+                ++evidence.column_observations[column];
             }
         }
         stream_offset += payload.size();
     }
 
-    if (evidence.audio_chunks == 0u || evidence.cipher_bytes == 0u) {
+    if (evidence.audio_chunks == 0u || evidence.column_observations[0] == 0u) {
         return std::nullopt;
     }
     return evidence;
@@ -167,10 +165,10 @@ struct ScoredMask {
 ) {
     constexpr double smoothing = 1.0;
     double score = 0.0;
-    for (size_t frame_byte = 0; frame_byte < evidence.layout.block_size; ++frame_byte) {
+    for (size_t frame_byte = 0; frame_byte < evidence.block_size; ++frame_byte) {
         const auto& plain = evidence.plain_by_frame_byte[frame_byte];
         const auto& cipher = evidence.cipher_by_mask_and_frame_byte[
-            cipher_histogram_index(column, frame_byte, evidence.layout.block_size)
+            cipher_histogram_index(column, frame_byte, evidence.block_size)
         ];
         uint64_t plain_total = 0;
         for (uint32_t count : plain) {
@@ -190,19 +188,6 @@ struct ScoredMask {
         }
     }
     return score;
-}
-
-[[nodiscard]] size_t column_observations(const TrackEvidence& evidence, size_t column) noexcept {
-    size_t count = 0;
-    for (size_t frame_byte = 0; frame_byte < evidence.layout.block_size; ++frame_byte) {
-        const auto& cipher = evidence.cipher_by_mask_and_frame_byte[
-            cipher_histogram_index(column, frame_byte, evidence.layout.block_size)
-        ];
-        for (uint32_t value_count : cipher) {
-            count += value_count;
-        }
-    }
-    return count;
 }
 
 [[nodiscard]] double score_full_mask(const TrackEvidence& evidence, const AudioMask& mask) {
@@ -228,16 +213,16 @@ struct ScoredMask {
     return crypto.audio_mask();
 }
 
-[[nodiscard]] ScoredMask score_zero_window_masks(const TrackEvidence& evidence) {
-    ScoredMask best;
+[[nodiscard]] std::optional<AudioMask> score_zero_window_masks(const TrackEvidence& evidence) {
+    std::optional<AudioMask> best;
+    double best_score = -std::numeric_limits<double>::infinity();
     for (const auto& observed : evidence.zero_window_masks) {
         const uint64_t key = UsmCrypto::recover_key_from_audio_mask(observed);
         const auto mask = regenerate_audio_mask(key);
         const double score = score_full_mask(evidence, mask);
-        if (score > best.score) {
-            best.mask = mask;
-            best.score = score;
-            best.used_zero_window = true;
+        if (score > best_score) {
+            best = mask;
+            best_score = score;
         }
     }
     return best;
@@ -266,7 +251,7 @@ struct ScoredMask {
         }
         result.mask[column] = best_mask;
         const double observations = static_cast<double>(
-            std::max<size_t>(column_observations(evidence, column), 1u)
+            std::max<size_t>(evidence.column_observations[column], 1u)
         );
         minimum_normalized_margin = std::min(
             minimum_normalized_margin,
@@ -276,7 +261,6 @@ struct ScoredMask {
 
     const uint64_t key = UsmCrypto::recover_key_from_audio_mask(result.mask);
     result.mask = regenerate_audio_mask(key);
-    result.score = score_full_mask(evidence, result.mask);
     result.confidence = std::isfinite(minimum_normalized_margin)
         ? 1.0 - std::exp(-std::max(0.0, minimum_normalized_margin))
         : 0.0;
@@ -288,19 +272,17 @@ struct ScoredMask {
         return std::nullopt;
     }
 
-    auto selected = score_zero_window_masks(evidence);
-    if (selected.used_zero_window) {
-        selected.confidence = 0.999;
-    } else {
-        selected = score_statistical_mask(evidence);
-    }
+    const auto zero_window_mask = score_zero_window_masks(evidence);
+    const auto selected = zero_window_mask
+        ? ScoredMask{.mask = *zero_window_mask, .confidence = 0.999}
+        : score_statistical_mask(evidence);
 
     return AudioKeyGuess{
         .key = UsmCrypto::recover_key_from_audio_mask(selected.mask),
         .score = static_cast<float>(std::clamp(selected.confidence, 0.0, 1.0)),
         .audio_chunks = evidence.audio_chunks,
         .audio_streams = 1u,
-        .used_zero_window = selected.used_zero_window,
+        .used_zero_window = zero_window_mask.has_value(),
     };
 }
 

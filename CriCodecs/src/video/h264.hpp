@@ -7,7 +7,7 @@
  * This is a structural parser, not a video decoder. It reads SPS dimensions and
  * timing, splits Annex B NAL units into access units, and marks IDR access
  * units so USM builder output can carry the same style of VIDEO_HDRINFO and
- * VIDEO_SEEKINFO metadata seen in Medianoche-authored samples.
+ * VIDEO_SEEKINFO metadata seen in samples produced by Medianoche.
  */
 
 #include <cstddef>

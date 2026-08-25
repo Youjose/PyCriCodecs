@@ -33,7 +33,7 @@ constexpr uint64_t embedded_hca_support_denominator = 10;
 constexpr size_t structure_probe_count = 8;
 constexpr size_t structure_probe_size = 4u * 1024u;
 
-using Mask = std::array<uint8_t, mask_size>;
+using Mask = detail::UsmMask;
 
 struct Evidence {
     std::array<std::array<uint32_t, 256>, mask_size> bytes{};
@@ -80,37 +80,6 @@ constexpr std::array<uint8_t, mask_size> dependency_mask = {
     return static_cast<uint8_t>(static_cast<unsigned>(lhs) - static_cast<unsigned>(rhs));
 }
 
-[[nodiscard]] constexpr Mask expand_mask(const std::array<uint8_t, 7>& seed) noexcept {
-    Mask table{};
-    std::ranges::copy(seed, table.begin());
-    table[0x07] = static_cast<uint8_t>(table[0x00] ^ 0xFFu);
-    table[0x08] = add8(table[0x02], table[0x01]);
-    table[0x09] = sub8(table[0x01], table[0x07]);
-    table[0x0A] = static_cast<uint8_t>(table[0x02] ^ 0xFFu);
-    table[0x0B] = static_cast<uint8_t>(table[0x01] ^ 0xFFu);
-    table[0x0C] = add8(table[0x0B], table[0x09]);
-    table[0x0D] = sub8(table[0x08], table[0x03]);
-    table[0x0E] = static_cast<uint8_t>(table[0x0D] ^ 0xFFu);
-    table[0x0F] = sub8(table[0x0A], table[0x0B]);
-    table[0x10] = sub8(table[0x08], table[0x0F]);
-    table[0x11] = static_cast<uint8_t>(table[0x10] ^ table[0x07]);
-    table[0x12] = static_cast<uint8_t>(table[0x0F] ^ 0xFFu);
-    table[0x13] = static_cast<uint8_t>(table[0x03] ^ 0x10u);
-    table[0x14] = sub8(table[0x04], 0x32u);
-    table[0x15] = add8(table[0x05], 0xEDu);
-    table[0x16] = static_cast<uint8_t>(table[0x06] ^ 0xF3u);
-    table[0x17] = sub8(table[0x13], table[0x0F]);
-    table[0x18] = add8(table[0x15], table[0x07]);
-    table[0x19] = sub8(0x21u, table[0x13]);
-    table[0x1A] = static_cast<uint8_t>(table[0x14] ^ table[0x17]);
-    table[0x1B] = add8(table[0x16], table[0x16]);
-    table[0x1C] = add8(table[0x17], 0x44u);
-    table[0x1D] = add8(table[0x03], table[0x04]);
-    table[0x1E] = sub8(table[0x05], table[0x16]);
-    table[0x1F] = static_cast<uint8_t>(table[0x1D] ^ table[0x13]);
-    return table;
-}
-
 [[nodiscard]] constexpr uint64_t effective_key(const std::array<uint8_t, 7>& seed) noexcept {
     const uint32_t lower =
         static_cast<uint32_t>(seed[0]) |
@@ -122,20 +91,6 @@ constexpr std::array<uint8_t, mask_size> dependency_mask = {
         (static_cast<uint32_t>(seed[5] ^ 0x13u) << 8u) |
         (static_cast<uint32_t>(sub8(seed[6], 0x61u)) << 16u);
     return static_cast<uint64_t>(lower) | (static_cast<uint64_t>(upper) << 32u);
-}
-
-[[nodiscard]] constexpr std::array<uint8_t, 7> seed_from_key(uint64_t key) noexcept {
-    const uint32_t lower = static_cast<uint32_t>(key);
-    const uint32_t upper = static_cast<uint32_t>(key >> 32u);
-    return {
-        static_cast<uint8_t>(lower),
-        static_cast<uint8_t>(lower >> 8u),
-        static_cast<uint8_t>(lower >> 16u),
-        sub8(static_cast<uint8_t>(lower >> 24u), 0x34u),
-        add8(static_cast<uint8_t>(upper), 0xF9u),
-        static_cast<uint8_t>((upper >> 8u) ^ 0x13u),
-        add8(static_cast<uint8_t>(upper >> 16u), 0x61u),
-    };
 }
 
 [[nodiscard]] constexpr bool is_video_chunk(const UsmChunk& chunk) noexcept {
@@ -319,7 +274,7 @@ void retain_best(std::vector<Candidate>& candidates) {
             Candidate candidate;
             candidate.seed[1] = static_cast<uint8_t>(seed1);
             candidate.seed[2] = static_cast<uint8_t>(seed2);
-            candidate.score = score_terms(evidence, weights, expand_mask(candidate.seed), terms);
+            candidate.score = score_terms(evidence, weights, detail::expand_video_mask(candidate.seed), terms);
             candidates.push_back(candidate);
         }
     }
@@ -345,7 +300,7 @@ void extend_candidates(
             candidate.score += score_terms(
                 evidence,
                 weights,
-                expand_mask(candidate.seed),
+                detail::expand_video_mask(candidate.seed),
                 terms
             );
             expanded.push_back(candidate);
@@ -402,46 +357,20 @@ struct EmbeddedHcaGuess {
         });
 }
 
-void add_embedded_hca_candidate(
+[[nodiscard]] bool add_external_candidate(
     std::vector<Candidate>& candidates,
-    EmbeddedHcaGuess& hca,
+    uint64_t key,
     const Evidence& evidence,
     const Weights& weights
 ) {
-    Candidate candidate{.seed = seed_from_key(hca.key)};
+    Candidate candidate{.seed = detail::seed_from_key(key)};
     constexpr auto all_terms = make_score_terms(0, 0x7Fu);
-    candidate.score = score_terms(evidence, weights, expand_mask(candidate.seed), all_terms);
-    hca.video_supported = candidate.score * embedded_hca_support_denominator >=
-        candidates.front().score * embedded_hca_support_numerator;
-    if (std::ranges::none_of(candidates, [&](const Candidate& existing) {
-        return existing.seed == candidate.seed;
-    })) {
-        candidates.push_back(candidate);
-    }
-    std::ranges::sort(candidates, better_candidate);
-    if (hca.video_supported) {
-        const auto position = std::ranges::find(candidates, candidate.seed, &Candidate::seed);
-        if (position != candidates.end()) {
-            std::iter_swap(candidates.begin(), position);
-        }
-    }
-}
-
-void add_adx_audio_candidate(
-    std::vector<Candidate>& candidates,
-    const AudioKeyGuess& audio,
-    const Evidence& evidence,
-    const Weights& weights
-) {
-    Candidate candidate{.seed = seed_from_key(audio.key)};
-    constexpr auto all_terms = make_score_terms(0, 0x7Fu);
-    candidate.score = score_terms(evidence, weights, expand_mask(candidate.seed), all_terms);
+    candidate.score = score_terms(evidence, weights, detail::expand_video_mask(candidate.seed), all_terms);
     const bool video_supported = candidate.score * embedded_hca_support_denominator >=
         candidates.front().score * embedded_hca_support_numerator;
     auto position = std::ranges::find(candidates, candidate.seed, &Candidate::seed);
     if (position == candidates.end()) {
         candidates.push_back(candidate);
-        position = std::prev(candidates.end());
     }
     std::ranges::sort(candidates, better_candidate);
     if (video_supported) {
@@ -450,6 +379,7 @@ void add_adx_audio_candidate(
             std::iter_swap(candidates.begin(), position);
         }
     }
+    return video_supported;
 }
 
 [[nodiscard]] bool has_vp9_stream(const UsmReader& source) noexcept {
@@ -466,7 +396,6 @@ struct Vp9Probe {
     std::array<std::array<uint8_t, mask_size>, 8> head_relation{};
     size_t frame_offset = 0;
     size_t frame_size = 0;
-    size_t payload_size = 0;
     size_t masked_end = 0;
     bool masked = false;
 };
@@ -479,7 +408,7 @@ struct Vp9Probe {
         }
 
         Vp9Probe probe;
-        probe.payload_size = chunk.payload.size();
+        const size_t payload_size = chunk.payload.size();
         probe.encrypted.reserve(chunk.payload.size() + chunk.padding.size());
         probe.encrypted.insert(probe.encrypted.end(), chunk.payload.begin(), chunk.payload.end());
         probe.encrypted.insert(probe.encrypted.end(), chunk.padding.begin(), chunk.padding.end());
@@ -490,12 +419,12 @@ struct Vp9Probe {
 
         const size_t record_offset = probe.encrypted.size() >= 32u && probe.encrypted[0] == 'D' &&
             probe.encrypted[1] == 'K' && probe.encrypted[2] == 'I' && probe.encrypted[3] == 'F' ? 32u : 0u;
-        if (record_offset + 12u > probe.payload_size) {
+        if (record_offset + 12u > payload_size) {
             continue;
         }
         probe.frame_size = io::read_le<uint32_t>(probe.encrypted.data() + record_offset);
         probe.frame_offset = record_offset + 12u;
-        if (probe.frame_size == 0 || probe.frame_size > probe.payload_size - probe.frame_offset) {
+        if (probe.frame_size == 0 || probe.frame_size > payload_size - probe.frame_offset) {
             continue;
         }
 
@@ -614,27 +543,19 @@ void rerank_vp9_candidates(std::vector<Candidate>& candidates, const UsmReader& 
         return;
     }
 
-    std::vector<uint32_t> structure_scores;
-    structure_scores.reserve(candidates.size());
-    uint32_t best = 0;
-    for (const auto& candidate : candidates) {
-        const uint32_t score = vp9_candidate_score(probes, expand_mask(candidate.seed));
-        structure_scores.push_back(score);
-        best = std::max(best, score);
-    }
-    if (best == 0) {
-        return;
-    }
-
     size_t best_index = 0;
-    for (size_t index = 1; index < candidates.size(); ++index) {
-        if (structure_scores[index] > structure_scores[best_index] ||
-            (structure_scores[index] == structure_scores[best_index] &&
+    uint32_t best_score = 0;
+    for (size_t index = 0; index < candidates.size(); ++index) {
+        const auto& candidate = candidates[index];
+        const uint32_t score = vp9_candidate_score(probes, detail::expand_video_mask(candidate.seed));
+        if (score > best_score ||
+            (score == best_score &&
              better_candidate(candidates[index], candidates[best_index]))) {
             best_index = index;
+            best_score = score;
         }
     }
-    if (best_index != 0) {
+    if (best_score != 0 && best_index != 0) {
         std::swap(candidates[0], candidates[best_index]);
     }
 }
@@ -825,11 +746,11 @@ std::expected<KeyRecoveryResult, std::string> recover_key(const UsmReader& sourc
     }
 
     if (audio_guess) {
-        add_adx_audio_candidate(candidates, *audio_guess, evidence, weights);
+        (void)add_external_candidate(candidates, audio_guess->key, evidence, weights);
     }
     auto hca_guess = recover_embedded_hca_key(source);
     if (hca_guess) {
-        add_embedded_hca_candidate(candidates, *hca_guess, evidence, weights);
+        hca_guess->video_supported = add_external_candidate(candidates, hca_guess->key, evidence, weights);
     }
     rerank_vp9_candidates(candidates, source);
     rerank_structured_video_candidates(candidates, source);

@@ -3,8 +3,7 @@
  * @file cpk_container.hpp
  * @brief CPK archive container API.
  *
- * Layout and mode behavior are taken from the official lib,
- * The C++23 object model is CriCodecs work by Youjose.
+ * Format behavior follows CRI's CPK library. C++23 object model by Youjose.
  */
 
 #include <cstdint>
@@ -14,6 +13,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "../utf/utf_table.hpp"
@@ -80,10 +80,7 @@ struct CpkEntry {
     bool is_compressed = false;
     bool request_compress = false;
 
-    std::string group;
-    std::string attribute;
     std::string user_string = "<NULL>";
-    uint64_t update_date_time = 0;
 
     [[nodiscard]] std::filesystem::path full_path() const {
         std::filesystem::path path;
@@ -193,13 +190,24 @@ public:
     }
 
     [[nodiscard]] const std::filesystem::path& source_path() const noexcept { return m_source_path; }
-    [[nodiscard]] CpkMode layout_mode() const noexcept { return m_layout_mode; }
+    [[nodiscard]] CpkMode layout_mode() const noexcept {
+        if (!has_toc()) return has_itoc() ? CpkMode::Mode0 : CpkMode::Mode1;
+        if (!has_itoc()) return CpkMode::Mode1;
+        return has_gtoc() ? CpkMode::Mode3 : CpkMode::Mode2;
+    }
     [[nodiscard]] CpkMode mode() const noexcept { return layout_mode(); } // Legacy alias.
-    [[nodiscard]] CpkPreset preset() const noexcept { return m_preset; }
-    [[nodiscard]] bool has_declared_preset() const noexcept { return m_has_declared_preset; }
-    [[nodiscard]] CpkPreset declared_preset() const noexcept { return m_declared_preset; }
-    [[nodiscard]] uint64_t content_offset() const noexcept { return m_content_offset; }
-    [[nodiscard]] uint16_t alignment() const noexcept { return m_align; }
+    [[nodiscard]] CpkPreset preset() const noexcept {
+        if (!has_toc() && !has_itoc() && !has_gtoc() && !has_etoc()) {
+            return m_options.preset;
+        }
+        return preset_from_chunks(has_toc(), has_itoc(), has_gtoc(), has_etoc());
+    }
+    [[nodiscard]] bool has_declared_preset() const noexcept { return m_declared_preset.has_value(); }
+    [[nodiscard]] CpkPreset declared_preset() const noexcept {
+        return m_declared_preset.value_or(CpkPreset::Custom);
+    }
+    [[nodiscard]] uint64_t content_offset() const;
+    [[nodiscard]] uint16_t alignment() const noexcept { return m_options.align; }
     [[nodiscard]] const std::vector<CpkEntry>& files() const noexcept { return m_files; }
     [[nodiscard]] size_t file_count() const noexcept { return m_files.size(); }
     [[nodiscard]] bool has_toc() const noexcept { return m_toc.is_loaded(); }
@@ -222,17 +230,13 @@ public:
 private:
     static constexpr uint32_t chunk_header_size = 0x10;
     static constexpr uint32_t chunk_alignment = 0x800;
+    static constexpr uint64_t root_chunk_size = 0x800;
+    static constexpr std::string_view default_tool_version = "CriCodecs CPK";
 
-    enum class EntrySourceKind {
-        Archive,
-        FilePath,
-        OwnedBytes,
-    };
+    struct ArchiveSource {};
 
     struct EntrySource {
-        EntrySourceKind kind = EntrySourceKind::OwnedBytes;
-        std::filesystem::path path;
-        std::vector<uint8_t> bytes;
+        std::variant<ArchiveSource, std::filesystem::path, std::vector<uint8_t>> data;
         std::optional<uint32_t> explicit_id;
     };
 
@@ -254,37 +258,30 @@ private:
     utf::UtfTable m_gtoc;
     utf::UtfTable m_etoc;
 
-    bool m_has_declared_preset = false;
-    CpkPreset m_declared_preset = CpkPreset::Custom;
-    CpkPreset m_preset = CpkPreset::Custom;
-    CpkMode m_layout_mode = CpkMode::Mode1;
-    uint64_t m_content_offset = 0;
-    uint16_t m_align = 0x800;
+    std::optional<CpkPreset> m_declared_preset;
     CpkOptions m_options;
     bool m_dirty = false;
-
-    std::vector<uint8_t> m_cpk_header_storage;
-    std::vector<uint8_t> m_toc_storage;
-    std::vector<uint8_t> m_itoc_storage;
-    std::vector<uint8_t> m_gtoc_storage;
-    std::vector<uint8_t> m_etoc_storage;
 
     std::vector<CpkEntry> m_files;
     std::vector<EntrySource> m_sources;
 
-    struct LoadedUtfChunk {
-        utf::UtfTable table;
-        std::vector<uint8_t> owned_payload;
-    };
-
-    std::expected<void, std::string> load_owned_bytes(std::vector<uint8_t>&& data);
+    void add_source(
+        EntrySource source,
+        const std::string& cpk_path,
+        bool compress
+    );
+    std::expected<void, std::string> replace_source(
+        size_t index,
+        EntrySource source,
+        std::optional<bool> compress
+    );
     std::expected<void, std::string> parse();
-    std::expected<LoadedUtfChunk, std::string> load_chunk_utf(
+    std::expected<utf::UtfTable, std::string> load_chunk_utf(
         uint64_t offset,
         uint64_t chunk_size,
         std::string_view expected_magic
     ) const;
-    std::expected<void, std::string> populate_file_entries();
+    std::expected<void, std::string> populate_file_entries(uint64_t content_offset);
     void normalize_entry_path(CpkEntry& entry, const std::string& cpk_path) const;
     std::expected<std::span<const uint8_t>, std::string> packed_entry_span(const CpkEntry& entry) const;
     std::expected<void, std::string> write_entry_to_file(
@@ -329,10 +326,6 @@ private:
         uint64_t gtoc_chunk_size,
         uint64_t content_offset,
         uint64_t file_size,
-        uint32_t directory_count,
-        bool has_toc,
-        bool has_itoc,
-        bool has_gtoc,
         uint32_t toc_crc,
         uint32_t itoc_crc,
         uint32_t gtoc_crc
@@ -342,8 +335,8 @@ private:
         std::span<const uint8_t> table_data,
         bool encrypt_payload = false
     ) const;
+    static void crypt_utf_payload(std::span<uint8_t> payload);
 
-    static std::string default_tver(CpkPreset preset);
     static int compare_archive_paths(std::string_view lhs, std::string_view rhs);
 };
 

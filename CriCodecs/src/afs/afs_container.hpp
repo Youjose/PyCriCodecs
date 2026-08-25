@@ -47,8 +47,7 @@ struct AfsDirectoryTimestamp {
     [[nodiscard]] constexpr bool operator==(const AfsDirectoryTimestamp&) const noexcept = default;
 
     [[nodiscard]] constexpr bool empty() const noexcept {
-        return year == 0 && month == 0 && day == 0 &&
-               hour == 0 && minute == 0 && second == 0;
+        return *this == AfsDirectoryTimestamp{};
     }
 };
 
@@ -170,8 +169,7 @@ private:
     std::vector<uint8_t> m_owned_source;
     std::filesystem::path m_source_path;
     std::vector<AfsEntry> m_entries;
-    std::vector<std::vector<uint8_t>> m_file_data;
-    std::vector<uint8_t> m_file_data_overrides;
+    std::vector<std::optional<std::vector<uint8_t>>> m_payloads;
     std::optional<uint32_t> m_directory_table_offset;
     std::optional<uint32_t> m_directory_table_size;
     std::optional<uint32_t> m_first_payload_offset;

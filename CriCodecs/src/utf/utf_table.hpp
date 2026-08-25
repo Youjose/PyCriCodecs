@@ -17,7 +17,7 @@
 #include <variant>
 #include <optional>
 #include <bit>
-#include <cstring>
+#include <concepts>
 #include <utility>
 
 #include "../utilities/flat_unordered_map.hpp"
@@ -73,18 +73,12 @@ constexpr uint32_t get_type_size(ColumnType type) {
 struct DataRef {
     uint32_t offset = 0;
     uint32_t size = 0;
-
-    bool operator==(const DataRef& other) const {
-        return offset == other.offset && size == other.size;
-    }
+    bool operator==(const DataRef&) const = default;
 };
 
 struct GUID {
     uint8_t data[16] = {};
-    
-    bool operator==(const GUID& other) const {
-        return std::memcmp(data, other.data, 16) == 0;
-    }
+    bool operator==(const GUID&) const = default;
 };
 
 using Value = std::variant<
@@ -122,7 +116,9 @@ public:
     
     std::string_view table_name() const { return m_table_name; }
     std::string_view table_name_bytes() const { return m_table_name; }
-    uint32_t row_count() const { return m_num_rows; }
+    uint32_t row_count() const {
+        return is_loaded() ? m_loaded_row_count : static_cast<uint32_t>(m_values.size());
+    }
     uint32_t column_count() const { return static_cast<uint32_t>(m_columns.size()); }
     const Column& column(uint32_t index) const { return m_columns[index]; }
     const std::vector<Column>& columns() const { return m_columns; }
@@ -135,16 +131,60 @@ public:
     uint16_t row_width() const { return m_row_width; }
     void set_row_width(uint16_t w) { m_row_width = w; }
     
-    // Data alignment for VLData entries (default 0 = no per-entry alignment, just 8-byte table alignment).
-    // ACBs typically use 32. When set, each non-empty VLData entry in the data section
-    // is padded to start at the next alignment boundary.
+    // ACB callers use 32; generic UTF only aligns the table to 8 bytes.
     uint32_t data_alignment() const { return m_data_alignment; }
     void set_data_alignment(uint32_t alignment) { m_data_alignment = alignment; }
     
     int find_column(std::string_view name) const;
     
     template<typename T>
-    std::expected<T, std::string> get(uint32_t row, uint32_t col) const;
+    std::expected<T, std::string> get(uint32_t row, uint32_t col) const {
+        constexpr auto expected_type = [] {
+            if constexpr (std::same_as<T, uint8_t>) return ColumnType::UInt8;
+            else if constexpr (std::same_as<T, int8_t>) return ColumnType::SInt8;
+            else if constexpr (std::same_as<T, uint16_t>) return ColumnType::UInt16;
+            else if constexpr (std::same_as<T, int16_t>) return ColumnType::SInt16;
+            else if constexpr (std::same_as<T, uint32_t>) return ColumnType::UInt32;
+            else if constexpr (std::same_as<T, int32_t>) return ColumnType::SInt32;
+            else if constexpr (std::same_as<T, uint64_t>) return ColumnType::UInt64;
+            else if constexpr (std::same_as<T, int64_t>) return ColumnType::SInt64;
+            else if constexpr (std::same_as<T, float>) return ColumnType::Float;
+            else if constexpr (std::same_as<T, double>) return ColumnType::Double;
+        }();
+
+        if (col >= m_columns.size()) return std::unexpected("UTF column index is out of range");
+        if (row >= row_count()) return std::unexpected("UTF row index is out of range");
+        if (m_columns[col].type != expected_type) {
+            return std::unexpected("UTF value read failed: type mismatch");
+        }
+
+        if (row < m_values.size() && col < m_values[row].size()) {
+            if (const auto* number = std::get_if<T>(&m_values[row][col])) return *number;
+        }
+
+        const auto field = field_data(row, col);
+        if (!field && has_flag(m_columns[col].flag, ColumnFlag::Default)) {
+            if (col < m_default_values.size()) {
+                if (const auto* number = std::get_if<T>(&m_default_values[col])) return *number;
+            }
+            if (field.error() == "UTF column has no data" ||
+                field.error() == "UTF schema data is unavailable" ||
+                field.error() == "UTF default value is out of bounds") {
+                return std::unexpected("UTF value read failed: type mismatch");
+            }
+        }
+        if (!field) return std::unexpected(field.error());
+
+        if constexpr (std::same_as<T, uint8_t> || std::same_as<T, int8_t>) {
+            return static_cast<T>((*field)[0]);
+        } else if constexpr (std::same_as<T, float>) {
+            return std::bit_cast<float>(io::read_be<uint32_t>(field->data()));
+        } else if constexpr (std::same_as<T, double>) {
+            return std::bit_cast<double>(io::read_be<uint64_t>(field->data()));
+        } else {
+            return io::read_be<T>(field->data());
+        }
+    }
     
     template<typename T>
     std::expected<T, std::string> get(uint32_t row, std::string_view col_name) const {
@@ -222,17 +262,13 @@ public:
 private:
     uint32_t m_table_size = 0;
     uint16_t m_version = 0;
-    uint16_t m_rows_offset = 0;
+    uint32_t m_rows_offset = 0;
     uint32_t m_strings_offset = 0;
     uint32_t m_data_offset = 0;
-    uint32_t m_name_offset = 0;
-    uint16_t m_serialized_column_count = 0;
     uint16_t m_row_width = 0;
-    uint32_t m_num_rows = 0;
+    uint32_t m_loaded_row_count = 0;
     uint32_t m_data_alignment = 0;
 
-    std::vector<uint8_t> m_schema_buf;
-    std::string m_string_table;
     io::SourceView m_source;
     
     std::vector<Column> m_columns;
@@ -244,34 +280,14 @@ private:
     
     mutable util::flat_unordered_map<std::string, int, util::transparent_string_hash, std::equal_to<>> m_column_cache;
     
-    std::expected<void, std::string> parse_header();
-    std::expected<void, std::string> parse_schema();
+    std::expected<void, std::string> parse();
+    void make_editable();
     
     std::expected<std::span<const uint8_t>, std::string> field_data(uint32_t row, uint32_t col) const;
+    std::expected<std::span<const uint8_t>, std::string> data_at(DataRef ref) const;
 
     Value read_value_at(const uint8_t* buf, ColumnType type) const;
     std::string_view string_at(uint32_t offset) const;
 };
-
-template<>
-std::expected<uint8_t, std::string> UtfTable::get<uint8_t>(uint32_t row, uint32_t col) const;
-template<>
-std::expected<int8_t, std::string> UtfTable::get<int8_t>(uint32_t row, uint32_t col) const;
-template<>
-std::expected<uint16_t, std::string> UtfTable::get<uint16_t>(uint32_t row, uint32_t col) const;
-template<>
-std::expected<int16_t, std::string> UtfTable::get<int16_t>(uint32_t row, uint32_t col) const;
-template<>
-std::expected<uint32_t, std::string> UtfTable::get<uint32_t>(uint32_t row, uint32_t col) const;
-template<>
-std::expected<int32_t, std::string> UtfTable::get<int32_t>(uint32_t row, uint32_t col) const;
-template<>
-std::expected<uint64_t, std::string> UtfTable::get<uint64_t>(uint32_t row, uint32_t col) const;
-template<>
-std::expected<int64_t, std::string> UtfTable::get<int64_t>(uint32_t row, uint32_t col) const;
-template<>
-std::expected<float, std::string> UtfTable::get<float>(uint32_t row, uint32_t col) const;
-template<>
-std::expected<double, std::string> UtfTable::get<double>(uint32_t row, uint32_t col) const;
 
 } // namespace cricodecs::utf

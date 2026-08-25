@@ -2,12 +2,10 @@
  * @file usm_builder.cpp
  * @brief USM builder
  *
- * The mux layout started from PyCriCodecsEx behavior and has since been
- * checked against official SofDec 2 metadata names such as
- * CRIUSF_DIR_STREAM, VIDEO_HDRINFO, and VIDEO_SEEKINFO. The current builder
- * accepts VP9-in-IVF, MPEG/Sofdec elementary video, H.264 Annex B, and
- * optional ADX or HCA audio, with byte-exact stream reassembly as the primary
- * contract rather than byte-identical USM authoring.
+ * Builds VP9, MPEG, or H.264 video with optional ADX, HCA, and subtitle
+ * streams. Reassembled stream bytes are preserved; the container layout may
+ * differ from another muxer.
+ * The original mux layout was ported from PyCriCodecsEx.
  */
 
 #include "usm_container.hpp"
@@ -63,10 +61,11 @@ constexpr std::array<uint8_t, 0x20> metadata_end_marker = {
 struct BuiltChunk {
     UsmChunk chunk;
     uint64_t scheduler_time = 0;
-    uint32_t priority = 0;
-    bool is_keyframe = false;
-    uint32_t frame_index = 0;
 };
+
+constexpr uint32_t stream_priority(UsmChunkType type) noexcept {
+    return type == UsmChunkType::SFV ? 0u : type == UsmChunkType::SBT ? 2u : 1u;
+}
 
 struct VideoSeekEntry {
     uint64_t byte_offset = 0;
@@ -87,6 +86,7 @@ struct VideoBuildInfo {
     uint8_t dcprec = vp9_dcprec;
     uint32_t minbuf = 0;
     uint32_t avbps = 0;
+    std::vector<uint32_t> keyframes;
     std::vector<BuiltChunk> chunks;
 };
 
@@ -361,11 +361,11 @@ std::expected<std::vector<uint8_t>, std::string> build_subtitle_payload(
     const UsmBuildInput::SubtitleTrack& track
 ) {
     const auto format = resolve_subtitle_format(track.path, track.format);
+    auto bytes = io::read_file_bytes(track.path, "USM build subtitle input read failed");
+    if (!bytes) {
+        return std::unexpected(bytes.error());
+    }
     if (format == UsmSubtitleFormat::Sbt) {
-        auto bytes = io::read_file_bytes(track.path, "USM build subtitle input read failed");
-        if (!bytes) {
-            return std::unexpected(bytes.error());
-        }
         auto parsed = parse_sbt_subtitles(*bytes);
         if (!parsed) {
             return std::unexpected("USM build failed: invalid SBT subtitle input: " + parsed.error());
@@ -373,10 +373,6 @@ std::expected<std::vector<uint8_t>, std::string> build_subtitle_payload(
         return bytes;
     }
 
-    auto bytes = io::read_file_bytes(track.path, "USM build subtitle input read failed");
-    if (!bytes) {
-        return std::unexpected(bytes.error());
-    }
     const std::string text(bytes->begin(), bytes->end());
     switch (format) {
     case UsmSubtitleFormat::SourceText:
@@ -479,7 +475,6 @@ std::expected<SubtitleBuildInfo, std::string> build_subtitle_chunks(
             ),
             .scheduler_time =
                 static_cast<uint64_t>(cue.start_time) * base_frame_rate / cue.time_unit,
-            .priority = 2,
         };
         max_chunk_size = std::max(max_chunk_size, static_cast<uint32_t>(chunk.chunk.packed_size()));
         info.chunks.push_back(std::move(chunk));
@@ -489,7 +484,6 @@ std::expected<SubtitleBuildInfo, std::string> build_subtitle_chunks(
     info.ixsize = max_chunk_size;
     info.chunks.push_back(BuiltChunk{
         .chunk = make_end_chunk(UsmChunkType::SBT, channel_no, contents_end_marker),
-        .priority = 2,
     });
 
     return info;
@@ -559,9 +553,6 @@ std::expected<VideoBuildInfo, std::string> build_ivf_video_chunks(
 
         BuiltChunk chunk;
         chunk.scheduler_time = *frame_time;
-        chunk.priority = stream_type == UsmChunkType::SFV ? 0u : 1u;
-        chunk.is_keyframe = frame->is_keyframe;
-        chunk.frame_index = actual_frame_count;
         chunk.chunk = make_chunk(
             stream_type,
             UsmPayloadType::Stream,
@@ -572,6 +563,9 @@ std::expected<VideoBuildInfo, std::string> build_ivf_video_chunks(
         transform_stream_chunk_payload_with_padding(chunk.chunk, crypto, false);
         max_chunk_size = std::max(max_chunk_size, static_cast<uint32_t>(chunk.chunk.packed_size()));
         info.chunks.push_back(std::move(chunk));
+        if (frame->is_keyframe) {
+            info.keyframes.push_back(actual_frame_count);
+        }
 
         ++actual_frame_count;
     }
@@ -588,7 +582,6 @@ std::expected<VideoBuildInfo, std::string> build_ivf_video_chunks(
     info.minbuf = max_chunk_size;
     info.chunks.push_back(BuiltChunk{
         .chunk = make_end_chunk(stream_type, 0, contents_end_marker),
-        .priority = stream_type == UsmChunkType::SFV ? 0u : 1u,
     });
 
     return info;
@@ -639,9 +632,6 @@ std::expected<VideoBuildInfo, std::string> build_elementary_video_chunks(
 
         BuiltChunk chunk;
         chunk.scheduler_time = static_cast<uint32_t>(std::llround(current_interval));
-        chunk.priority = stream_type == UsmChunkType::SFV ? 0u : 1u;
-        chunk.is_keyframe = frame->is_keyframe;
-        chunk.frame_index = actual_frame_count;
         chunk.chunk = make_chunk(
             stream_type,
             UsmPayloadType::Stream,
@@ -652,6 +642,9 @@ std::expected<VideoBuildInfo, std::string> build_elementary_video_chunks(
         transform_stream_chunk_payload_with_padding(chunk.chunk, crypto, false);
         max_chunk_size = std::max(max_chunk_size, static_cast<uint32_t>(chunk.chunk.packed_size()));
         info.chunks.push_back(std::move(chunk));
+        if (frame->is_keyframe) {
+            info.keyframes.push_back(actual_frame_count);
+        }
 
         current_interval += frame_interval;
         ++actual_frame_count;
@@ -670,7 +663,6 @@ std::expected<VideoBuildInfo, std::string> build_elementary_video_chunks(
     info.minbuf = max_chunk_size;
     info.chunks.push_back(BuiltChunk{
         .chunk = make_end_chunk(stream_type, 0, contents_end_marker),
-        .priority = stream_type == UsmChunkType::SFV ? 0u : 1u,
     });
 
     return info;
@@ -833,7 +825,6 @@ std::expected<AudioBuildInfo, std::string> build_adx_audio_chunks(
                 base_frame_rate,
                 payload),
             .scheduler_time = frame_time,
-            .priority = 1,
         };
         if (encrypt_audio) {
             transform_stream_chunk_payload_with_padding(chunk.chunk, crypto, true);
@@ -881,7 +872,6 @@ std::expected<AudioBuildInfo, std::string> build_adx_audio_chunks(
 
     info.chunks.push_back(BuiltChunk{
         .chunk = make_end_chunk(UsmChunkType::SFA, channel_no, contents_end_marker),
-        .priority = 1,
     });
 
     return info;
@@ -976,7 +966,6 @@ std::expected<AudioBuildInfo, std::string> build_hca_audio_chunks(
             base_frame_rate,
             hca_header),
         .scheduler_time = 0,
-        .priority = 1,
     });
 
     for (uint32_t frame_index = 0; frame_index < header.fmt.frame_count; ++frame_index) {
@@ -999,13 +988,11 @@ std::expected<AudioBuildInfo, std::string> build_hca_audio_chunks(
                 base_frame_rate,
                 std::span<const uint8_t>(bytes).subspan(frame_offset, header.codec.frame_size)),
             .scheduler_time = frame_time,
-            .priority = 1,
         });
     }
 
     info.chunks.push_back(BuiltChunk{
         .chunk = make_end_chunk(UsmChunkType::SFA, channel_no, contents_end_marker),
-        .priority = 1,
     });
     return info;
 }
@@ -1121,7 +1108,7 @@ UsmChunk build_video_header_chunk(
     return make_chunk(video.stream_type, UsmPayloadType::Header, 0, 0, 30, payload);
 }
 
-UsmChunk build_audio_header_chunk(const AudioBuildInfo& audio, uint8_t channel_no) {
+UsmChunk build_audio_header_chunk(const AudioBuildInfo& audio) {
     utf::UtfTable table = utf::UtfTable::create("AUDIO_HDRINFO");
     table.add_column("audio_codec", utf::ColumnType::UInt8);
     table.add_column("sampling_rate", utf::ColumnType::UInt32);
@@ -1147,10 +1134,10 @@ UsmChunk build_audio_header_chunk(const AudioBuildInfo& audio, uint8_t channel_n
     table.set(row, "ixsize", audio_ixsize).value();
     table.set(row, "ambisonics", 0u).value();
     const auto payload = table.build();
-    return make_chunk(UsmChunkType::SFA, UsmPayloadType::Header, channel_no, 0, 30, payload);
+    return make_chunk(UsmChunkType::SFA, UsmPayloadType::Header, audio.channel_no, 0, 30, payload);
 }
 
-UsmChunk build_subtitle_header_chunk(const SubtitleBuildInfo& subtitle, uint8_t channel_no) {
+UsmChunk build_subtitle_header_chunk(const SubtitleBuildInfo& subtitle) {
     utf::UtfTable table = utf::UtfTable::create("SUBTITLE_HDRINFO");
     table.add_column("time_unit", utf::ColumnType::UInt32);
     table.add_column("total_time", utf::ColumnType::UInt32);
@@ -1165,7 +1152,30 @@ UsmChunk build_subtitle_header_chunk(const SubtitleBuildInfo& subtitle, uint8_t 
     table.set(row, "content_xsize", subtitle.content_xsize).value();
     table.set(row, "ixsize", subtitle.ixsize).value();
     const auto payload = table.build();
-    return make_chunk(UsmChunkType::SBT, UsmPayloadType::Header, channel_no, 0, 30, payload);
+    return make_chunk(UsmChunkType::SBT, UsmPayloadType::Header, subtitle.channel_no, 0, 30, payload);
+}
+
+void append_crid_row(
+    utf::UtfTable& table,
+    uint32_t fmtver,
+    std::string_view filename,
+    uint32_t filesize,
+    uint32_t stream_id,
+    uint16_t channel,
+    uint16_t minchk,
+    uint32_t minbuf,
+    uint32_t avbps
+) {
+    const auto row = table.add_row();
+    table.set(row, "fmtver", fmtver).value();
+    table.set(row, "filename", std::string(filename)).value();
+    table.set(row, "filesize", filesize).value();
+    table.set(row, "datasize", 0u).value();
+    table.set(row, "stmid", stream_id).value();
+    table.set(row, "chno", channel).value();
+    table.set(row, "minchk", minchk).value();
+    table.set(row, "minbuf", minbuf).value();
+    table.set(row, "avbps", avbps).value();
 }
 
 UsmChunk build_crid_chunk(
@@ -1203,64 +1213,22 @@ UsmChunk build_crid_chunk(
         total_avbps += subtitle.avbps;
     }
 
-    const auto root_row = table.add_row();
-    table.set(root_row, "fmtver", video.fmtver).value();
-    table.set(root_row, "filename", std::string(usm_name)).value();
-    table.set(root_row, "filesize", total_size).value();
-    table.set(root_row, "datasize", 0u).value();
-    table.set(root_row, "stmid", 0u).value();
-    table.set(root_row, "chno", static_cast<uint16_t>(0xFFFF)).value();
-    table.set(root_row, "minchk", static_cast<uint16_t>(1)).value();
-    table.set(root_row, "minbuf", root_minbuf).value();
-    table.set(root_row, "avbps", total_avbps).value();
-    const auto video_row = table.add_row();
-    table.set(video_row, "fmtver", video.fmtver).value();
-    table.set(video_row, "filename", video.filename).value();
-    table.set(video_row, "filesize", video.filesize).value();
-    table.set(video_row, "datasize", 0u).value();
-    table.set(video_row, "stmid", static_cast<uint32_t>(UsmChunkType::SFV)).value();
-    table.set(video_row, "chno", static_cast<uint16_t>(0)).value();
-    table.set(video_row, "minchk", static_cast<uint16_t>(3)).value();
-    table.set(video_row, "minbuf", video.minbuf).value();
-    table.set(video_row, "avbps", video.avbps).value();
+    append_crid_row(table, video.fmtver, usm_name, total_size, 0, 0xFFFF, 1, root_minbuf, total_avbps);
+    append_crid_row(table, video.fmtver, video.filename, video.filesize,
+                    static_cast<uint32_t>(UsmChunkType::SFV), 0, 3, video.minbuf, video.avbps);
     if (alpha != nullptr) {
-        const auto alpha_row = table.add_row();
-        table.set(alpha_row, "fmtver", alpha->fmtver).value();
-        table.set(alpha_row, "filename", alpha->filename).value();
-        table.set(alpha_row, "filesize", alpha->filesize).value();
-        table.set(alpha_row, "datasize", 0u).value();
-        table.set(alpha_row, "stmid", static_cast<uint32_t>(UsmChunkType::ALP)).value();
-        table.set(alpha_row, "chno", static_cast<uint16_t>(0)).value();
-        table.set(alpha_row, "minchk", static_cast<uint16_t>(3)).value();
-        table.set(alpha_row, "minbuf", alpha->minbuf).value();
-        table.set(alpha_row, "avbps", alpha->avbps).value();
+        append_crid_row(table, alpha->fmtver, alpha->filename, alpha->filesize,
+                        static_cast<uint32_t>(UsmChunkType::ALP), 0, 3, alpha->minbuf, alpha->avbps);
     }
-    for (size_t index = 0; index < audios.size(); ++index) {
-        const auto& audio = audios[index];
-        const auto row = table.add_row();
-        table.set(row, "fmtver", video.fmtver).value();
-        table.set(row, "filename", audio.filename).value();
-        table.set(row, "filesize", audio.filesize).value();
-        table.set(row, "datasize", 0u).value();
-        table.set(row, "stmid", static_cast<uint32_t>(UsmChunkType::SFA)).value();
-        table.set(row, "chno", static_cast<uint16_t>(audio.channel_no)).value();
-        table.set(row, "minchk", static_cast<uint16_t>(1)).value();
-        table.set(row, "minbuf", audio_ixsize).value();
-        table.set(row, "avbps", audio.avbps).value();
+    for (const auto& audio : audios) {
+        append_crid_row(table, video.fmtver, audio.filename, audio.filesize,
+                        static_cast<uint32_t>(UsmChunkType::SFA), audio.channel_no, 1, audio_ixsize, audio.avbps);
     }
 
-    for (size_t index = 0; index < subtitles.size(); ++index) {
-        const auto& subtitle = subtitles[index];
-        const auto row = table.add_row();
-        table.set(row, "fmtver", video.fmtver).value();
-        table.set(row, "filename", subtitle.filename).value();
-        table.set(row, "filesize", subtitle.filesize).value();
-        table.set(row, "datasize", 0u).value();
-        table.set(row, "stmid", static_cast<uint32_t>(UsmChunkType::SBT)).value();
-        table.set(row, "chno", static_cast<uint16_t>(subtitle.channel_no)).value();
-        table.set(row, "minchk", static_cast<uint16_t>(1)).value();
-        table.set(row, "minbuf", subtitle.avbps / 16u).value();
-        table.set(row, "avbps", subtitle.avbps).value();
+    for (const auto& subtitle : subtitles) {
+        append_crid_row(table, video.fmtver, subtitle.filename, subtitle.filesize,
+                        static_cast<uint32_t>(UsmChunkType::SBT), subtitle.channel_no, 1,
+                        subtitle.avbps / 16u, subtitle.avbps);
     }
 
     auto payload = table.build();
@@ -1286,7 +1254,6 @@ UsmChunk build_crid_chunk(
 }
 
 std::expected<std::vector<uint8_t>, std::string> build_impl(
-    UsmCrypto& crypto,
     const UsmBuildInput& input,
     std::string_view usm_name
 ) {
@@ -1295,7 +1262,7 @@ std::expected<std::vector<uint8_t>, std::string> build_impl(
         return std::unexpected(plan.error());
     }
 
-    crypto.clear_key();
+    UsmCrypto crypto;
     if (input.key != 0) {
         crypto.init_key(input.key);
     }
@@ -1360,14 +1327,12 @@ std::expected<std::vector<uint8_t>, std::string> build_impl(
 
     const auto make_placeholder_seek_entries = [](const VideoBuildInfo& source) {
         std::vector<VideoSeekEntry> entries;
-        entries.reserve(source.chunks.size());
-        for (const auto& chunk : source.chunks) {
-            if (chunk.is_keyframe) {
-                entries.push_back(VideoSeekEntry{
-                    .byte_offset = std::numeric_limits<uint64_t>::max() - entries.size(),
-                    .frame_index = chunk.frame_index,
-                });
-            }
+        entries.reserve(source.keyframes.size());
+        for (const auto frame_index : source.keyframes) {
+            entries.push_back(VideoSeekEntry{
+                .byte_offset = std::numeric_limits<uint64_t>::max() - entries.size(),
+                .frame_index = frame_index,
+            });
         }
         return entries;
     };
@@ -1396,21 +1361,24 @@ std::expected<std::vector<uint8_t>, std::string> build_impl(
         ));
     }
     for (const auto& audio : audios) {
-        prestream_chunks.push_back(build_audio_header_chunk(audio, audio.channel_no));
+        prestream_chunks.push_back(build_audio_header_chunk(audio));
     }
     for (const auto& subtitle : subtitles) {
-        prestream_chunks.push_back(build_subtitle_header_chunk(subtitle, subtitle.channel_no));
+        prestream_chunks.push_back(build_subtitle_header_chunk(subtitle));
     }
-    prestream_chunks.push_back(make_end_chunk(UsmChunkType::SFV, 0, header_end_marker));
-    if (alpha.has_value()) {
-        prestream_chunks.push_back(make_end_chunk(UsmChunkType::ALP, 0, header_end_marker));
-    }
-    for (const auto& audio : audios) {
-        prestream_chunks.push_back(make_end_chunk(UsmChunkType::SFA, audio.channel_no, header_end_marker));
-    }
-    for (const auto& subtitle : subtitles) {
-        prestream_chunks.push_back(make_end_chunk(UsmChunkType::SBT, subtitle.channel_no, header_end_marker));
-    }
+    const auto append_end_markers = [&](std::span<const uint8_t> marker) {
+        prestream_chunks.push_back(make_end_chunk(UsmChunkType::SFV, 0, marker));
+        if (alpha) {
+            prestream_chunks.push_back(make_end_chunk(UsmChunkType::ALP, 0, marker));
+        }
+        for (const auto& audio : audios) {
+            prestream_chunks.push_back(make_end_chunk(UsmChunkType::SFA, audio.channel_no, marker));
+        }
+        for (const auto& subtitle : subtitles) {
+            prestream_chunks.push_back(make_end_chunk(UsmChunkType::SBT, subtitle.channel_no, marker));
+        }
+    };
+    append_end_markers(header_end_marker);
     std::optional<size_t> video_seek_chunk_index;
     std::optional<size_t> alpha_seek_chunk_index;
     if (!video_seek_entries.empty()) {
@@ -1428,16 +1396,7 @@ std::expected<std::vector<uint8_t>, std::string> build_impl(
             audio.metadata_chunks.end()
         );
     }
-    prestream_chunks.push_back(make_end_chunk(UsmChunkType::SFV, 0, metadata_end_marker));
-    if (alpha.has_value()) {
-        prestream_chunks.push_back(make_end_chunk(UsmChunkType::ALP, 0, metadata_end_marker));
-    }
-    for (const auto& audio : audios) {
-        prestream_chunks.push_back(make_end_chunk(UsmChunkType::SFA, audio.channel_no, metadata_end_marker));
-    }
-    for (const auto& subtitle : subtitles) {
-        prestream_chunks.push_back(make_end_chunk(UsmChunkType::SBT, subtitle.channel_no, metadata_end_marker));
-    }
+    append_end_markers(metadata_end_marker);
 
     size_t content_chunk_count = video->chunks.size();
     if (alpha.has_value()) {
@@ -1452,42 +1411,33 @@ std::expected<std::vector<uint8_t>, std::string> build_impl(
 
     std::vector<BuiltChunk> content_chunks;
     content_chunks.reserve(content_chunk_count);
-    content_chunks.insert(
-        content_chunks.end(),
-        std::make_move_iterator(video->chunks.begin()),
-        std::make_move_iterator(video->chunks.end())
-    );
+    const auto append_content = [&](auto& stream) {
+        content_chunks.insert(
+            content_chunks.end(),
+            std::make_move_iterator(stream.chunks.begin()),
+            std::make_move_iterator(stream.chunks.end())
+        );
+    };
+    append_content(*video);
     if (alpha.has_value()) {
-        content_chunks.insert(
-            content_chunks.end(),
-            std::make_move_iterator(alpha->chunks.begin()),
-            std::make_move_iterator(alpha->chunks.end())
-        );
+        append_content(*alpha);
     }
-    for (size_t index = 0; index < audios.size(); ++index) {
-        content_chunks.insert(
-            content_chunks.end(),
-            std::make_move_iterator(audios[index].chunks.begin()),
-            std::make_move_iterator(audios[index].chunks.end())
-        );
+    for (auto& audio : audios) {
+        append_content(audio);
     }
-    for (size_t index = 0; index < subtitles.size(); ++index) {
-        content_chunks.insert(
-            content_chunks.end(),
-            std::make_move_iterator(subtitles[index].chunks.begin()),
-            std::make_move_iterator(subtitles[index].chunks.end())
-        );
+    for (auto& subtitle : subtitles) {
+        append_content(subtitle);
     }
     std::stable_sort(content_chunks.begin(), content_chunks.end(), [](const BuiltChunk& lhs, const BuiltChunk& rhs) {
-        return std::tie(
+        return std::tuple{
             lhs.chunk.header.payload_type_and_flags,
             lhs.scheduler_time,
-            lhs.priority
-        ) < std::tie(
+            stream_priority(lhs.chunk.chunk_type())
+        } < std::tuple{
             rhs.chunk.header.payload_type_and_flags,
             rhs.scheduler_time,
-            rhs.priority
-        );
+            stream_priority(rhs.chunk.chunk_type())
+        };
     });
 
     size_t header_size = 0;
@@ -1502,27 +1452,31 @@ std::expected<std::vector<uint8_t>, std::string> build_impl(
 
     const auto replace_seek_metadata = [&](
         const VideoBuildInfo& source,
-        std::span<const VideoSeekEntry> placeholders,
         size_t insert_index
     ) -> std::expected<void, std::string> {
         std::vector<VideoSeekEntry> seek_entries;
-        seek_entries.reserve(placeholders.size());
+        seek_entries.reserve(source.keyframes.size());
 
         uint64_t current_chunk_offset = 0x800ull + static_cast<uint64_t>(header_size);
+        uint32_t frame_index = 0;
+        auto next_keyframe = source.keyframes.begin();
         for (const auto& chunk : content_chunks) {
             if (chunk.chunk.header.magic == static_cast<uint32_t>(source.stream_type) &&
                 chunk.chunk.payload_type() == UsmPayloadType::Stream &&
-                chunk.chunk.header.channel_no == 0 &&
-                chunk.is_keyframe) {
-                seek_entries.push_back(VideoSeekEntry{
-                    .byte_offset = current_chunk_offset,
-                    .frame_index = chunk.frame_index,
-                });
+                chunk.chunk.header.channel_no == 0) {
+                if (next_keyframe != source.keyframes.end() && frame_index == *next_keyframe) {
+                    seek_entries.push_back(VideoSeekEntry{
+                        .byte_offset = current_chunk_offset,
+                        .frame_index = frame_index,
+                    });
+                    ++next_keyframe;
+                }
+                ++frame_index;
             }
             current_chunk_offset += chunk.chunk.packed_size();
         }
 
-        if (seek_entries.size() != placeholders.size()) {
+        if (seek_entries.size() != source.keyframes.size()) {
             return std::unexpected(
                 "USM build failed: could not map video keyframes to built " +
                 std::string(source.stream_type == UsmChunkType::ALP ? "ALP" : "SFV") + " chunks"
@@ -1537,12 +1491,12 @@ std::expected<std::vector<uint8_t>, std::string> build_impl(
         return {};
     };
     if (video_seek_chunk_index.has_value()) {
-        if (auto replaced = replace_seek_metadata(*video, video_seek_entries, *video_seek_chunk_index); !replaced) {
+        if (auto replaced = replace_seek_metadata(*video, *video_seek_chunk_index); !replaced) {
             return std::unexpected(replaced.error());
         }
     }
     if (alpha_seek_chunk_index.has_value()) {
-        if (auto replaced = replace_seek_metadata(*alpha, alpha_seek_entries, *alpha_seek_chunk_index); !replaced) {
+        if (auto replaced = replace_seek_metadata(*alpha, *alpha_seek_chunk_index); !replaced) {
             return std::unexpected(replaced.error());
         }
     }
@@ -1597,30 +1551,18 @@ std::expected<std::vector<uint8_t>, std::string> UsmBuilder::build(const UsmBuil
     const auto default_name = input.video_path.empty()
         ? std::string("output.usm")
         : input.video_path.stem().string() + ".usm";
-    return build_impl(m_crypto, input, default_name);
+    return build_impl(input, default_name);
 }
 
 std::expected<void, std::string> UsmBuilder::build_to_file(
     const std::filesystem::path& output_path,
     const UsmBuildInput& input
 ) {
-    auto buffer = build_impl(m_crypto, input, output_path.filename().string());
+    auto buffer = build_impl(input, output_path.filename().string());
     if (!buffer) {
         return std::unexpected(buffer.error());
     }
-
-    io::writer writer;
-    if (auto result = writer.open(output_path); !result) {
-        return std::unexpected("USM build failed: could not open output file: " + std::string(result.error()));
-    }
-    if (auto result = writer.write(*buffer); !result) {
-        return std::unexpected("USM build failed: could not write output file: " + std::string(result.error()));
-    }
-    if (auto result = writer.close(); !result) {
-        return std::unexpected("USM build failed: could not finalize output file: " + std::string(result.error()));
-    }
-
-    return {};
+    return io::write_file_bytes(output_path, *buffer, "USM build failed");
 }
 
 } // namespace cricodecs::usm

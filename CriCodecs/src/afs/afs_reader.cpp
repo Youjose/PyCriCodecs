@@ -9,6 +9,7 @@
 #include "afs_container.hpp"
 
 #include <algorithm>
+#include <numeric>
 
 #include "afs_format.hpp"
 #include "../utilities/io.hpp"
@@ -21,15 +22,6 @@ namespace {
 using io::read_le;
 using util::align_up;
 
-[[nodiscard]] uint32_t gcd_u32(uint32_t lhs, uint32_t rhs) {
-    while (rhs != 0) {
-        const uint32_t remainder = lhs % rhs;
-        lhs = rhs;
-        rhs = remainder;
-    }
-    return lhs;
-}
-
 [[nodiscard]] uint32_t infer_alignment(
     const std::vector<AfsEntry>& entries,
     std::optional<uint32_t> directory_offset
@@ -37,12 +29,12 @@ using util::align_up;
     uint32_t inferred = 0;
     for (const auto& entry : entries) {
         if (entry.present && entry.offset != 0) {
-            inferred = inferred == 0 ? entry.offset : gcd_u32(inferred, entry.offset);
+            inferred = inferred == 0 ? entry.offset : std::gcd(inferred, entry.offset);
         }
     }
 
     if (directory_offset && *directory_offset != 0) {
-        inferred = inferred == 0 ? *directory_offset : gcd_u32(inferred, *directory_offset);
+        inferred = inferred == 0 ? *directory_offset : std::gcd(inferred, *directory_offset);
     }
 
     return inferred == 0 ? AfsContainer::DEFAULT_ALIGNMENT : inferred;
@@ -81,8 +73,7 @@ std::expected<AfsContainer, std::string> AfsContainer::load(const std::filesyste
 
 std::expected<void, std::string> AfsContainer::parse() {
     m_entries.clear();
-    m_file_data.clear();
-    m_file_data_overrides.clear();
+    m_payloads.clear();
     m_directory_table_offset.reset();
     m_directory_table_size.reset();
     m_first_payload_offset.reset();
@@ -165,16 +156,9 @@ std::expected<std::span<const uint8_t>, std::string> AfsContainer::file_data(uin
     if (!entry.present) {
         return std::unexpected("AFS entry slot is empty");
     }
-    if (index < m_file_data_overrides.size() && m_file_data_overrides[index] != 0) {
-        if (index >= m_file_data.size()) {
-            return std::unexpected("AFS entry data is out of bounds");
-        }
-        return std::span<const uint8_t>(m_file_data[index]);
+    if (index < m_payloads.size() && m_payloads[index]) {
+        return std::span<const uint8_t>(*m_payloads[index]);
     }
-    if (entry.offset > m_source.size() || entry.size > m_source.size() - entry.offset) {
-        return std::unexpected("AFS entry data is out of bounds");
-    }
-
     return m_source.subspan(entry.offset, entry.size);
 }
 

@@ -1,13 +1,9 @@
 #pragma once
 /**
  * @file cvm_builder.hpp
- * @brief Bounded CVM builder.
+ * @brief CVM builder.
  *
- * This file targets the same reviewed ROFS/CVM image shape as the current
- * `CvmBuildScript` parser and `CvmContainer` reader: `ROFS` images with a
- * standard embedded ISO9660 tree and script-compatible volume metadata.
- * Explicit-key scrambled TOC images are supported for that reviewed shape;
- * `rofsedit` differential flows and broad script parity are not yet verified.
+ * Builds ROFS images with an embedded ISO9660 tree and optional TOC scrambling.
  */
 
 #include <expected>

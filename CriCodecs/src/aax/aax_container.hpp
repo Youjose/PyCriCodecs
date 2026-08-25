@@ -10,7 +10,6 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
-#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -53,7 +52,7 @@ public:
 
     [[nodiscard]] uint8_t channels() const noexcept { return m_channels; }
     [[nodiscard]] uint32_t sample_rate() const noexcept { return m_sample_rate; }
-    [[nodiscard]] uint32_t sample_count() const noexcept { return m_sample_count; }
+    [[nodiscard]] uint32_t sample_count() const noexcept;
     [[nodiscard]] bool has_loop_segments() const noexcept;
 
     [[nodiscard]] std::expected<std::span<const uint8_t>, std::string> segment_data(uint32_t index) const;
@@ -82,23 +81,20 @@ public:
     [[nodiscard]] std::expected<void, std::string> set_loop_segment(uint32_t index, bool loop_segment);
 
 private:
-    // Loaded AAX bytes stay owned by the container so UTF table storage and
-    // per-segment spans remain valid for both path and byte-backed loads.
-    std::span<const uint8_t> m_source;
-    std::vector<uint8_t> m_owned_source;
     std::filesystem::path m_source_path;
     utf::UtfTable m_table;
     std::vector<AaxSegmentInfo> m_segments;
-    mutable std::vector<std::optional<std::vector<uint8_t>>> m_looped_segment_data;
+    mutable std::vector<std::vector<uint8_t>> m_projected_segments;
 
     uint8_t m_channels = 0;
     uint32_t m_sample_rate = 0;
-    uint32_t m_sample_count = 0;
 
+    [[nodiscard]] static std::expected<AaxContainer, std::string> load_owned(
+        std::vector<uint8_t> data,
+        std::filesystem::path source_path = {}
+    );
     [[nodiscard]] std::expected<void, std::string> parse();
     [[nodiscard]] std::expected<std::span<const uint8_t>, std::string> raw_segment_data(uint32_t index) const;
-    [[nodiscard]] std::expected<std::span<const uint8_t>, std::string> looped_segment_data(uint32_t index) const;
-    [[nodiscard]] std::expected<std::vector<uint8_t>, std::string> synthesized_adx_data() const;
     [[nodiscard]] std::expected<std::vector<AaxBuildEntry>, std::string> build_entries() const;
     [[nodiscard]] std::expected<void, std::string> replace_entries(std::vector<AaxBuildEntry> entries);
 };

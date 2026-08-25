@@ -67,12 +67,6 @@ template <uint32_t First, uint32_t LastExclusive>
 inline constexpr auto prime_segment_data = make_prime_segment_data<First, LastExclusive>();
 } // namespace detail
 
-template <uint32_t First, uint32_t LastExclusive>
-consteval size_t count_primes_in_range() {
-    constexpr auto segment = detail::prime_segment_data<First, LastExclusive>;
-    return segment.prime_count;
-}
-
 template <std::unsigned_integral T, uint32_t First, uint32_t LastExclusive>
 consteval auto generate_primes_in_range() {
     static_assert(LastExclusive <= static_cast<uint32_t>(std::numeric_limits<T>::max()),

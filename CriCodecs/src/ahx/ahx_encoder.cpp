@@ -173,10 +173,6 @@ void apply_transmission_pattern(
         : AHX_ENCODE_QUANT_TABLE_HIGH[allocation - 1];
 }
 
-[[nodiscard]] constexpr bool quant_is_grouped(const auto& quant) noexcept {
-    return quant.group != 0;
-}
-
 [[nodiscard]] constexpr int64_t reconstruct_quantized_sample(const AhxEncodeQuantSpec& quant, uint32_t code) noexcept {
     const int sample_bits = quant.group != 0 ? static_cast<int>(quant.group) : static_cast<int>(quant.bits);
     int64_t requantized = static_cast<int64_t>(code) ^ (1LL << (sample_bits - 1));
@@ -248,7 +244,6 @@ std::expected<std::vector<uint8_t>, AhxError> encode(
         output.resize(frame_start + AHX_EXPECTED_FRAME_SIZE);
         io::bit_writer frame_bits(output.data() + frame_start, AHX_EXPECTED_FRAME_SIZE);
 
-        std::array<uint8_t, AHX_BANDS> frame_allocations{};
         std::array<int, AHX_BANDS> scfsi{};
         std::array<std::array<int, AHX_BANDS>, 3> scalefactors{};
         std::array<std::array<std::array<std::array<int64_t, 3>, 32>, 4>, 3> polyphased_samples{};
@@ -256,8 +251,7 @@ std::expected<std::vector<uint8_t>, AhxError> encode(
         frame_bits.write(AHX_FRAME_HEADER, 32);
 
         for (size_t band = 0; band < AHX_BANDS; ++band) {
-            frame_allocations[band] = bit_allocation_pattern[band];
-            frame_bits.write(frame_allocations[band], AHX_BITALLOC_TABLE[band]);
+            frame_bits.write(bit_allocation_pattern[band], AHX_BITALLOC_TABLE[band]);
         }
 
         size_t sample_index = 0;
@@ -286,13 +280,8 @@ std::expected<std::vector<uint8_t>, AhxError> encode(
                     }
                 }
 
-                int sf_index = 0;
-                for (int i = 0; i < 63; ++i) {
-                    sf_index = 62 - i;
-                    if (max_sample < AHX_SF_TABLE[sf_index]) {
-                        break;
-                    }
-                }
+                int sf_index = 62;
+                while (sf_index > 0 && max_sample >= AHX_SF_TABLE[sf_index]) --sf_index;
                 scalefactors[part][band] = sf_index;
             }
         }
@@ -300,7 +289,7 @@ std::expected<std::vector<uint8_t>, AhxError> encode(
         apply_transmission_pattern(scalefactors, scfsi);
 
         uint16_t frame_key = 0;
-        if (frame_allocations[0] != 0) {
+        if (bit_allocation_pattern[0] != 0) {
             switch (scfsi[0]) {
                 case 1: frame_key = config.key.start; break;
                 case 2: frame_key = config.key.mult; break;
@@ -309,12 +298,12 @@ std::expected<std::vector<uint8_t>, AhxError> encode(
             }
         }
 
-        if (frame_allocations[0] != 0) {
+        if (bit_allocation_pattern[0] != 0) {
             frame_bits.write(static_cast<uint32_t>(scfsi[0]), 2);
         }
         uint16_t rolling_key = frame_key;
         for (size_t band = 1; band < AHX_BANDS; ++band) {
-            if (frame_allocations[band] == 0) {
+            if (bit_allocation_pattern[band] == 0) {
                 rolling_key = static_cast<uint16_t>(rolling_key >> 2);
                 continue;
             }
@@ -327,7 +316,7 @@ std::expected<std::vector<uint8_t>, AhxError> encode(
         }
 
         for (size_t band = 0; band < AHX_BANDS; ++band) {
-            if (frame_allocations[band] == 0) {
+            if (bit_allocation_pattern[band] == 0) {
                 continue;
             }
 
@@ -338,15 +327,12 @@ std::expected<std::vector<uint8_t>, AhxError> encode(
                     frame_bits.write(static_cast<uint32_t>(scalefactors[2][band]), 6);
                     break;
                 case 1:
+                case 3:
                     frame_bits.write(static_cast<uint32_t>(scalefactors[0][band]), 6);
                     frame_bits.write(static_cast<uint32_t>(scalefactors[2][band]), 6);
                     break;
                 case 2:
                     frame_bits.write(static_cast<uint32_t>(scalefactors[0][band]), 6);
-                    break;
-                case 3:
-                    frame_bits.write(static_cast<uint32_t>(scalefactors[0][band]), 6);
-                    frame_bits.write(static_cast<uint32_t>(scalefactors[2][band]), 6);
                     break;
                 default:
                     output.resize(frame_start);
@@ -357,7 +343,7 @@ std::expected<std::vector<uint8_t>, AhxError> encode(
         for (size_t part = 0; part < 3; ++part) {
             for (size_t granule = 0; granule < 4; ++granule) {
                 for (size_t band = 0; band < AHX_BANDS; ++band) {
-                    const uint8_t allocation = frame_allocations[band];
+                    const uint8_t allocation = bit_allocation_pattern[band];
                     if (allocation == 0) {
                         continue;
                     }
@@ -372,7 +358,7 @@ std::expected<std::vector<uint8_t>, AhxError> encode(
                         quantized_samples[sample_group] = quantize_sample(quant, scaled);
                     }
 
-                    if (quant_is_grouped(quant)) {
+                    if (quant.group != 0) {
                         const uint32_t levels = static_cast<uint32_t>(quant.nlevels);
                         const uint32_t grouped =
                             quantized_samples[0] +
@@ -393,17 +379,13 @@ std::expected<std::vector<uint8_t>, AhxError> encode(
         return {};
     };
 
-    std::vector<int16_t> encode_input;
-    encode_input.reserve(pcm_data.size() + (config.encoding_mode == 0x11 ? AHX_ENCODER_DELAY : 0));
-    if (config.encoding_mode == 0x11) {
-        encode_input.insert(encode_input.end(), AHX_ENCODER_DELAY, 0);
-    }
-    encode_input.insert(encode_input.end(), pcm_data.begin(), pcm_data.end());
+    const size_t delay = config.encoding_mode == 0x11 ? AHX_ENCODER_DELAY : 0;
+    const size_t input_size = delay + pcm_data.size();
 
     std::vector<uint8_t> encoded;
     // Final stream uses a 0x24-byte fixed header plus one 0x200-byte payload per encoded frame.
     // Reserve with divide_round_up so partial tail frames from variable-length streams still pre-allocate safely.
-    encoded.reserve(AHX_HEADER_SIZE + divide_round_up(encode_input.size(), AHX_SAMPLES_PER_FRAME) * 0x200);
+    encoded.reserve(AHX_HEADER_SIZE + divide_round_up(input_size, AHX_SAMPLES_PER_FRAME) * 0x200);
 
     append_be<uint16_t>(encoded, 0x8000);
     append_be<uint16_t>(encoded, static_cast<uint16_t>(AHX_HEADER_SIZE - 4));
@@ -416,32 +398,27 @@ std::expected<std::vector<uint8_t>, AhxError> encode(
     append_be<uint16_t>(encoded, 0x0000);
     encoded.push_back(0x06);
     encoded.push_back(config.encryption_type);
-    while (encoded.size() < AHX_HEADER_SIZE - 6) {
-        encoded.push_back(0x00);
-    }
+    encoded.resize(AHX_HEADER_SIZE - 6);
     encoded.insert(encoded.end(), {'(', 'c', ')', 'C', 'R', 'I'});
-    while (encoded.size() < AHX_HEADER_SIZE) {
-        encoded.push_back(0x00);
-    }
+    encoded.resize(AHX_HEADER_SIZE);
 
     std::array<int16_t, AHX_SAMPLES_PER_FRAME> frame_samples{};
-    size_t offset = 0;
-    while (offset < encode_input.size() || (encode_input.empty() && offset == 0)) {
+    const size_t frame_count = std::max<size_t>(1, divide_round_up(input_size, frame_samples.size()));
+    for (size_t frame = 0; frame < frame_count; ++frame) {
         frame_samples.fill(0);
-        const size_t remaining = offset < encode_input.size() ? encode_input.size() - offset : 0;
-        const size_t copy_count = std::min(frame_samples.size(), remaining);
-        if (copy_count > 0) {
-            std::copy_n(encode_input.begin() + static_cast<std::ptrdiff_t>(offset), copy_count, frame_samples.begin());
+        const size_t frame_start = frame * frame_samples.size();
+        const size_t source_start = std::max(frame_start, delay);
+        const size_t source_end = std::min(frame_start + frame_samples.size(), input_size);
+        if (source_start < source_end) {
+            std::ranges::copy(
+                pcm_data.subspan(source_start - delay, source_end - source_start),
+                frame_samples.begin() + static_cast<std::ptrdiff_t>(source_start - frame_start));
         }
 
         auto encoded_frame = encode_frame(std::span<const int16_t, AHX_SAMPLES_PER_FRAME>(frame_samples), encoded);
         if (!encoded_frame) {
             return std::unexpected(encoded_frame.error());
         }
-        if (encode_input.empty()) {
-            break;
-        }
-        offset += frame_samples.size();
     }
 
     encoded.insert(encoded.end(), {

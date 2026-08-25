@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 #include <utility>
 
 namespace cricodecs::adx {
@@ -28,8 +29,6 @@ using cricodecs::util::divide_round_up;
     static constexpr uint16_t ADX_SIGNATURE = 0x8000;
     static constexpr uint16_t ADX_EOF_SCALE = 0x8001;
     static constexpr size_t ADX_FLAG_OFFSET = 19;
-    static constexpr double PI = 3.141592653589793;
-    static constexpr double SQRT2 = 1.414213562373095;
     static constexpr const char* CRI_STRING = "(c)CRI";
     
     static constexpr int16_t STATIC_COEFFICIENTS[8] = {
@@ -72,10 +71,8 @@ using cricodecs::util::divide_round_up;
     }
 
     void Adx::copy_decode_settings_to(AdxDecoder& decoder) const {
-        decoder.m_key_state = m_decoder.m_key_state;
-        decoder.m_key_set = m_decoder.m_key_set;
+        decoder.m_key = m_decoder.m_key;
         decoder.m_ahx_key = m_decoder.m_ahx_key;
-        decoder.m_ahx_key_set = m_decoder.m_ahx_key_set;
     }
 
     std::expected<AdxDecodeResult, AdxError> Adx::decode() {
@@ -106,25 +103,20 @@ using cricodecs::util::divide_round_up;
         return decoder.decode_into(pcm_output);
     }
 
-    std::expected<std::vector<uint8_t>, AdxError> Adx::rebuild() const {
-        if (!m_source_bytes.empty() || m_source_path.empty()) {
+    std::expected<std::vector<uint8_t>, AdxError> Adx::source_bytes(
+        std::string_view context) const {
+        if (m_source_path.empty()) {
             return m_source_bytes;
         }
+        return io::read_file_bytes(m_source_path, context);
+    }
 
-        return io::read_file_bytes(m_source_path, "ADX rebuild failed");
+    std::expected<std::vector<uint8_t>, AdxError> Adx::rebuild() const {
+        return source_bytes("ADX rebuild failed");
     }
 
     std::expected<std::vector<uint8_t>, AdxError> Adx::decrypt() const {
-        auto bytes = [&]() -> std::expected<std::vector<uint8_t>, AdxError> {
-            if (!m_source_bytes.empty() || m_source_path.empty()) {
-                return m_source_bytes;
-            }
-            auto source = io::read_file_bytes(m_source_path, "ADX decrypt failed");
-            if (!source) {
-                return std::unexpected(source.error());
-            }
-            return std::move(*source);
-        }();
+        auto bytes = source_bytes("ADX decrypt failed");
         if (!bytes) {
             return std::unexpected(bytes.error());
         }
@@ -134,19 +126,10 @@ using cricodecs::util::divide_round_up;
         }
 
         if (is_ahx()) {
-            if (!m_decoder.m_ahx_key_set) {
+            if (!m_decoder.m_ahx_key) {
                 return std::unexpected(AdxError("AHX decryption key required"));
             }
-            ahx::AhxDecodeConfig config{
-                .encoding_mode = m_decoder.m_header.encoding_mode,
-                .sample_rate = m_decoder.m_header.sample_rate,
-                .sample_count = m_decoder.m_header.sample_count,
-                .channels = m_decoder.m_header.channels,
-                .encryption_type = m_decoder.m_header.flags,
-                .start_offset = static_cast<size_t>(m_decoder.m_header.data_offset) + 4u,
-                .key = m_decoder.m_ahx_key
-            };
-            auto decrypted = ahx::decrypt(*bytes, config);
+            auto decrypted = ahx::decrypt(*bytes, m_decoder.ahx_config());
             if (!decrypted) {
                 return std::unexpected(decrypted.error());
             }
@@ -156,7 +139,7 @@ using cricodecs::util::divide_round_up;
             return std::move(*decrypted);
         }
 
-        if (!m_decoder.m_key_set) {
+        if (!m_decoder.m_key) {
             return std::unexpected(AdxError("ADX decryption key required"));
         }
 
@@ -165,36 +148,23 @@ using cricodecs::util::divide_round_up;
             return std::unexpected(AdxError("ADX audio data offset is out of bounds"));
         }
 
-        auto key_state = m_decoder.m_key_state;
-        const auto blocks_per_channel = divide_round_up(
-            m_decoder.m_header.sample_count,
-            m_decoder.m_samples_per_block
-        );
+        auto key_state = *m_decoder.m_key;
+        const size_t frame_count = static_cast<size_t>(divide_round_up(
+            m_decoder.m_header.sample_count, m_decoder.samples_per_block())) *
+            m_decoder.m_header.channels;
         size_t cursor = data_start;
-        bool reached_eof = false;
-        for (uint32_t block = 0; block < blocks_per_channel && !reached_eof; ++block) {
-            for (uint8_t ch = 0; ch < m_decoder.m_header.channels; ++ch) {
-                if (cursor + 2u > bytes->size()) {
-                    reached_eof = true;
-                    break;
-                }
-
-                const auto scale = io::read_be<uint16_t>(bytes->data() + cursor);
-                if (scale == ADX_EOF_SCALE) {
-                    reached_eof = true;
-                    break;
-                }
-                if (cursor + m_decoder.m_header.block_size > bytes->size()) {
-                    reached_eof = true;
-                    break;
-                }
-
-                const uint16_t mask = m_decoder.m_header.flags == 0x09 ? 0x1FFFu : 0x7FFFu;
-                const auto decrypted_scale = static_cast<uint16_t>((scale ^ key_state.xor_value) & mask);
-                io::write_be<uint16_t>(bytes->data() + cursor, decrypted_scale);
-                cursor += m_decoder.m_header.block_size;
-                key_state.advance();
+        for (size_t frame = 0; frame < frame_count; ++frame) {
+            if (cursor + m_decoder.m_header.block_size > bytes->size()) {
+                break;
             }
+            const auto scale = io::read_be<uint16_t>(bytes->data() + cursor);
+            if (scale == ADX_EOF_SCALE) break;
+
+            const uint16_t mask = m_decoder.m_header.flags == 0x09 ? 0x1FFFu : 0x7FFFu;
+            io::write_be<uint16_t>(bytes->data() + cursor,
+                static_cast<uint16_t>((scale ^ key_state.xor_value) & mask));
+            cursor += m_decoder.m_header.block_size;
+            key_state.advance();
         }
 
         if (bytes->size() > ADX_FLAG_OFFSET) {
@@ -226,22 +196,22 @@ using cricodecs::util::divide_round_up;
 
     std::expected<void, AdxError> AdxDecoder::load(const std::string& path) {
         m_loaded = false;
-        auto res = m_reader.open(std::filesystem::path(path));
-        if (!res) return std::unexpected(AdxError("Failed to open ADX file"));
+        if (auto opened = m_reader.open(std::filesystem::path(path)); !opened) {
+            return std::unexpected(AdxError("Failed to open ADX file"));
+        }
         return parse_header();
     }
 
     std::expected<void, AdxError> AdxDecoder::load(std::span<const uint8_t> data) {
         m_loaded = false;
-        auto res = m_reader.open(data);
-        if (!res) return std::unexpected(AdxError("Failed to open ADX data buffer"));
+        if (auto opened = m_reader.open(data); !opened) {
+            return std::unexpected(AdxError("Failed to open ADX data buffer"));
+        }
         return parse_header();
     }
 
     std::expected<void, AdxError> AdxDecoder::parse_header() {
         m_loaded = false;
-        m_data_block_size = 0;
-        m_samples_per_block = 0;
         m_coefficients[0] = 0;
         m_coefficients[1] = 0;
         m_header = {};
@@ -309,11 +279,10 @@ using cricodecs::util::divide_round_up;
             return std::unexpected(AdxError("Invalid ADX header: channel count is zero"));
         }
         
-        m_data_block_size = m_header.block_size - 2;
-        if ((m_data_block_size * 8) % m_header.bit_depth != 0) {
+        const uint32_t payload_bits = static_cast<uint32_t>(m_header.block_size - 2u) * 8u;
+        if (payload_bits % m_header.bit_depth != 0) {
             return std::unexpected(AdxError("Invalid ADX bit depth"));
         }
-        m_samples_per_block = (m_data_block_size * 8) / m_header.bit_depth;
         
         size_t base_offset = 20;
         
@@ -326,10 +295,11 @@ using cricodecs::util::divide_round_up;
                 return std::unexpected(AdxError("ADX history block extends past the file"));
             }
             
-            for (size_t i = 0; i < m_header.channels; ++i) {
-                if (base_offset + 4 > m_reader.size()) return std::unexpected(AdxError("ADX history block extends past the file"));
-                m_history[i].prev1 = m_reader.read_be<int16_t>();
-                m_history[i].prev2 = m_reader.read_be<int16_t>();
+            for (auto& history : std::span(m_history).first(m_header.channels)) {
+                history = {
+                    .prev1 = m_reader.read_be<int16_t>(),
+                    .prev2 = m_reader.read_be<int16_t>(),
+                };
             }
             if (m_header.channels == 1) {
                 m_reader.skip(4);
@@ -370,54 +340,60 @@ using cricodecs::util::divide_round_up;
         return {};
     }
 
+    uint32_t AdxDecoder::samples_per_block() const noexcept {
+        return static_cast<uint32_t>(m_header.block_size - 2u) * 8u / m_header.bit_depth;
+    }
+
+    ahx::AhxDecodeConfig AdxDecoder::ahx_config() const {
+        return {
+            .encoding_mode = m_header.encoding_mode,
+            .sample_rate = m_header.sample_rate,
+            .sample_count = m_header.sample_count,
+            .channels = m_header.channels,
+            .encryption_type = m_header.flags,
+            .start_offset = static_cast<size_t>(m_header.data_offset) + 4u,
+            .key = m_ahx_key.value_or(ahx::AhxKey{}),
+        };
+    }
+
     void AdxDecoder::calculate_coefficients() {
         if (m_header.encoding_mode == 2) {
             m_coefficients[0] = 0;
             m_coefficients[1] = 0;
         } else {
-            double a = SQRT2 - std::cos(2.0 * PI * m_header.highpass_freq / m_header.sample_rate);
-            double b = SQRT2 - 1.0;
-            double c = (a - std::sqrt((a + b) * (a - b))) / b;
+            const double a = std::numbers::sqrt2 - std::cos(
+                2.0 * std::numbers::pi * m_header.highpass_freq / m_header.sample_rate);
+            constexpr double b = std::numbers::sqrt2 - 1.0;
+            const double c = (a - std::sqrt((a + b) * (a - b))) / b;
             
             m_coefficients[0] = static_cast<int32_t>(c * 8192.0);
             m_coefficients[1] = static_cast<int32_t>(c * c * -4096.0);
         }
     }
     
-    void AdxDecoder::set_key_type8(std::string_view key) {
-        m_key_state = key8_derive(key);
-        m_key_set = true;
-        m_ahx_key = {
-            .start = m_key_state.xor_value,
-            .mult = m_key_state.mult,
-            .add = m_key_state.add,
+    void AdxDecoder::set_shared_key(AdxKeyState key) {
+        m_key = key;
+        m_ahx_key = ahx::AhxKey{
+            .start = key.xor_value,
+            .mult = key.mult,
+            .add = key.add,
         };
-        m_ahx_key_set = true;
+    }
+
+    void AdxDecoder::set_key_type8(std::string_view key) {
+        set_shared_key(key8_derive(key));
     }
     
     void AdxDecoder::set_key_type9(uint64_t key, uint16_t subkey) {
-        m_key_state = key9_derive(key, subkey);
-        m_key_set = true;
-        m_ahx_key = {
-            .start = m_key_state.xor_value,
-            .mult = m_key_state.mult,
-            .add = m_key_state.add,
-        };
-        m_ahx_key_set = true;
+        set_shared_key(key9_derive(key, subkey));
     }
 
     void AdxDecoder::set_key_triplet(uint16_t start, uint16_t mult, uint16_t add) {
-        m_key_state.xor_value = start;
-        m_key_state.mult = mult;
-        m_key_state.add = add;
-        m_key_set = true;
+        m_key = AdxKeyState{start, mult, add};
     }
 
     void AdxDecoder::set_ahx_key(uint16_t start, uint16_t mult, uint16_t add) {
-        m_ahx_key.start = start;
-        m_ahx_key.mult = mult;
-        m_ahx_key.add = add;
-        m_ahx_key_set = true;
+        m_ahx_key = ahx::AhxKey{start, mult, add};
     }
 
     void AdxDecoder::decode_block(io::reader& reader, int16_t* output,
@@ -450,7 +426,7 @@ using cricodecs::util::divide_round_up;
                 break;
         }
         
-        const auto sample_bytes = reader.read_bytes(m_data_block_size);
+        const auto sample_bytes = reader.read_bytes(m_header.block_size - 2u);
         int16_t hist1 = history.prev1;
         int16_t hist2 = history.prev2;
 
@@ -476,7 +452,7 @@ using cricodecs::util::divide_round_up;
         };
 
         if (m_header.bit_depth == 4) {
-            if (samples_to_decode == m_samples_per_block) {
+            if (samples_to_decode == samples_per_block()) {
                 for (const uint8_t byte : sample_bytes) {
                     decode_sample(sign_extend_4bit_sample(byte >> 4));
                     decode_sample(sign_extend_4bit_sample(byte));
@@ -503,24 +479,14 @@ using cricodecs::util::divide_round_up;
             return;
         }
 
-        size_t bit_pos = 0;
+        io::bit_reader bits(sample_bytes);
+        const uint32_t sign_bit = 1u << (m_header.bit_depth - 1u);
+        const uint32_t sign_value = 1u << m_header.bit_depth;
         for (uint32_t i = 0; i < samples_to_decode; ++i) {
-            int32_t sample = 0;
-            uint32_t bits = 0;
-            for (uint8_t b = 0; b < m_header.bit_depth; ++b) {
-                size_t byte_idx = (bit_pos + b) / 8;
-                size_t bit_idx = 7 - ((bit_pos + b) % 8);
-                if (byte_idx < sample_bytes.size()) {
-                    bits = (bits << 1) | ((sample_bytes[byte_idx] >> bit_idx) & 1);
-                }
-            }
-            sample = static_cast<int32_t>(bits);
-            int32_t sign_bit = 1 << (m_header.bit_depth - 1);
-            if (sample & sign_bit) {
-                sample |= ~((1 << m_header.bit_depth) - 1);
-            }
-
-            bit_pos += m_header.bit_depth;
+            const uint32_t encoded = bits.read(m_header.bit_depth);
+            const int32_t sample = encoded & sign_bit
+                ? static_cast<int32_t>(encoded) - static_cast<int32_t>(sign_value)
+                : static_cast<int32_t>(encoded);
             decode_sample(sample);
         }
 
@@ -538,7 +504,7 @@ using cricodecs::util::divide_round_up;
         }
 
         const bool encrypted = (m_header.flags == 0x08 || m_header.flags == 0x09);
-        if (encrypted && !m_key_set) {
+        if (encrypted && !m_key) {
             return std::unexpected(AdxError("ADX decryption key required"));
         }
 
@@ -547,15 +513,9 @@ using cricodecs::util::divide_round_up;
             return std::unexpected(AdxError("ADX decode output buffer is too small"));
         }
 
-        std::vector<AdpcmHistory> channel_history(m_header.channels);
-
-        if (m_header.version == 4 && !m_history.empty()) {
-            for (size_t ch = 0; ch < m_header.channels && ch < m_history.size(); ++ch) {
-                channel_history[ch] = m_history[ch];
-            }
-        }
-
-        AdxKeyState current_key_state = m_key_state;
+        auto channel_history = m_history;
+        channel_history.resize(m_header.channels);
+        AdxKeyState current_key_state = m_key.value_or(AdxKeyState{});
 
         size_t data_start = m_header.data_offset + 4;
         if (data_start > m_reader.size()) {
@@ -567,69 +527,47 @@ using cricodecs::util::divide_round_up;
             return std::unexpected(AdxError("Failed to bind ADX decode buffer"));
         }
 
-        const uint32_t blocks_per_channel = divide_round_up(m_header.sample_count, m_samples_per_block);
+        const uint32_t block_samples = samples_per_block();
+        const uint32_t blocks_per_channel = divide_round_up(m_header.sample_count, block_samples);
+        const size_t frame_count = static_cast<size_t>(blocks_per_channel) * m_header.channels;
+        size_t frame = 0;
         bool truncated = false;
-        uint32_t stop_block = blocks_per_channel;
-        uint8_t stop_channel = 0;
-
         for (uint32_t block = 0; block < blocks_per_channel && !truncated; ++block) {
-            const uint32_t block_sample_start = block * m_samples_per_block;
+            const uint32_t block_sample_start = block * block_samples;
             const uint32_t remaining_samples = m_header.sample_count - block_sample_start;
-            const uint32_t samples_this_block = std::min(m_samples_per_block, remaining_samples);
-
-            for (uint8_t ch = 0; ch < m_header.channels; ++ch) {
+            const uint32_t samples_this_block = std::min(block_samples, remaining_samples);
+            for (uint8_t channel = 0; channel < m_header.channels; ++channel) {
                 if (reader.remaining() < 2) {
                     truncated = true;
-                    stop_block = block;
-                    stop_channel = ch;
                     break;
                 }
-
-                size_t block_start = reader.tell();
-                uint16_t peek = reader.read_be<uint16_t>();
-
-                if (peek == ADX_EOF_SCALE) {
+                const size_t frame_start = reader.tell();
+                if (reader.read_be<uint16_t>() == ADX_EOF_SCALE ||
+                    reader.remaining() + 2u < m_header.block_size) {
                     truncated = true;
-                    stop_block = block;
-                    stop_channel = ch;
                     break;
                 }
-
-                reader.seek(block_start);
-
-                if (reader.remaining() < m_header.block_size) {
-                    truncated = true;
-                    stop_block = block;
-                    stop_channel = ch;
-                    break;
-                }
-
+                reader.seek(frame_start);
                 int16_t* output = pcm_output.data() +
-                    static_cast<size_t>(block_sample_start) * m_header.channels + ch;
-
-                decode_block(reader, output, m_header.channels, channel_history[ch],
-                             encrypted ? &current_key_state : nullptr,
-                             samples_this_block);
-
-                if (encrypted) {
-                    current_key_state.advance();
-                }
+                    static_cast<size_t>(block_sample_start) * m_header.channels + channel;
+                decode_block(reader, output, m_header.channels, channel_history[channel],
+                             encrypted ? &current_key_state : nullptr, samples_this_block);
+                if (encrypted) current_key_state.advance();
+                ++frame;
             }
         }
 
-        if (truncated) {
-            for (uint32_t block = stop_block; block < blocks_per_channel; ++block) {
-                const uint32_t block_sample_start = block * m_samples_per_block;
-                const uint32_t remaining_samples = m_header.sample_count - block_sample_start;
-                const uint32_t samples_this_block = std::min(m_samples_per_block, remaining_samples);
-                const uint8_t first_channel = block == stop_block ? stop_channel : 0;
-
-                for (uint32_t sample = 0; sample < samples_this_block; ++sample) {
-                    int16_t* frame = pcm_output.data() +
-                        static_cast<size_t>(block_sample_start + sample) * m_header.channels;
-                    std::fill(frame + first_channel, frame + m_header.channels, int16_t{0});
-                }
+        if (frame < frame_count) {
+            const uint32_t block = static_cast<uint32_t>(frame / m_header.channels);
+            const uint8_t first_channel = static_cast<uint8_t>(frame % m_header.channels);
+            const uint32_t block_start = block * block_samples;
+            const uint32_t block_end = std::min(block_start + block_samples, m_header.sample_count);
+            for (uint32_t sample = block_start; sample < block_end; ++sample) {
+                auto* output = pcm_output.data() + static_cast<size_t>(sample) * m_header.channels;
+                std::fill(output + first_channel, output + m_header.channels, int16_t{0});
             }
+            std::fill(pcm_output.begin() + static_cast<size_t>(block_end) * m_header.channels,
+                      pcm_output.begin() + static_cast<std::ptrdiff_t>(valid_samples), int16_t{0});
         }
 
         return {};
@@ -641,38 +579,24 @@ using cricodecs::util::divide_round_up;
         }
 
         if (is_ahx()) {
-            if (is_encrypted() && !m_ahx_key_set) {
+            if (is_encrypted() && !m_ahx_key) {
                 return std::unexpected(AdxError("AHX decryption key required"));
             }
-
-            ahx::AhxDecodeConfig config{
-                .encoding_mode = m_header.encoding_mode,
-                .sample_rate = m_header.sample_rate,
-                .sample_count = m_header.sample_count,
-                .channels = m_header.channels,
-                .encryption_type = m_header.flags,
-                .start_offset = static_cast<size_t>(m_header.data_offset) + 4,
-                .key = m_ahx_key
-            };
-
-            auto pcm = ahx::decode(m_reader.data(), config);
+            auto pcm = ahx::decode(m_reader.data(), ahx_config());
             if (!pcm) {
                 return std::unexpected(pcm.error());
             }
 
-            AdxDecodeResult result;
-            result.pcm_data = std::move(*pcm);
-            result.sample_rate = m_header.sample_rate;
-            result.channels = m_header.channels;
-            result.sample_count = m_header.sample_count;
-            result.has_loops = false;
-            result.loop_start = 0;
-            result.loop_end = 0;
-            return result;
+            return AdxDecodeResult{
+                .pcm_data = std::move(*pcm),
+                .sample_rate = m_header.sample_rate,
+                .channels = m_header.channels,
+                .sample_count = m_header.sample_count,
+            };
         }
         
         bool encrypted = (m_header.flags == 0x08 || m_header.flags == 0x09);
-        if (encrypted && !m_key_set) {
+        if (encrypted && !m_key) {
             return std::unexpected(AdxError("ADX decryption key required"));
         }
         
@@ -680,15 +604,11 @@ using cricodecs::util::divide_round_up;
         result.sample_rate = m_header.sample_rate;
         result.channels = m_header.channels;
         result.sample_count = m_header.sample_count;
-        result.has_loops = has_loops();
         result.loops = m_loops;
-        
-        if (result.has_loops && !result.loops.empty()) {
-            result.loop_start = result.loops[0].start_sample;
-            result.loop_end = result.loops[0].end_sample;
-        } else {
-            result.loop_start = 0;
-            result.loop_end = 0;
+        result.has_loops = !result.loops.empty();
+        if (result.has_loops) {
+            result.loop_start = result.loops.front().start_sample;
+            result.loop_end = result.loops.front().end_sample;
         }
         
         size_t valid_samples = static_cast<size_t>(m_header.sample_count) * m_header.channels;

@@ -23,57 +23,75 @@ namespace {
 
 constexpr std::string_view parse_prefix = "ACB cue graph parse failed: ";
 
+constexpr std::array command_node_kinds{
+    AcbCueNodeKind::track_event,
+    AcbCueNodeKind::legacy_command,
+    AcbCueNodeKind::sequence_command,
+    AcbCueNodeKind::track_command,
+    AcbCueNodeKind::synth_command,
+};
+
+constexpr AcbCueNodeKind command_node_kind(AcbCommandTableKind kind) noexcept {
+    return command_node_kinds[static_cast<size_t>(kind)];
+}
+
+constexpr AcbCommandTableKind command_table_kind(AcbCueNodeKind kind) noexcept {
+    return static_cast<AcbCommandTableKind>(
+        static_cast<uint8_t>(kind) - static_cast<uint8_t>(AcbCueNodeKind::track_event));
+}
+
+constexpr AcbCommandDispatcher command_dispatcher(AcbCommandTableKind kind) noexcept {
+    constexpr std::array dispatchers{
+        AcbCommandDispatcher::serialized_event,
+        AcbCommandDispatcher::legacy_shared,
+        AcbCommandDispatcher::compact_parameter,
+        AcbCommandDispatcher::compact_parameter,
+        AcbCommandDispatcher::compact_parameter,
+    };
+    return dispatchers[static_cast<size_t>(kind)];
+}
+
+constexpr std::optional<AcbCueNodeKind> reference_node_kind(uint16_t type) noexcept {
+    switch (type) {
+        case 1: return AcbCueNodeKind::waveform;
+        case 2:
+        case 6: return AcbCueNodeKind::synth;
+        case 3:
+        case 7: return AcbCueNodeKind::sequence;
+        case 5: return AcbCueNodeKind::outside_link;
+        case 8:
+        case 9: return AcbCueNodeKind::block_sequence;
+        default: return std::nullopt;
+    }
+}
+
 template <typename T>
 std::optional<T> scalar(
     const UtfTable& table,
     uint32_t row,
-    std::string_view name,
-    std::vector<AcbCueDiagnostic>& diagnostics,
-    std::string_view context
+    std::string_view name
 ) {
     const int column = table.find_column(name);
-    if (column < 0) {
-        return std::nullopt;
-    }
+    if (column < 0) return std::nullopt;
     auto value = table.get<T>(row, static_cast<uint32_t>(column));
-    if (!value) {
-        diagnostics.push_back({
-            .context = std::string(context),
-            .message = "column " + std::string(name) + ": " + value.error(),
-        });
-        return std::nullopt;
-    }
-    return *value;
+    return value ? std::optional<T>{*value} : std::nullopt;
 }
 
 std::vector<uint8_t> raw_data(
     const UtfTable& table,
     uint32_t row,
-    std::string_view name,
-    std::vector<AcbCueDiagnostic>& diagnostics,
-    std::string_view context
+    std::string_view name
 ) {
     const int column = table.find_column(name);
-    if (column < 0) {
-        return {};
-    }
+    if (column < 0) return {};
     auto data = table.get_data(row, static_cast<uint32_t>(column));
-    if (!data) {
-        diagnostics.push_back({
-            .context = std::string(context),
-            .message = "column " + std::string(name) + ": " + data.error(),
-        });
-        return {};
-    }
-    return {data->begin(), data->end()};
+    return data ? std::vector<uint8_t>{data->begin(), data->end()} : std::vector<uint8_t>{};
 }
 
 std::optional<uint32_t> unsigned32(
     const UtfTable& table,
     uint32_t row,
-    std::string_view name,
-    std::vector<AcbCueDiagnostic>& diagnostics,
-    std::string_view context
+    std::string_view name
 ) {
     const int column = table.find_column(name);
     if (column < 0) {
@@ -90,17 +108,8 @@ std::optional<uint32_t> unsigned32(
         case utf::ColumnType::UInt32:
             if (auto value = table.get<uint32_t>(row, column_index)) return *value;
             break;
-        default:
-            diagnostics.push_back({
-                .context = std::string(context),
-                .message = "column " + std::string(name) + " is not an unsigned integer",
-            });
-            return std::nullopt;
+        default: break;
     }
-    diagnostics.push_back({
-        .context = std::string(context),
-        .message = "column " + std::string(name) + " could not be read",
-    });
     return std::nullopt;
 }
 
@@ -115,16 +124,8 @@ std::vector<uint16_t> be_u16_values(std::span<const uint8_t> data) {
 
 std::vector<uint16_t> counted_u16_values(
     std::span<const uint8_t> data,
-    uint16_t count,
-    std::vector<AcbCueDiagnostic>& diagnostics,
-    std::string_view context
+    uint16_t count
 ) {
-    if (data.size() < static_cast<size_t>(count) * 2) {
-        diagnostics.push_back({
-            .context = std::string(context),
-            .message = "u16 index list is shorter than its declared count",
-        });
-    }
     auto values = be_u16_values(data);
     if (values.size() > count) {
         values.resize(count);
@@ -155,7 +156,6 @@ AcbCueCommand interpret_command(const AcbCommand& command) {
         .dispatcher = command.dispatcher,
         .family = command.family,
         .meaning = AcbCueCommandMeaning::unknown,
-        .evidence = AcbInterpretationEvidence::none,
         .payload = {command.payload.begin(), command.payload.end()},
         .target = std::nullopt,
         .argument_u16 = std::nullopt,
@@ -164,9 +164,10 @@ AcbCueCommand interpret_command(const AcbCommand& command) {
         .time_advance_us = std::nullopt,
     };
 
+    const auto mark = [&](AcbCueCommandMeaning meaning) { result.meaning = meaning; };
+
     if (const auto target = command_target_reference(command)) {
-        result.meaning = AcbCueCommandMeaning::target_reference;
-        result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+        mark(AcbCueCommandMeaning::target_reference);
         result.target = *target;
         return result;
     }
@@ -176,44 +177,36 @@ AcbCueCommand interpret_command(const AcbCommand& command) {
          command.code < 0x03E4)) {
         switch (command.code) {
             case 0:
-                result.meaning = AcbCueCommandMeaning::terminator;
-                result.evidence = AcbInterpretationEvidence::structural;
+                mark(AcbCueCommandMeaning::terminator);
                 break;
             case 33:
-                result.meaning = AcbCueCommandMeaning::mute;
-                result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+                mark(AcbCueCommandMeaning::mute);
                 break;
             case 65:
-                result.meaning = AcbCueCommandMeaning::category_information;
-                result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+                mark(AcbCueCommandMeaning::category_information);
                 break;
             case 79:
-                result.meaning = AcbCueCommandMeaning::cue_limit_information;
-                result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+                mark(AcbCueCommandMeaning::cue_limit_information);
                 break;
             case 72:
                 // CriSolv adds this u8 to a playback-state counter. The
                 // authoring/UI terminology for that counter is not known.
-                result.meaning = AcbCueCommandMeaning::runtime_counter_add;
-                result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+                mark(AcbCueCommandMeaning::runtime_counter_add);
                 break;
             case 81:
                 // CriSolv writes this u8 to a runtime flag/output field. Keep
                 // the deliberately structural name until its authoring label
                 // is recovered.
-                result.meaning = AcbCueCommandMeaning::runtime_flag_write;
-                result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+                mark(AcbCueCommandMeaning::runtime_flag_write);
                 break;
             case 98:
-                result.meaning = AcbCueCommandMeaning::sequence_wait_item;
-                result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+                mark(AcbCueCommandMeaning::sequence_wait_item);
                 break;
             case 99:
                 if (command.payload.size() == 2) {
                     // The runtime resolves this StringValue index as the
                     // selector name before applying selector conditions.
-                    result.meaning = AcbCueCommandMeaning::selector_name;
-                    result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+                    mark(AcbCueCommandMeaning::selector_name);
                     result.argument_u16 = io::read_be<uint16_t>(command.payload, 0);
                 }
                 break;
@@ -222,23 +215,19 @@ AcbCueCommand interpret_command(const AcbCommand& command) {
                     // CriSolv's compact dispatcher resolves both big-endian
                     // u16 values through ACB string/value tables and stores
                     // the resulting selector condition.
-                    result.meaning = AcbCueCommandMeaning::selector_condition;
-                    result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+                    mark(AcbCueCommandMeaning::selector_condition);
                     result.argument_u16 = io::read_be<uint16_t>(command.payload, 0);
                     result.argument_u16_2 = io::read_be<uint16_t>(command.payload, 2);
                 }
                 break;
             case 111:
-                result.meaning = AcbCueCommandMeaning::bus_send_by_name;
-                result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+                mark(AcbCueCommandMeaning::bus_send_by_name);
                 break;
             case 120:
-                result.meaning = AcbCueCommandMeaning::sequence_wait_timer;
-                result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+                mark(AcbCueCommandMeaning::sequence_wait_timer);
                 break;
             case 124:
-                result.meaning = AcbCueCommandMeaning::stop_at_loop_end;
-                result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+                mark(AcbCueCommandMeaning::stop_at_loop_end);
                 break;
             default:
                 break;
@@ -248,13 +237,11 @@ AcbCueCommand interpret_command(const AcbCommand& command) {
 
     switch (command.code) {
         case 0:
-            result.meaning = AcbCueCommandMeaning::terminator;
-            result.evidence = AcbInterpretationEvidence::structural;
+            mark(AcbCueCommandMeaning::terminator);
             break;
         case 2001:
             if (command.payload.size() == 4) {
-                result.meaning = AcbCueCommandMeaning::wait_milliseconds;
-                result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+                mark(AcbCueCommandMeaning::wait_milliseconds);
                 result.time_advance_us =
                     static_cast<uint64_t>(io::read_be<uint32_t>(command.payload, 0)) * 1000;
             }
@@ -266,53 +253,43 @@ AcbCueCommand interpret_command(const AcbCommand& command) {
                 // Treating that runtime unit as microseconds is fixture-
                 // inferred: it makes declared block lengths and every
                 // observed Music.acb clip offset exact.
-                result.meaning = AcbCueCommandMeaning::wait_submillisecond;
-                result.evidence = AcbInterpretationEvidence::fixture_inferred;
+                mark(AcbCueCommandMeaning::wait_submillisecond);
                 result.argument_i16 = io::read_be<int16_t>(command.payload, 0);
                 result.time_advance_us = *result.argument_i16;
             }
             break;
         case 997:
-            result.meaning = AcbCueCommandMeaning::sequence_start_milliseconds;
-            result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+            mark(AcbCueCommandMeaning::sequence_start_milliseconds);
             break;
         case 998:
-            result.meaning = AcbCueCommandMeaning::sequence_start_random;
-            result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+            mark(AcbCueCommandMeaning::sequence_start_random);
             break;
         case 999:
-            result.meaning = AcbCueCommandMeaning::sequence_start;
-            result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+            mark(AcbCueCommandMeaning::sequence_start);
             break;
         case 4000:
-            result.meaning = AcbCueCommandMeaning::midi_event;
-            result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+            mark(AcbCueCommandMeaning::midi_event);
             break;
         case 4050:
-            // AtomCraft emits this at authored event end time; CriSolv uses
+            // AtomCraft emits this at the event end time; CriSolv uses
             // it to finalize the active timed track event.
-            result.meaning = AcbCueCommandMeaning::end_track_event;
-            result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+            mark(AcbCueCommandMeaning::end_track_event);
             break;
         case 7099:
         case 7100:
-            result.meaning = AcbCueCommandMeaning::start_action;
-            result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+            mark(AcbCueCommandMeaning::start_action);
             break;
         case 7101:
-            result.meaning = AcbCueCommandMeaning::stop_action;
-            result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+            mark(AcbCueCommandMeaning::stop_action);
             break;
         case 7102:
-            result.meaning = AcbCueCommandMeaning::mute;
-            result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+            mark(AcbCueCommandMeaning::mute);
             break;
         case 7104:
             if (command.payload.size() == 4) {
                 // AtomCraft AcOoActionSetSelectorLabel serializer
                 // (0x140A8E8A3) emits 7104 with this selector/label pair.
-                result.meaning = AcbCueCommandMeaning::set_selector_label;
-                result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+                mark(AcbCueCommandMeaning::set_selector_label);
                 result.argument_u16 = io::read_be<uint16_t>(command.payload, 0);
                 result.argument_u16_2 = io::read_be<uint16_t>(command.payload, 2);
             }
@@ -320,44 +297,38 @@ AcbCueCommand interpret_command(const AcbCommand& command) {
         case 7107:
             // AtomCraft's AcOoActionPlaybackParam serializer emits 7107.
             // Preserve its version-dependent parameter/curve record raw.
-            result.meaning = AcbCueCommandMeaning::playback_parameter;
-            result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+            mark(AcbCueCommandMeaning::playback_parameter);
             break;
         case 7110:
             // AtomCraft emits 7101 and 7110 from AcOoActionStop variants.
             // CriSolv consumes 7110 as u16/u8/u8, but the submode names are
             // not established, so keep the payload raw.
-            result.meaning = AcbCueCommandMeaning::stop_action_parameterized;
-            result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+            mark(AcbCueCommandMeaning::stop_action_parameterized);
             break;
         case 7108:
         case 7111:
-            result.meaning = AcbCueCommandMeaning::pause_action;
-            result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+            mark(AcbCueCommandMeaning::pause_action);
             break;
         case 7109:
         case 7112:
-            result.meaning = AcbCueCommandMeaning::resume_action;
-            result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+            mark(AcbCueCommandMeaning::resume_action);
             break;
         case 7113:
             if (command.payload.size() == 2) {
                 // AtomCraft's AcOoActionNextDestinationBlock serializer emits
                 // 7113; CriSolv writes this value as the target playback's
                 // next block index.
-                result.meaning = AcbCueCommandMeaning::set_next_block;
-                result.evidence = AcbInterpretationEvidence::runtime_confirmed;
+                mark(AcbCueCommandMeaning::set_next_block);
                 result.argument_u16 = io::read_be<uint16_t>(command.payload, 0);
             }
             break;
         case 7115:
             if (command.payload.size() == 2) {
-                // This later target-addressed form is fixture-inferred from
+                // I found this later target-addressed form in
                 // named selector targets and matching StringValue rows. The
                 // action concept is corroborated by AtomCraft's older 7104
                 // AcOoActionSetSelectorLabel serializer.
-                result.meaning = AcbCueCommandMeaning::set_selector_label;
-                result.evidence = AcbInterpretationEvidence::fixture_inferred;
+                mark(AcbCueCommandMeaning::set_selector_label);
                 result.argument_u16 = io::read_be<uint16_t>(command.payload, 0);
             }
             break;
@@ -379,19 +350,7 @@ std::expected<std::vector<AcbCueCommandStream>, std::string> parse_command_table
             " has no Command column");
     }
 
-    const auto dispatcher = [kind] {
-        switch (kind) {
-            case AcbCommandTableKind::track_event:
-                return AcbCommandDispatcher::serialized_event;
-            case AcbCommandTableKind::legacy_command:
-                return AcbCommandDispatcher::legacy_shared;
-            case AcbCommandTableKind::sequence_command:
-            case AcbCommandTableKind::track_command:
-            case AcbCommandTableKind::synth_command:
-                return AcbCommandDispatcher::compact_parameter;
-        }
-        return AcbCommandDispatcher::serialized_event;
-    }();
+    const auto dispatcher = command_dispatcher(kind);
 
     std::vector<AcbCueCommandStream> streams;
     streams.reserve(table.row_count());
@@ -411,7 +370,6 @@ std::expected<std::vector<AcbCueCommandStream>, std::string> parse_command_table
             .commands = {},
             .scheduled_targets = {},
             .duration_us = 0,
-            .uses_inferred_timing = false,
         };
         if (!data->empty()) {
             auto parsed = parse_command_stream(*data, dispatcher);
@@ -427,9 +385,6 @@ std::expected<std::vector<AcbCueCommandStream>, std::string> parse_command_table
                 auto interpreted = interpret_command((*parsed)[command_index]);
                 if (interpreted.time_advance_us) {
                     clock_us += *interpreted.time_advance_us;
-                    if (interpreted.meaning == AcbCueCommandMeaning::wait_submillisecond) {
-                        stream.uses_inferred_timing = true;
-                    }
                 }
                 if (interpreted.target) {
                     stream.scheduled_targets.push_back({
@@ -482,7 +437,6 @@ public:
         if (auto result = parse_cues(); !result) return result;
         if (auto result = parse_cue_names(); !result) return result;
         link_cue_names();
-        validate_references();
         return {};
     }
 
@@ -515,9 +469,33 @@ private:
         uint32_t row,
         std::string_view name,
         T fallback,
-        std::string_view context
+        std::string_view
     ) {
-        return scalar<T>(table, row, name, m_graph.m_diagnostics, context).value_or(fallback);
+        return scalar<T>(table, row, name).value_or(fallback);
+    }
+
+    template <typename T, typename ReadRow>
+    std::expected<void, std::string> parse_rows(
+        std::string_view name,
+        std::vector<T>& output,
+        bool required,
+        ReadRow read_row
+    ) {
+        auto nested = table(name);
+        if (!nested) return std::unexpected(nested.error());
+        if (!*nested) {
+            return required
+                ? std::unexpected(std::string(parse_prefix) + std::string(name) + " is missing")
+                : std::expected<void, std::string>{};
+        }
+
+        const auto& rows = **nested;
+        output.reserve(rows.row_count());
+        for (uint32_t row = 0; row < rows.row_count(); ++row) {
+            output.push_back(read_row(
+                rows, row, std::string(name) + " row " + std::to_string(row)));
+        }
+        return {};
     }
 
     std::expected<std::pair<std::string, std::string>, std::string> string_field(
@@ -571,23 +549,17 @@ private:
     }
 
     std::expected<void, std::string> parse_outside_links() {
-        auto result = table("OutsideLinkTable");
-        if (!result) return std::unexpected(result.error());
-        if (!*result) return {};
-        const auto& links = **result;
-        m_graph.m_outside_links.reserve(links.row_count());
-        for (uint32_t row = 0; row < links.row_count(); ++row) {
-            const auto context = "OutsideLinkTable row " + std::to_string(row);
-            m_graph.m_outside_links.push_back({
+        return parse_rows("OutsideLinkTable", m_graph.m_outside_links, false,
+            [&](const UtfTable& links, uint32_t row, const std::string& context) {
+            return AcbOutsideLink{
                 .row_index = row,
                 .cue_id = value_or<uint32_t>(links, row, "Id", 0xFFFFFFFFu, context),
                 .cue_name_string_index = value_or<uint16_t>(
                     links, row, "StringIndex", invalid_acb_index, context),
                 .acb_name_string_index = value_or<uint16_t>(
                     links, row, "AcbNameStringIndex", invalid_acb_index, context),
-            });
-        }
-        return {};
+            };
+        });
     }
 
     std::expected<void, std::string> parse_one_command_table(
@@ -605,35 +577,26 @@ private:
     }
 
     std::expected<void, std::string> parse_command_tables() {
-        if (auto result = parse_one_command_table(
-                "TrackEventTable", AcbCommandTableKind::track_event, m_graph.m_track_events);
-            !result) return result;
-        if (auto result = parse_one_command_table(
-                "CommandTable", AcbCommandTableKind::legacy_command, m_graph.m_legacy_commands);
-            !result) return result;
-        if (auto result = parse_one_command_table(
-                "SeqCommandTable", AcbCommandTableKind::sequence_command, m_graph.m_sequence_commands);
-            !result) return result;
-        if (auto result = parse_one_command_table(
-                "TrackCommandTable", AcbCommandTableKind::track_command, m_graph.m_track_commands);
-            !result) return result;
-        return parse_one_command_table(
-            "SynthCommandTable", AcbCommandTableKind::synth_command, m_graph.m_synth_commands);
+        constexpr std::array command_tables{
+            std::pair{"TrackEventTable", AcbCommandTableKind::track_event},
+            std::pair{"CommandTable", AcbCommandTableKind::legacy_command},
+            std::pair{"SeqCommandTable", AcbCommandTableKind::sequence_command},
+            std::pair{"TrackCommandTable", AcbCommandTableKind::track_command},
+            std::pair{"SynthCommandTable", AcbCommandTableKind::synth_command},
+        };
+        for (const auto& [name, kind] : command_tables) {
+            if (auto result = parse_one_command_table(name, kind, m_graph.commands(kind));
+                !result) return result;
+        }
+        return {};
     }
 
     std::expected<void, std::string> parse_waveforms() {
-        auto result = table("WaveformTable");
-        if (!result) return std::unexpected(result.error());
-        if (!*result) {
-            return std::unexpected(std::string(parse_prefix) + "WaveformTable is missing");
-        }
-        const auto& table = **result;
-        m_graph.m_waveforms.reserve(table.row_count());
-        for (uint32_t row = 0; row < table.row_count(); ++row) {
-            const auto context = "WaveformTable row " + std::to_string(row);
+        return parse_rows("WaveformTable", m_graph.m_waveforms, true,
+            [&](const UtfTable& table, uint32_t row, const std::string& context) {
             const auto id = value_or<uint16_t>(
                 table, row, "Id", invalid_acb_index, context);
-            m_graph.m_waveforms.push_back({
+            return AcbCueWaveform{
                 .row_index = row,
                 .id = id,
                 .memory_awb_id = value_or<uint16_t>(table, row, "MemoryAwbId",
@@ -644,70 +607,51 @@ private:
                 .encode_type = value_or<uint8_t>(table, row, "EncodeType", 0, context),
                 .num_channels = value_or<uint8_t>(table, row, "NumChannels", 0, context),
                 .loop_flag = value_or<uint8_t>(table, row, "LoopFlag", 0, context),
-                .sampling_rate = unsigned32(
-                    table, row, "SamplingRate", m_graph.m_diagnostics, context).value_or(0),
+                .sampling_rate = unsigned32(table, row, "SamplingRate").value_or(0),
                 .num_samples = value_or<uint32_t>(table, row, "NumSamples", 0, context),
                 .extension_data = value_or<uint16_t>(table, row, "ExtensionData", invalid_acb_index, context),
-            });
-        }
-        return {};
+            };
+        });
     }
 
     std::expected<void, std::string> parse_waveform_extensions() {
-        auto result = table("WaveformExtensionDataTable");
-        if (!result) return std::unexpected(result.error());
-        if (!*result) return {};
-        const auto& table = **result;
-        m_graph.m_waveform_extensions.reserve(table.row_count());
-        for (uint32_t row = 0; row < table.row_count(); ++row) {
-            const auto context = "WaveformExtensionDataTable row " + std::to_string(row);
-            m_graph.m_waveform_extensions.push_back({
+        return parse_rows("WaveformExtensionDataTable", m_graph.m_waveform_extensions, false,
+            [&](const UtfTable& table, uint32_t row, const std::string& context) {
+            return AcbWaveformExtension{
                 .row_index = row,
                 .loop_start = value_or<uint32_t>(table, row, "LoopStart", 0, context),
                 .loop_end = value_or<uint32_t>(table, row, "LoopEnd", 0, context),
-            });
-        }
-        return {};
+            };
+        });
     }
 
     std::expected<void, std::string> parse_synths() {
-        auto result = table("SynthTable");
-        if (!result) return std::unexpected(result.error());
-        if (!*result) return {};
-        const auto& table = **result;
-        m_graph.m_synths.reserve(table.row_count());
-        for (uint32_t row = 0; row < table.row_count(); ++row) {
-            const auto context = "SynthTable row " + std::to_string(row);
-            AcbSynth synth{
+        return parse_rows("SynthTable", m_graph.m_synths, false,
+            [&](const UtfTable& table, uint32_t row, const std::string& context) {
+            auto reference_items = raw_data(table, row, "ReferenceItems");
+            auto track_values = raw_data(table, row, "TrackValues");
+            std::vector<AcbSynthReference> references;
+            references.reserve(reference_items.size() / 4);
+            for (size_t offset = 0; offset + 4 <= reference_items.size(); offset += 4) {
+                references.push_back({
+                    .type = io::read_be<uint16_t>(reference_items, offset),
+                    .index = io::read_be<uint16_t>(reference_items, offset + 2),
+                });
+            }
+            auto decoded_track_values = be_u16_values(track_values);
+            return AcbSynth{
                 .row_index = row,
                 .type = value_or<uint8_t>(table, row, "Type", 0, context),
                 .command_index = value_or<uint16_t>(table, row, "CommandIndex", invalid_acb_index, context),
                 .action_track_start_index = value_or<uint16_t>(
                     table, row, "ActionTrackStartIndex", invalid_acb_index, context),
                 .num_action_tracks = value_or<uint16_t>(table, row, "NumActionTracks", 0, context),
-                .reference_items_raw = raw_data(
-                    table, row, "ReferenceItems", m_graph.m_diagnostics, context),
-                .reference_items = {},
-                .track_values_raw = raw_data(
-                    table, row, "TrackValues", m_graph.m_diagnostics, context),
-                .track_values = {},
+                .reference_items_raw = std::move(reference_items),
+                .reference_items = std::move(references),
+                .track_values_raw = std::move(track_values),
+                .track_values = std::move(decoded_track_values),
             };
-            if (synth.reference_items_raw.size() % 4 != 0) {
-                m_graph.m_diagnostics.push_back({
-                    .context = context,
-                    .message = "ReferenceItems has trailing bytes",
-                });
-            }
-            for (size_t offset = 0; offset + 4 <= synth.reference_items_raw.size(); offset += 4) {
-                synth.reference_items.push_back({
-                    .type = io::read_be<uint16_t>(synth.reference_items_raw, offset),
-                    .index = io::read_be<uint16_t>(synth.reference_items_raw, offset + 2),
-                });
-            }
-            synth.track_values = be_u16_values(synth.track_values_raw);
-            m_graph.m_synths.push_back(std::move(synth));
-        }
-        return {};
+        });
     }
 
     std::expected<void, std::string> parse_tracks(
@@ -743,25 +687,20 @@ private:
     }
 
     std::expected<void, std::string> parse_sequences() {
-        auto result = table("SequenceTable");
-        if (!result) return std::unexpected(result.error());
-        if (!*result) return {};
-        const auto& table = **result;
-        m_graph.m_sequences.reserve(table.row_count());
-        for (uint32_t row = 0; row < table.row_count(); ++row) {
-            const auto context = "SequenceTable row " + std::to_string(row);
+        return parse_rows("SequenceTable", m_graph.m_sequences, false,
+            [&](const UtfTable& table, uint32_t row, const std::string& context) {
             const auto track_count = value_or<uint16_t>(table, row, "NumTracks", 0, context);
-            auto track_data = raw_data(table, row, "TrackIndex", m_graph.m_diagnostics, context);
-            AcbSequence sequence{
+            auto track_data = raw_data(table, row, "TrackIndex");
+            auto track_values = raw_data(table, row, "TrackValues");
+            auto decoded_track_values = be_u16_values(track_values);
+            return AcbSequence{
                 .row_index = row,
                 .type = value_or<uint8_t>(table, row, "Type", 0, context),
                 .playback_ratio = value_or<uint16_t>(table, row, "PlaybackRatio", 0, context),
                 .command_index = value_or<uint16_t>(table, row, "CommandIndex", invalid_acb_index, context),
-                .track_indices = counted_u16_values(
-                    track_data, track_count, m_graph.m_diagnostics, context),
-                .track_values_raw = raw_data(
-                    table, row, "TrackValues", m_graph.m_diagnostics, context),
-                .track_values = {},
+                .track_indices = counted_u16_values(track_data, track_count),
+                .track_values_raw = std::move(track_values),
+                .track_values = std::move(decoded_track_values),
                 .action_track_start_index = value_or<uint16_t>(
                     table, row, "ActionTrackStartIndex", invalid_acb_index, context),
                 .num_action_tracks = value_or<uint16_t>(table, row, "NumActionTracks", 0, context),
@@ -772,30 +711,20 @@ private:
                     table, row, "StopActionStartIndex", invalid_acb_index, context),
                 .num_stop_actions = value_or<uint16_t>(table, row, "NumStopAction", 0, context),
             };
-            sequence.track_values = be_u16_values(sequence.track_values_raw);
-            m_graph.m_sequences.push_back(std::move(sequence));
-        }
-        return {};
+        });
     }
 
     std::expected<void, std::string> parse_blocks() {
-        auto result = table("BlockTable");
-        if (!result) return std::unexpected(result.error());
-        if (!*result) return {};
-        const auto& table = **result;
-        m_graph.m_blocks.reserve(table.row_count());
-        for (uint32_t row = 0; row < table.row_count(); ++row) {
-            const auto context = "BlockTable row " + std::to_string(row);
+        return parse_rows("BlockTable", m_graph.m_blocks, false,
+            [&](const UtfTable& table, uint32_t row, const std::string& context) {
             const auto track_count = value_or<uint16_t>(table, row, "NumTracks", 0, context);
             const auto destination_count =
                 value_or<uint16_t>(table, row, "NumDestinationBlocks", 0, context);
-            auto track_data = raw_data(table, row, "TrackIndex", m_graph.m_diagnostics, context);
-            auto destination_data =
-                raw_data(table, row, "DestinationBlocks", m_graph.m_diagnostics, context);
-            m_graph.m_blocks.push_back({
+            auto track_data = raw_data(table, row, "TrackIndex");
+            auto destination_data = raw_data(table, row, "DestinationBlocks");
+            return AcbBlock{
                 .row_index = row,
-                .track_indices = counted_u16_values(
-                    track_data, track_count, m_graph.m_diagnostics, context),
+                .track_indices = counted_u16_values(track_data, track_count),
                 .playback_type = value_or<uint8_t>(table, row, "PlaybackType", 0, context),
                 .num_loops = value_or<uint16_t>(table, row, "NumLoops", 0, context),
                 .transition_timing = value_or<uint8_t>(table, row, "TransitionTiming", 0, context),
@@ -813,39 +742,30 @@ private:
                 .action_track_start_index = value_or<uint16_t>(
                     table, row, "ActionTrackStartIndex", invalid_acb_index, context),
                 .num_action_tracks = value_or<uint16_t>(table, row, "NumActionTracks", 0, context),
-                .destination_blocks = counted_u16_values(
-                    destination_data, destination_count, m_graph.m_diagnostics, context),
-                .destination_values_raw = raw_data(
-                    table, row, "DestinationBlockValues", m_graph.m_diagnostics, context),
-            });
-        }
-        return {};
+                .destination_blocks = counted_u16_values(destination_data, destination_count),
+                .destination_values_raw = raw_data(table, row, "DestinationBlockValues"),
+            };
+        });
     }
 
     std::expected<void, std::string> parse_block_sequences() {
-        auto result = table("BlockSequenceTable");
-        if (!result) return std::unexpected(result.error());
-        if (!*result) return {};
-        const auto& table = **result;
-        m_graph.m_block_sequences.reserve(table.row_count());
-        for (uint32_t row = 0; row < table.row_count(); ++row) {
-            const auto context = "BlockSequenceTable row " + std::to_string(row);
+        return parse_rows("BlockSequenceTable", m_graph.m_block_sequences, false,
+            [&](const UtfTable& table, uint32_t row, const std::string& context) {
             const auto track_count = value_or<uint16_t>(table, row, "NumTracks", 0, context);
             const auto block_count = value_or<uint16_t>(table, row, "NumBlocks", 0, context);
-            auto track_data = raw_data(table, row, "TrackIndex", m_graph.m_diagnostics, context);
-            auto block_data = raw_data(table, row, "BlockIndex", m_graph.m_diagnostics, context);
-            AcbBlockSequence sequence{
+            auto track_data = raw_data(table, row, "TrackIndex");
+            auto block_data = raw_data(table, row, "BlockIndex");
+            auto track_values = raw_data(table, row, "TrackValues");
+            auto decoded_track_values = be_u16_values(track_values);
+            return AcbBlockSequence{
                 .row_index = row,
                 .type = value_or<uint8_t>(table, row, "Type", 0, context),
                 .playback_ratio = value_or<uint16_t>(table, row, "PlaybackRatio", 0, context),
                 .command_index = value_or<uint16_t>(table, row, "CommandIndex", invalid_acb_index, context),
-                .track_indices = counted_u16_values(
-                    track_data, track_count, m_graph.m_diagnostics, context),
-                .block_indices = counted_u16_values(
-                    block_data, block_count, m_graph.m_diagnostics, context),
-                .track_values_raw = raw_data(
-                    table, row, "TrackValues", m_graph.m_diagnostics, context),
-                .track_values = {},
+                .track_indices = counted_u16_values(track_data, track_count),
+                .block_indices = counted_u16_values(block_data, block_count),
+                .track_values_raw = std::move(track_values),
+                .track_values = std::move(decoded_track_values),
                 .watch_action_start_index = value_or<uint16_t>(
                     table, row, "WatchActionStartIndex", invalid_acb_index, context),
                 .num_watch_actions = value_or<uint16_t>(table, row, "NumWatchAction", 0, context),
@@ -853,23 +773,13 @@ private:
                     table, row, "StopActionStartIndex", invalid_acb_index, context),
                 .num_stop_actions = value_or<uint16_t>(table, row, "NumStopAction", 0, context),
             };
-            sequence.track_values = be_u16_values(sequence.track_values_raw);
-            m_graph.m_block_sequences.push_back(std::move(sequence));
-        }
-        return {};
+        });
     }
 
     std::expected<void, std::string> parse_cues() {
-        auto result = table("CueTable");
-        if (!result) return std::unexpected(result.error());
-        if (!*result) {
-            return std::unexpected(std::string(parse_prefix) + "CueTable is missing");
-        }
-        const auto& table = **result;
-        m_graph.m_cues.reserve(table.row_count());
-        for (uint32_t row = 0; row < table.row_count(); ++row) {
-            const auto context = "CueTable row " + std::to_string(row);
-            m_graph.m_cues.push_back({
+        return parse_rows("CueTable", m_graph.m_cues, true,
+            [&](const UtfTable& table, uint32_t row, const std::string& context) {
+            return AcbCue{
                 .row_index = row,
                 .cue_id = value_or<uint32_t>(table, row, "CueId", row, context),
                 .reference = {
@@ -884,9 +794,8 @@ private:
                     table, row, "NumRelatedWaveforms", 0, context),
                 .header_visibility = value_or<uint8_t>(
                     table, row, "HeaderVisibility", 0, context),
-            });
-        }
-        return {};
+            };
+        });
     }
 
     std::expected<void, std::string> parse_cue_names() {
@@ -922,43 +831,10 @@ private:
     }
 
     void link_cue_names() {
-        for (const auto& name : m_graph.m_cue_names) {
-            if (name.cue_index >= m_graph.m_cues.size()) {
-                m_graph.m_diagnostics.push_back({
-                    .context = "CueNameTable row " + std::to_string(name.row_index),
-                    .message = "CueIndex is out of range",
-                });
-                continue;
-            }
-            m_graph.m_cues[name.cue_index].name_rows.push_back(name.row_index);
-        }
-    }
-
-    void validate_references() {
-        for (const auto& cue : m_graph.m_cues) {
-            size_t limit = 0;
-            switch (cue.reference.type) {
-                case 0: continue;
-                case 1: limit = m_graph.m_waveforms.size(); break;
-                case 2: limit = m_graph.m_synths.size(); break;
-                case 3: limit = m_graph.m_sequences.size(); break;
-                case 5: limit = m_graph.m_outside_links.size(); break;
-                case 6: limit = m_graph.m_synths.size(); break;
-                case 7: limit = m_graph.m_sequences.size(); break;
-                case 8: limit = m_graph.m_block_sequences.size(); break;
-                case 9: limit = m_graph.m_block_sequences.size(); break;
-                default:
-                    m_graph.m_diagnostics.push_back({
-                        .context = "CueTable row " + std::to_string(cue.row_index),
-                        .message = "unknown ReferenceType " + std::to_string(cue.reference.type),
-                    });
-                    continue;
-            }
-            if (cue.reference.index >= limit) {
-                m_graph.m_diagnostics.push_back({
-                    .context = "CueTable row " + std::to_string(cue.row_index),
-                    .message = "ReferenceIndex is out of range",
-                });
+        for (uint32_t row = 0; row < m_graph.m_cue_names.size(); ++row) {
+            const auto& name = m_graph.m_cue_names[row];
+            if (name.cue_index < m_graph.m_cues.size()) {
+                m_graph.m_cues[name.cue_index].name_rows.push_back(row);
             }
         }
     }
@@ -1029,15 +905,8 @@ const AcbCueCommandStream* AcbCueGraph::command_stream(
     AcbCommandTableKind kind,
     uint32_t row_index
 ) const noexcept {
-    const std::vector<AcbCueCommandStream>* streams = nullptr;
-    switch (kind) {
-        case AcbCommandTableKind::track_event:      streams = &m_track_events; break;
-        case AcbCommandTableKind::legacy_command:   streams = &m_legacy_commands; break;
-        case AcbCommandTableKind::sequence_command: streams = &m_sequence_commands; break;
-        case AcbCommandTableKind::track_command:    streams = &m_track_commands; break;
-        case AcbCommandTableKind::synth_command:    streams = &m_synth_commands; break;
-    }
-    return streams != nullptr && row_index < streams->size() ? &(*streams)[row_index] : nullptr;
+    const auto& table = commands(kind);
+    return row_index < table.size() ? &table[row_index] : nullptr;
 }
 
 std::expected<AcbCueAssembly, std::string> AcbCueGraph::assemble_cue(uint32_t cue_index) const {
@@ -1061,11 +930,11 @@ std::expected<AcbCueAssembly, std::string> AcbCueGraph::assemble_cue(uint32_t cu
         m_sequences.size(),
         m_tracks.size(),
         m_action_tracks.size(),
-        m_track_events.size(),
-        m_legacy_commands.size(),
-        m_sequence_commands.size(),
-        m_track_commands.size(),
-        m_synth_commands.size(),
+        track_events().size(),
+        legacy_commands().size(),
+        sequence_commands().size(),
+        track_commands().size(),
+        synth_commands().size(),
         m_block_sequences.size(),
         m_blocks.size(),
         m_outside_links.size(),
@@ -1109,30 +978,20 @@ std::expected<AcbCueAssembly, std::string> AcbCueGraph::assemble_cue(uint32_t cu
         assembly.nodes.push_back(node);
 
         auto connect_reference = [&](uint16_t type, uint16_t index, AcbCueEdgeKind edge_kind, uint32_t ordinal) {
-            AcbCueNodeKind target_kind;
-            size_t limit = 0;
-            switch (type) {
-                case 0:
-                    return;
-                case 1: target_kind = AcbCueNodeKind::waveform; limit = m_waveforms.size(); break;
-                case 2: target_kind = AcbCueNodeKind::synth; limit = m_synths.size(); break;
-                case 3: target_kind = AcbCueNodeKind::sequence; limit = m_sequences.size(); break;
-                case 5: target_kind = AcbCueNodeKind::outside_link; limit = m_outside_links.size(); break;
-                case 6: target_kind = AcbCueNodeKind::synth; limit = m_synths.size(); break;
-                case 7: target_kind = AcbCueNodeKind::sequence; limit = m_sequences.size(); break;
-                case 8: target_kind = AcbCueNodeKind::block_sequence; limit = m_block_sequences.size(); break;
-                case 9: target_kind = AcbCueNodeKind::block_sequence; limit = m_block_sequences.size(); break;
-                default:
-                    add_unresolved(node, type, index, "unknown reference type");
-                    return;
+            if (type == 0) return;
+            const auto target_kind = reference_node_kind(type);
+            if (!target_kind) {
+                add_unresolved(node, type, index, "unknown reference type");
+                return;
             }
+            const auto limit = node_counts[static_cast<size_t>(*target_kind)];
             if (index >= limit) {
                 add_unresolved(node, type, index, "reference index is out of range");
                 return;
             }
             connect(
                 node,
-                {target_kind, index},
+                {*target_kind, index},
                 type == 5 ? AcbCueEdgeKind::outside_link : edge_kind,
                 ordinal);
         };
@@ -1164,37 +1023,16 @@ std::expected<AcbCueAssembly, std::string> AcbCueGraph::assemble_cue(uint32_t cu
 
         auto connect_stream = [&](AcbCommandTableKind kind, uint16_t index, AcbCueEdgeKind edge_kind) {
             if (index == invalid_acb_index) return;
-            const auto table_is_empty = [&] {
-                switch (kind) {
-                    case AcbCommandTableKind::track_event:      return m_track_events.empty();
-                    case AcbCommandTableKind::legacy_command:   return m_legacy_commands.empty();
-                    case AcbCommandTableKind::sequence_command: return m_sequence_commands.empty();
-                    case AcbCommandTableKind::track_command:    return m_track_commands.empty();
-                    case AcbCommandTableKind::synth_command:    return m_synth_commands.empty();
-                }
-                return true;
-            }();
             // Older/smaller schemas can retain a numeric CommandIndex while
             // omitting the corresponding optional table entirely.
-            if (table_is_empty) return;
+            if (commands(kind).empty()) return;
 
-            const auto stream_kind = [&]() -> std::optional<AcbCueNodeKind> {
-                switch (kind) {
-                    case AcbCommandTableKind::track_event:      return AcbCueNodeKind::track_event;
-                    case AcbCommandTableKind::legacy_command:   return AcbCueNodeKind::legacy_command;
-                    case AcbCommandTableKind::sequence_command: return AcbCueNodeKind::sequence_command;
-                    case AcbCommandTableKind::track_command:    return AcbCueNodeKind::track_command;
-                    case AcbCommandTableKind::synth_command:    return AcbCueNodeKind::synth_command;
-                }
-                return std::nullopt;
-            }();
-            if (!stream_kind) return;
             if (command_stream(kind, index) == nullptr) {
                 add_unresolved(node, 0xC000 + static_cast<uint16_t>(kind), index,
                     "command-stream index is out of range");
                 return;
             }
-            connect(node, {*stream_kind, index}, edge_kind, 0);
+            connect(node, {command_node_kind(kind), index}, edge_kind, 0);
         };
 
         switch (node.kind) {
@@ -1237,7 +1075,7 @@ std::expected<AcbCueAssembly, std::string> AcbCueGraph::assemble_cue(uint32_t cu
             }
             case AcbCueNodeKind::track: {
                 const auto& track = m_tracks[node.index];
-                if (!m_track_events.empty()) {
+                if (!track_events().empty()) {
                     connect_stream(
                         AcbCommandTableKind::track_event,
                         track.event_index,
@@ -1259,8 +1097,8 @@ std::expected<AcbCueAssembly, std::string> AcbCueGraph::assemble_cue(uint32_t cu
                 // Unlike a normal TrackTable row, the action program is
                 // selected by ActionTrackTable.CommandIndex. This relationship
                 // holds across all action-bearing corpus schemas; EventIndex
-                // is not the authored action program.
-                if (!m_track_events.empty()) {
+                // is not the action program stored in the file.
+                if (!track_events().empty()) {
                     connect_stream(
                         AcbCommandTableKind::track_event,
                         track.command_index,
@@ -1309,15 +1147,7 @@ std::expected<AcbCueAssembly, std::string> AcbCueGraph::assemble_cue(uint32_t cu
             case AcbCueNodeKind::sequence_command:
             case AcbCueNodeKind::track_command:
             case AcbCueNodeKind::synth_command: {
-                AcbCommandTableKind kind;
-                switch (node.kind) {
-                    case AcbCueNodeKind::track_event:      kind = AcbCommandTableKind::track_event; break;
-                    case AcbCueNodeKind::legacy_command:   kind = AcbCommandTableKind::legacy_command; break;
-                    case AcbCueNodeKind::sequence_command: kind = AcbCommandTableKind::sequence_command; break;
-                    case AcbCueNodeKind::track_command:    kind = AcbCommandTableKind::track_command; break;
-                    case AcbCueNodeKind::synth_command:    kind = AcbCommandTableKind::synth_command; break;
-                    default:                              kind = AcbCommandTableKind::track_event; break;
-                }
+                const auto kind = command_table_kind(node.kind);
                 const auto* stream = command_stream(kind, node.index);
                 if (stream != nullptr) {
                     uint32_t ordinal = 0;

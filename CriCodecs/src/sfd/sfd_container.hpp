@@ -20,11 +20,19 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "../utilities/io.hpp"
 
 namespace cricodecs::sfd {
+
+namespace detail {
+[[nodiscard]] std::expected<void, std::string> write_output_file(
+    const std::filesystem::path& path,
+    std::span<const uint8_t> bytes,
+    std::string_view operation);
+}
 
 enum class SfdStreamType {
     audio,

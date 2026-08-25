@@ -12,7 +12,6 @@
 #include "../adx/adx_codec.hpp"
 #include "../utilities/io_endian.hpp"
 #include "../utilities/io_reader.hpp"
-#include "../utilities/io_writer.hpp"
 #include "../utilities/numeric.hpp"
 #include "../utilities/string.hpp"
 #include "../video/mpeg.hpp"
@@ -25,6 +24,7 @@
 #include <limits>
 #include <optional>
 #include <string_view>
+#include <utility>
 
 namespace cricodecs::sfd {
 
@@ -52,16 +52,7 @@ struct HeaderLayout {
     uint32_t builder_version_offset = 0;
     uint32_t builder_version_size = 0;
     uint32_t stream_counts_offset = 0;
-    uint32_t bitrate_offset = 0;
     uint32_t output_name_offset = 0;
-    uint32_t short_output_name_offset = 0;
-    uint32_t output_timestamp_offset = 0;
-    uint32_t pack_size_offset = 0;
-    uint32_t min_header_packets_offset = 0;
-    uint32_t reserved_header_size_offset = 0;
-    uint32_t element_table_offset = 0;
-    uint32_t element_record_size = 0;
-    bool has_standard_element_table = false;
 };
 
 constexpr HeaderLayout sofdec_stream_layout{
@@ -70,16 +61,7 @@ constexpr HeaderLayout sofdec_stream_layout{
     .builder_version_offset = 96,
     .builder_version_size = 32,
     .stream_counts_offset = 176,
-    .bitrate_offset = 180,
     .output_name_offset = 224,
-    .short_output_name_offset = 64,
-    .output_timestamp_offset = 76,
-    .pack_size_offset = 128,
-    .min_header_packets_offset = 136,
-    .reserved_header_size_offset = 140,
-    .element_table_offset = 384,
-    .element_record_size = 64,
-    .has_standard_element_table = true,
 };
 
 constexpr HeaderLayout sofdec_stream2_layout{
@@ -88,20 +70,18 @@ constexpr HeaderLayout sofdec_stream2_layout{
     .builder_version_offset = 46,
     .builder_version_size = 64,
     .stream_counts_offset = 174,
-    .bitrate_offset = 0,
     .output_name_offset = 110,
-    .short_output_name_offset = 0,
-    .output_timestamp_offset = 0,
-    .pack_size_offset = 0,
-    .min_header_packets_offset = 0,
-    .reserved_header_size_offset = 0,
-    .element_table_offset = 0,
-    .element_record_size = 0,
-    .has_standard_element_table = false,
 };
+constexpr size_t standard_short_name_offset = 64;
+constexpr size_t standard_timestamp_offset = 76;
+constexpr size_t standard_pack_size_offset = 128;
+constexpr size_t standard_min_header_packets_offset = 136;
+constexpr size_t standard_reserved_size_offset = 140;
+constexpr size_t standard_bitrate_offset = 180;
+constexpr size_t standard_element_table_offset = 384;
+constexpr size_t standard_element_record_size = 64;
 
 struct MuxProfileDescriptor {
-    SfdBuildProfile build_profile = SfdBuildProfile::sofdec_stream_standard_fixed_2048;
     SfdHeaderVariant variant = SfdHeaderVariant::unknown;
     HeaderLayout layout{};
     std::string_view label;
@@ -111,7 +91,6 @@ struct MuxProfileDescriptor {
 };
 
 constexpr MuxProfileDescriptor sofdec_stream_standard_fixed_2048_profile{
-    .build_profile = SfdBuildProfile::sofdec_stream_standard_fixed_2048,
     .variant = SfdHeaderVariant::sofdec_stream,
     .layout = sofdec_stream_layout,
     .label = "SofdecStream            ",
@@ -121,7 +100,6 @@ constexpr MuxProfileDescriptor sofdec_stream_standard_fixed_2048_profile{
 };
 
 constexpr MuxProfileDescriptor sofdec_stream2_v23249_profile{
-    .build_profile = SfdBuildProfile::sofdec_stream2_fixed_2048_v23249,
     .variant = SfdHeaderVariant::sofdec_stream2,
     .layout = sofdec_stream2_layout,
     .label = "SofdecStream2           ",
@@ -131,7 +109,6 @@ constexpr MuxProfileDescriptor sofdec_stream2_v23249_profile{
 };
 
 constexpr MuxProfileDescriptor sofdec_stream2_v23310_profile{
-    .build_profile = SfdBuildProfile::sofdec_stream2_fixed_2048_v23310,
     .variant = SfdHeaderVariant::sofdec_stream2,
     .layout = sofdec_stream2_layout,
     .label = "SofdecStream2           ",
@@ -148,12 +125,8 @@ struct TimedUnit {
 
 struct VideoSource {
     std::vector<uint8_t> bytes;
-    SfdVideoType video_type = SfdVideoType::unknown;
     uint8_t source_type = 1;
     SfdVideoSequenceHeader sequence_header;
-    uint32_t fps_n = 30000;
-    uint32_t fps_d = 1001;
-    double duration_seconds = 0.0;
     std::string source_name;
     std::vector<TimedUnit> units;
 };
@@ -161,64 +134,57 @@ struct VideoSource {
 struct AudioSource {
     std::vector<uint8_t> bytes;
     adx::AdxHeader header{};
-    SfdAudioType audio_type = SfdAudioType::unknown;
-    uint32_t samples_per_block = 0;
-    size_t data_start = 0;
-    double duration_seconds = 0.0;
     std::string source_name;
     std::vector<TimedUnit> units;
 };
 
+[[nodiscard]] double duration_seconds(const VideoSource& video) {
+    const auto [fps_n, fps_d] = cricodecs::video::mpeg_frame_rate_ratio(video.sequence_header.frame_rate_code);
+    return video.units.empty()
+        ? 0.0
+        : video.units.back().time_seconds + static_cast<double>(fps_d) / fps_n;
+}
+
+[[nodiscard]] double duration_seconds(const AudioSource& audio) {
+    return audio.header.sample_rate == 0
+        ? 0.0
+        : static_cast<double>(audio.header.sample_count) / audio.header.sample_rate;
+}
+
 struct StreamCursor {
-    const std::vector<uint8_t>* bytes = nullptr;
-    const std::vector<TimedUnit>* units = nullptr;
+    const std::vector<uint8_t>& bytes;
+    const std::vector<TimedUnit>& units;
     size_t unit_index = 0;
     size_t unit_offset = 0;
     uint8_t stream_id = 0;
-    bool is_audio = false;
+
+    StreamCursor(const std::vector<uint8_t>& bytes, const std::vector<TimedUnit>& units, uint8_t stream_id)
+        : bytes(bytes), units(units), stream_id(stream_id) {}
 
     [[nodiscard]] bool done() const noexcept {
-        return bytes == nullptr || units == nullptr || unit_index >= units->size();
+        return unit_index >= units.size();
     }
 
     [[nodiscard]] double next_time() const noexcept {
-        return done() ? std::numeric_limits<double>::infinity() : (*units)[unit_index].time_seconds;
+        return done() ? std::numeric_limits<double>::infinity() : units[unit_index].time_seconds;
     }
 
     [[nodiscard]] size_t remaining_in_unit() const noexcept {
-        if (done()) {
-            return 0;
-        }
-        const auto& unit = (*units)[unit_index];
-        return unit.size > unit_offset ? unit.size - unit_offset : 0;
+        return done() ? 0 : units[unit_index].size - unit_offset;
     }
 
     [[nodiscard]] size_t absolute_offset() const noexcept {
-        const auto& unit = (*units)[unit_index];
+        const auto& unit = units[unit_index];
         return unit.offset + unit_offset;
     }
 
     void advance(size_t bytes_to_consume) noexcept {
-        if (done()) {
-            return;
-        }
-
         unit_offset += bytes_to_consume;
-        while (!done()) {
-            const auto& unit = (*units)[unit_index];
-            if (unit_offset < unit.size) {
-                break;
-            }
+        if (unit_offset == units[unit_index].size) {
             ++unit_index;
             unit_offset = 0;
         }
     }
-};
-
-struct SectorPatch {
-    size_t offset = 0;
-    uint64_t scr = 0;
-    bool has_system_header = false;
 };
 
 [[nodiscard]] const MuxProfileDescriptor& resolve_build_profile_descriptor(SfdBuildProfile build_profile) {
@@ -239,13 +205,8 @@ struct SectorPatch {
         return std::unexpected("SFD build failed: canonical build_profile and compatibility mux_profile differ");
     }
 
-    if (input.build_profile.has_value()) {
-        return *input.build_profile;
-    }
-    if (input.mux_profile.has_value()) {
-        return *input.mux_profile;
-    }
-    return SfdBuildProfile::sofdec_stream_standard_fixed_2048;
+    return input.build_profile.value_or(input.mux_profile.value_or(
+        SfdBuildProfile::sofdec_stream_standard_fixed_2048));
 }
 
 [[nodiscard]] std::expected<std::string_view, std::string> resolve_header_builder_version(
@@ -329,13 +290,9 @@ struct SectorPatch {
     return name;
 }
 
-[[nodiscard]] std::array<uint8_t, 12> make_zero_timestamp() {
-    std::array<uint8_t, 12> timestamp{};
-    for (uint8_t& byte : timestamp) {
-        byte = static_cast<uint8_t>('0');
-    }
-    return timestamp;
-}
+constexpr std::array<uint8_t, 12> zero_timestamp = {
+    '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0'
+};
 
 void write_padded_string(
     std::vector<uint8_t>& bytes,
@@ -343,14 +300,9 @@ void write_padded_string(
     size_t capacity,
     std::string_view value
 ) {
-    if (offset >= bytes.size() || capacity == 0) {
-        return;
-    }
-
-    const size_t max_size = std::min(capacity, bytes.size() - offset);
-    const size_t copy_size = std::min(max_size, value.size());
+    const size_t copy_size = std::min(capacity, value.size());
     std::memcpy(bytes.data() + offset, value.data(), copy_size);
-    if (copy_size < max_size) {
+    if (copy_size < capacity) {
         bytes[offset + copy_size] = 0;
     }
 }
@@ -364,8 +316,8 @@ void append_bytes(std::vector<uint8_t>& bytes, std::span<const uint8_t> more) {
     double frame_duration_seconds
 ) {
     std::vector<TimedUnit> units;
-    size_t current_frame_start = std::numeric_limits<size_t>::max();
-    size_t next_frame_start = std::numeric_limits<size_t>::max();
+    std::optional<size_t> current_frame_start;
+    std::optional<size_t> next_frame_start;
     size_t frame_index = 0;
 
     auto is_prefix_header = [](uint8_t start_code) noexcept {
@@ -379,29 +331,29 @@ void append_bytes(std::vector<uint8_t>& bytes, std::span<const uint8_t> more) {
 
         const uint8_t start_code = bytes[offset + 3];
         if (start_code == 0x00) {
-            if (current_frame_start != std::numeric_limits<size_t>::max()) {
-                const size_t frame_end = next_frame_start != std::numeric_limits<size_t>::max() ? next_frame_start : offset;
-                if (frame_end > current_frame_start) {
+            if (current_frame_start) {
+                const size_t frame_end = next_frame_start.value_or(offset);
+                if (frame_end > *current_frame_start) {
                     units.push_back(TimedUnit{
-                        .offset = current_frame_start,
-                        .size = frame_end - current_frame_start,
+                        .offset = *current_frame_start,
+                        .size = frame_end - *current_frame_start,
                         .time_seconds = frame_index * frame_duration_seconds,
                     });
                     ++frame_index;
                 }
             }
 
-            current_frame_start = next_frame_start != std::numeric_limits<size_t>::max() ? next_frame_start : offset;
-            next_frame_start = std::numeric_limits<size_t>::max();
-        } else if (is_prefix_header(start_code) && next_frame_start == std::numeric_limits<size_t>::max()) {
+            current_frame_start = next_frame_start.value_or(offset);
+            next_frame_start.reset();
+        } else if (is_prefix_header(start_code) && !next_frame_start) {
             next_frame_start = offset;
         }
     }
 
-    if (current_frame_start != std::numeric_limits<size_t>::max() && current_frame_start < bytes.size()) {
+    if (current_frame_start && *current_frame_start < bytes.size()) {
         units.push_back(TimedUnit{
-            .offset = current_frame_start,
-            .size = bytes.size() - current_frame_start,
+            .offset = *current_frame_start,
+            .size = bytes.size() - *current_frame_start,
             .time_seconds = frame_index * frame_duration_seconds,
         });
     }
@@ -417,62 +369,30 @@ void append_bytes(std::vector<uint8_t>& bytes, std::span<const uint8_t> more) {
     return units;
 }
 
-struct VideoSourceDescriptor {
-    uint8_t source_type = 1;
-    std::string default_source_name;
-};
-
-[[nodiscard]] VideoSourceDescriptor resolve_video_source_descriptor(
+[[nodiscard]] std::pair<uint8_t, std::string> resolve_video_source_descriptor(
     const std::filesystem::path& path,
     SfdVideoType video_type
 ) {
     const std::string extension = lowercase_ascii(path.extension().string());
-    if (extension == ".sfv") {
-        return {
-            .source_type = 0,
-            .default_source_name = replace_extension(path, ".sfv"),
-        };
-    }
-    if (extension == ".m1v") {
-        return {
-            .source_type = 1,
-            .default_source_name = replace_extension(path, ".m1v"),
-        };
-    }
-    if (extension == ".mpv") {
-        return {
-            .source_type = 2,
-            .default_source_name = replace_extension(path, ".mpv"),
-        };
-    }
-    if (extension == ".m2v") {
-        return {
-            .source_type = 3,
-            .default_source_name = replace_extension(path, ".m2v"),
-        };
+    constexpr std::array known_extensions = {
+        std::pair{std::string_view(".sfv"), uint8_t{0}},
+        std::pair{std::string_view(".m1v"), uint8_t{1}},
+        std::pair{std::string_view(".mpv"), uint8_t{2}},
+        std::pair{std::string_view(".m2v"), uint8_t{3}},
+    };
+    for (const auto& [known_extension, source_type] : known_extensions) {
+        if (extension == known_extension) {
+            return {source_type, replace_extension(path, known_extension)};
+        }
     }
 
-    switch (video_type) {
-        case SfdVideoType::mpeg2: {
-            return {
-                .source_type = 3,
-                .default_source_name = replace_extension(path, ".m2v"),
-            };
-        }
-        case SfdVideoType::mpeg1: {
-            return {
-                .source_type = 1,
-                .default_source_name = replace_extension(path, ".m1v"),
-            };
-        }
-        case SfdVideoType::unknown:
-        default: {
-            return {
-                .source_type = 1,
-                .default_source_name = path.filename().string(),
-            };
-        }
+    if (video_type == SfdVideoType::mpeg2) {
+        return {3, replace_extension(path, ".m2v")};
     }
+    if (video_type == SfdVideoType::mpeg1) {
+        return {1, replace_extension(path, ".m1v")};
+    }
+    return {1, path.filename().string()};
 }
 
 [[nodiscard]] std::expected<VideoSource, std::string> load_video_source(const SfdBuildInput& input) {
@@ -496,18 +416,16 @@ struct VideoSourceDescriptor {
         .bit_rate_value = sequence_header->bit_rate_value,
     };
     const auto mpeg_type = cricodecs::video::detect_mpeg_video_type(video.bytes);
-    video.video_type = mpeg_type == cricodecs::video::MpegVideoType::mpeg2
+    const auto video_type = mpeg_type == cricodecs::video::MpegVideoType::mpeg2
         ? SfdVideoType::mpeg2
         : SfdVideoType::mpeg1;
     const auto [fps_n, fps_d] = cricodecs::video::mpeg_frame_rate_ratio(video.sequence_header.frame_rate_code);
-    video.fps_n = fps_n;
-    video.fps_d = fps_d;
-    const auto source_descriptor = resolve_video_source_descriptor(input.video_path, video.video_type);
-    video.source_type = source_descriptor.source_type;
+    auto [source_type, default_source_name] = resolve_video_source_descriptor(input.video_path, video_type);
+    video.source_type = source_type;
     auto source_name = resolve_source_name(
         input.video_source_name,
         input.video_stream_name,
-        source_descriptor.default_source_name,
+        default_source_name,
         "video"
     );
     if (!source_name) {
@@ -515,37 +433,15 @@ struct VideoSourceDescriptor {
     }
     video.source_name = std::string(*source_name);
 
-    const double frame_duration_seconds = static_cast<double>(video.fps_d) / static_cast<double>(video.fps_n);
+    const double frame_duration_seconds = static_cast<double>(fps_d) / static_cast<double>(fps_n);
     video.units = split_video_units(video.bytes, frame_duration_seconds);
-    video.duration_seconds = video.units.empty()
-        ? 0.0
-        : video.units.back().time_seconds + frame_duration_seconds;
-
     return video;
-}
-
-[[nodiscard]] std::string default_audio_source_name(const std::filesystem::path& path, SfdAudioType audio_type) {
-    switch (audio_type) {
-        case SfdAudioType::adx:
-            return replace_extension(path, ".sfa");
-        case SfdAudioType::aix:
-            return replace_extension(path, ".aix");
-        case SfdAudioType::ac3:
-            return replace_extension(path, ".ac3");
-        case SfdAudioType::unknown:
-        default:
-            return path.filename().string();
-    }
 }
 
 [[nodiscard]] std::expected<AudioSource, std::string> load_audio_source(
     const SfdBuildInput& input,
     const VideoSource& video
 ) {
-    if (!input.audio_path.has_value()) {
-        return std::unexpected("SFD build failed: no audio input");
-    }
-
     auto bytes_result = io::read_file_bytes(*input.audio_path, "SFD load failed");
     if (!bytes_result) {
         return std::unexpected(bytes_result.error());
@@ -559,13 +455,9 @@ struct VideoSourceDescriptor {
     AudioSource audio;
     audio.bytes = std::move(*bytes_result);
     audio.header = decoder.header();
-    audio.audio_type = SfdAudioType::adx;
-    audio.samples_per_block = ((audio.header.block_size - 2u) * 8u) / audio.header.bit_depth;
-    audio.data_start = static_cast<size_t>(audio.header.data_offset) + 4u;
-    audio.duration_seconds = audio.header.sample_rate == 0
-        ? 0.0
-        : static_cast<double>(audio.header.sample_count) / static_cast<double>(audio.header.sample_rate);
-    const std::string fallback_source_name = default_audio_source_name(*input.audio_path, audio.audio_type);
+    const uint32_t samples_per_block = ((audio.header.block_size - 2u) * 8u) / audio.header.bit_depth;
+    const size_t data_start = static_cast<size_t>(audio.header.data_offset) + 4u;
+    const std::string fallback_source_name = replace_extension(*input.audio_path, ".sfa");
     auto source_name = resolve_source_name(
         input.audio_source_name,
         input.audio_stream_name,
@@ -579,12 +471,13 @@ struct VideoSourceDescriptor {
 
     // The fixed-pack builder keeps chunk timing in-frame and rounds up to
     // include any partial sample span.
+    const auto [fps_n, fps_d] = cricodecs::video::mpeg_frame_rate_ratio(video.sequence_header.frame_rate_code);
     const uint32_t target_samples = std::max<uint32_t>(1u,
         static_cast<uint32_t>(cricodecs::util::divide_round_up(
-            static_cast<uint64_t>(audio.header.sample_rate) * static_cast<uint64_t>(video.fps_d),
-            video.fps_n)));
+            static_cast<uint64_t>(audio.header.sample_rate) * fps_d,
+            fps_n)));
     const uint32_t blocks_per_chunk = std::max<uint32_t>(1u,
-        cricodecs::util::divide_round_up(target_samples, audio.samples_per_block));
+        cricodecs::util::divide_round_up(target_samples, samples_per_block));
     const size_t interleaved_block_size = static_cast<size_t>(audio.header.block_size) * audio.header.channels;
     const size_t target_chunk_bytes = static_cast<size_t>(blocks_per_chunk) * interleaved_block_size;
 
@@ -593,7 +486,7 @@ struct VideoSourceDescriptor {
     while (offset < audio.bytes.size()) {
         size_t chunk_size = 0;
         if (offset == 0) {
-            const size_t header_bytes = std::min(audio.bytes.size(), audio.data_start);
+            const size_t header_bytes = std::min(audio.bytes.size(), data_start);
             const size_t initial_audio_bytes = std::min(audio.bytes.size() - header_bytes, target_chunk_bytes);
             chunk_size = header_bytes + initial_audio_bytes;
         } else {
@@ -613,12 +506,12 @@ struct VideoSourceDescriptor {
         });
 
         if (offset == 0) {
-            const size_t data_bytes = chunk_size > audio.data_start ? chunk_size - audio.data_start : 0;
+            const size_t data_bytes = chunk_size > data_start ? chunk_size - data_start : 0;
             const uint32_t blocks = static_cast<uint32_t>(data_bytes / interleaved_block_size);
-            emitted_samples += blocks * audio.samples_per_block;
+            emitted_samples += blocks * samples_per_block;
         } else {
             const uint32_t blocks = static_cast<uint32_t>(chunk_size / interleaved_block_size);
-            emitted_samples += blocks * audio.samples_per_block;
+            emitted_samples += blocks * samples_per_block;
         }
         offset += chunk_size;
     }
@@ -711,9 +604,8 @@ void write_record_common(
     uint8_t stream_id
 ) {
     const auto short_name = make_short_name(source_name);
-    const auto timestamp = make_zero_timestamp();
     std::memcpy(payload.data() + offset + 0, short_name.data(), short_name.size());
-    std::memcpy(payload.data() + offset + 12, timestamp.data(), timestamp.size());
+    std::memcpy(payload.data() + offset + 12, zero_timestamp.data(), zero_timestamp.size());
     payload[offset + 24] = stream_id;
 }
 
@@ -743,19 +635,15 @@ void write_record_common(
         header_builder_version
     );
 
-    const auto short_output_name = make_short_name(
-        input.output_name.empty() ? std::string("OUTPUT.SFD") : input.output_name);
-    if (layout.short_output_name_offset != 0) {
-        const auto output_timestamp = make_zero_timestamp();
-        std::memcpy(payload.data() + layout.short_output_name_offset, short_output_name.data(), short_output_name.size());
-        std::memcpy(payload.data() + layout.output_timestamp_offset, output_timestamp.data(), output_timestamp.size());
-    }
-
-    if (layout.pack_size_offset != 0) {
-        write_le<uint32_t>(payload.data() + layout.pack_size_offset + 0, sector_size);
-        payload[layout.pack_size_offset + 4] = 0;
-        write_le<uint16_t>(payload.data() + layout.min_header_packets_offset, 2);
-        write_le<uint32_t>(payload.data() + layout.reserved_header_size_offset, sector_size);
+    if (profile.variant == SfdHeaderVariant::sofdec_stream) {
+        const auto short_output_name = make_short_name(
+            input.output_name.empty() ? std::string_view("OUTPUT.SFD") : std::string_view(input.output_name));
+        std::memcpy(payload.data() + standard_short_name_offset, short_output_name.data(), short_output_name.size());
+        std::memcpy(payload.data() + standard_timestamp_offset, zero_timestamp.data(), zero_timestamp.size());
+        write_le<uint32_t>(payload.data() + standard_pack_size_offset, sector_size);
+        payload[standard_pack_size_offset + 4] = 0; // Fixed-pack mode.
+        write_le<uint16_t>(payload.data() + standard_min_header_packets_offset, 2);
+        write_le<uint32_t>(payload.data() + standard_reserved_size_offset, sector_size);
     }
 
     const uint8_t audio_count = audio.has_value() ? 1u : 0u;
@@ -764,16 +652,15 @@ void write_record_common(
     payload[layout.stream_counts_offset + 2] = 1;
     payload[layout.stream_counts_offset + 3] = 0;
 
-    std::string output_name_string = input.output_name.empty()
-        ? std::string("output.sfd")
-        : input.output_name;
-    write_padded_string(payload, layout.output_name_offset, 64, output_name_string);
+    write_padded_string(
+        payload, layout.output_name_offset, 64,
+        input.output_name.empty() ? std::string_view("output.sfd") : std::string_view(input.output_name));
 
-    if (!layout.has_standard_element_table) {
+    if (profile.variant != SfdHeaderVariant::sofdec_stream) {
         return payload;
     }
 
-    size_t record_offset = layout.element_table_offset;
+    size_t record_offset = standard_element_table_offset;
     write_record_common(payload, record_offset, video.source_name, packet_video_stream_0);
     payload[record_offset + 25] = video.source_type;
     const auto [fps_n, fps_d] = cricodecs::video::mpeg_frame_rate_ratio(video.sequence_header.frame_rate_code);
@@ -786,7 +673,7 @@ void write_record_common(
     payload[record_offset + 31] = video.sequence_header.frame_rate_code;
 
     if (audio.has_value()) {
-        record_offset += layout.element_record_size;
+        record_offset += standard_element_record_size;
         write_record_common(payload, record_offset, audio->source_name, packet_audio_stream_0);
         payload[record_offset + 25] = 0;
         payload[record_offset + 27] = audio->header.channels;
@@ -840,8 +727,8 @@ void write_record_common(
 
     const size_t source_offset = cursor.absolute_offset();
     sector.insert(sector.end(),
-        cursor.bytes->begin() + static_cast<std::ptrdiff_t>(source_offset),
-        cursor.bytes->begin() + static_cast<std::ptrdiff_t>(source_offset + payload_size));
+        cursor.bytes.begin() + static_cast<std::ptrdiff_t>(source_offset),
+        cursor.bytes.begin() + static_cast<std::ptrdiff_t>(source_offset + payload_size));
 
     remaining = sector_size - sector.size();
     if (remaining >= packet_header_size) {
@@ -871,40 +758,33 @@ void write_record_common(
     return sector;
 }
 
-void patch_header_bitrate_and_counts(
+void patch_header_bitrate(
     const MuxProfileDescriptor& profile,
     std::vector<uint8_t>& output,
     uint64_t total_size,
-    double duration_seconds,
-    bool has_audio
+    double duration_seconds
 ) {
-    const auto& layout = profile.layout;
+    if (profile.variant != SfdHeaderVariant::sofdec_stream) {
+        return;
+    }
     const uint64_t bitrate_bytes_per_second = duration_seconds <= 0.0
         ? 0
         : static_cast<uint64_t>(std::llround(static_cast<double>(total_size) / duration_seconds));
 
     const size_t payload_offset = sector_size + pack_header_size + packet_header_size;
-    output[payload_offset + layout.stream_counts_offset + 0] = has_audio ? 2u : 1u;
-    output[payload_offset + layout.stream_counts_offset + 1] = has_audio ? 1u : 0u;
-    output[payload_offset + layout.stream_counts_offset + 2] = 1u;
-    output[payload_offset + layout.stream_counts_offset + 3] = 0u;
-    if (layout.bitrate_offset != 0) {
-        write_le<uint64_t>(output.data() + payload_offset + layout.bitrate_offset, bitrate_bytes_per_second);
-    }
+    write_le<uint64_t>(output.data() + payload_offset + standard_bitrate_offset, bitrate_bytes_per_second);
 }
 
 void patch_sector_headers(
     std::vector<uint8_t>& output,
-    std::span<const SectorPatch> patches,
+    std::span<const std::pair<size_t, uint64_t>> patches,
     uint32_t mux_rate_units,
     uint8_t primary_stream_id
 ) {
-    for (const auto& patch : patches) {
-        write_pack_header(output, patch.offset, patch.scr, mux_rate_units);
-        if (patch.has_system_header) {
-            write_system_header(output, patch.offset + pack_header_size, mux_rate_units, primary_stream_id);
-        }
+    for (const auto& [offset, scr] : patches) {
+        write_pack_header(output, offset, scr, mux_rate_units);
     }
+    write_system_header(output, pack_header_size, mux_rate_units, primary_stream_id);
 }
 
 } // namespace
@@ -933,12 +813,9 @@ std::expected<std::vector<uint8_t>, std::string> SfdBuilder::build(const SfdBuil
     if (input.audio_path.has_value()) {
         auto audio_result = load_audio_source(input, video);
         if (!audio_result) {
-            if (audio_result.error() != "SFD build failed: no audio input") {
-                return std::unexpected(audio_result.error());
-            }
-        } else {
-            audio = std::move(*audio_result);
+            return std::unexpected(audio_result.error());
         }
+        audio = std::move(*audio_result);
     }
 
     std::vector<uint8_t> sofdec_header_payload =
@@ -949,37 +826,19 @@ std::expected<std::vector<uint8_t>, std::string> SfdBuilder::build(const SfdBuil
         video.bytes.size() +
         (audio ? audio->bytes.size() : 0u));
 
-    std::vector<SectorPatch> sector_patches;
+    std::vector<std::pair<size_t, uint64_t>> sector_patches;
     sector_patches.reserve(2u + video.units.size() + (audio ? audio->units.size() : 0u));
-    sector_patches.push_back(SectorPatch{
-        .offset = output.size(),
-        .scr = 0,
-        .has_system_header = true,
-    });
+    sector_patches.emplace_back(output.size(), 0);
     const uint8_t primary_stream_id = audio.has_value() ? packet_audio_stream_0 : packet_video_stream_0;
     append_bytes(output, build_initial_sector0(primary_stream_id, 1));
 
-    sector_patches.push_back(SectorPatch{
-        .offset = output.size(),
-        .scr = 0,
-        .has_system_header = false,
-    });
+    sector_patches.emplace_back(output.size(), 0);
     append_bytes(output, build_header_sector(sofdec_header_payload, 1));
 
-    StreamCursor video_cursor{
-        .bytes = &video.bytes,
-        .units = &video.units,
-        .stream_id = packet_video_stream_0,
-        .is_audio = false,
-    };
+    StreamCursor video_cursor(video.bytes, video.units, packet_video_stream_0);
     std::optional<StreamCursor> audio_cursor;
     if (audio.has_value()) {
-        audio_cursor = StreamCursor{
-            .bytes = &audio->bytes,
-            .units = &audio->units,
-            .stream_id = packet_audio_stream_0,
-            .is_audio = true,
-        };
+        audio_cursor.emplace(audio->bytes, audio->units, packet_audio_stream_0);
     }
 
     while (!video_cursor.done() || (audio_cursor.has_value() && !audio_cursor->done())) {
@@ -998,19 +857,16 @@ std::expected<std::vector<uint8_t>, std::string> SfdBuilder::build(const SfdBuil
         }
 
         const uint64_t scr90k = static_cast<uint64_t>(std::llround(chosen->next_time() * 90000.0));
-        sector_patches.push_back(SectorPatch{
-            .offset = output.size(),
-            .scr = scr90k,
-            .has_system_header = false,
-        });
+        sector_patches.emplace_back(output.size(), scr90k);
         append_bytes(output, build_data_sector(*chosen, scr90k, 1));
     }
 
     append_bytes(output, build_end_sector());
 
-    const double duration_seconds = std::max(video.duration_seconds, audio.has_value() ? audio->duration_seconds : 0.0);
-    patch_header_bitrate_and_counts(profile, output, output.size(), duration_seconds, audio.has_value());
-    patch_sector_headers(output, sector_patches, calculate_mux_rate_units(output.size(), duration_seconds), primary_stream_id);
+    const double duration = std::max(
+        duration_seconds(video), audio ? duration_seconds(*audio) : 0.0);
+    patch_header_bitrate(profile, output, output.size(), duration);
+    patch_sector_headers(output, sector_patches, calculate_mux_rate_units(output.size(), duration), primary_stream_id);
 
     return output;
 }
@@ -1023,28 +879,7 @@ std::expected<void, std::string> SfdBuilder::build_to_file(
     if (!bytes) {
         return std::unexpected(bytes.error());
     }
-
-    if (output_path.has_parent_path()) {
-        std::error_code filesystem_error;
-        std::filesystem::create_directories(output_path.parent_path(), filesystem_error);
-        if (filesystem_error) {
-            return std::unexpected("SFD build failed: could not create output directory: " + filesystem_error.message());
-        }
-    }
-
-    io::writer writer;
-    if (auto result = writer.open(output_path); !result) {
-        return std::unexpected("SFD build failed: could not open output: " + output_path.string());
-    }
-    if (auto result = writer.write(*bytes); !result) {
-        [[maybe_unused]] const auto close_result = writer.close();
-        return std::unexpected("SFD build failed: could not write output: " + output_path.string());
-    }
-    if (auto result = writer.close(); !result) {
-        return std::unexpected("SFD build failed: could not finalize output: " + output_path.string());
-    }
-
-    return {};
+    return detail::write_output_file(output_path, *bytes, "SFD build");
 }
 
 } // namespace cricodecs::sfd

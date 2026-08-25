@@ -12,6 +12,7 @@
 #include <expected>
 #include <span>
 #include <filesystem>
+#include <optional>
 #include "../utilities/io.hpp"
 
 namespace cricodecs::wav {
@@ -80,7 +81,7 @@ namespace cricodecs::wav {
         const std::vector<CuePoint>& cues() const { return m_cues; }
         const std::filesystem::path& source_path() const noexcept { return m_source_path; }
         bool has_loops() const { return !m_sampler.loops.empty(); }
-        size_t sample_count() const { return m_sample_count; }
+        size_t sample_count() const { return m_format.block_align ? m_pcm_size / m_format.block_align : 0; }
         size_t channels() const { return m_format.channels; }
         uint32_t sample_rate() const { return m_format.sample_rate; }
         
@@ -129,22 +130,16 @@ namespace cricodecs::wav {
         }
 
     private:
-        io::reader m_reader;
-        std::vector<uint8_t> m_owned_source;
+        io::SourceView m_source;
         std::filesystem::path m_source_path;
         size_t m_pcm_offset = 0;
         size_t m_pcm_size = 0;
-        uint16_t m_pcm_compression = 0;
-        uint16_t m_pcm_storage_bits = 0;
-        uint16_t m_pcm_valid_bits = 0;
 
         WavFormat m_format{};
         SamplerChunk m_sampler{};
         std::vector<CuePoint> m_cues;
-        size_t m_sample_count = 0;
 
-        mutable std::vector<int16_t> m_pcm16_cache;
-        mutable bool m_pcm_converted = false;
+        mutable std::optional<std::vector<int16_t>> m_pcm16_cache;
 
         std::expected<void, std::string> parse_headers();
     };

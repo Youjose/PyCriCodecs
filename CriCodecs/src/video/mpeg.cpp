@@ -64,16 +64,10 @@ constexpr size_t npos = std::numeric_limits<size_t>::max();
     };
 }
 
-struct ScannedFrameRange {
-    size_t offset = 0;
-    size_t size = 0;
-    bool is_keyframe = false;
-};
-
 struct MpegScanResult {
     std::expected<MpegVideoSequenceHeader, std::string> sequence_header;
     MpegVideoType video_type = MpegVideoType::unknown;
-    std::vector<ScannedFrameRange> frames;
+    std::vector<MpegFrameRange> frames;
 };
 
 [[nodiscard]] MpegScanResult scan_mpeg_stream(std::span<const uint8_t> bytes) {
@@ -105,7 +99,7 @@ struct MpegScanResult {
             if (current_frame_start != npos) {
                 const size_t frame_end = next_frame_start != npos ? next_frame_start : offset;
                 if (frame_end > current_frame_start) {
-                    result.frames.push_back(ScannedFrameRange{
+                    result.frames.push_back(MpegFrameRange{
                         .offset = current_frame_start,
                         .size = frame_end - current_frame_start,
                         .is_keyframe = current_keyframe,
@@ -126,7 +120,7 @@ struct MpegScanResult {
     }
 
     if (current_frame_start != npos && current_frame_start < bytes.size()) {
-        result.frames.push_back(ScannedFrameRange{
+        result.frames.push_back(MpegFrameRange{
             .offset = current_frame_start,
             .size = bytes.size() - current_frame_start,
             .is_keyframe = current_keyframe,
@@ -134,7 +128,7 @@ struct MpegScanResult {
     }
 
     if (result.frames.empty() && !bytes.empty()) {
-        result.frames.push_back(ScannedFrameRange{
+        result.frames.push_back(MpegFrameRange{
             .offset = 0,
             .size = bytes.size(),
             .is_keyframe = true,
@@ -246,64 +240,9 @@ std::expected<void, std::string> MpegVideoReader::parse_loaded_stream(std::strin
 
     m_sequence_header = *scan.sequence_header;
     m_video_type = scan.video_type;
-    m_frames.clear();
-    m_frames.reserve(scan.frames.size());
-    for (const auto& frame : scan.frames) {
-        m_frames.push_back(FrameRange{
-            .offset = frame.offset,
-            .size = frame.size,
-            .is_keyframe = frame.is_keyframe,
-        });
-    }
+    m_frames = std::move(scan.frames);
     m_current_frame = 0;
     return {};
-}
-
-std::vector<MpegVideoReader::FrameRange> MpegVideoReader::split_frames(std::span<const uint8_t> bytes) {
-    std::vector<FrameRange> frames;
-    size_t current_frame_start = npos;
-    size_t next_frame_start = npos;
-    bool current_keyframe = false;
-
-    for (size_t offset = find_start_code3(bytes); offset != npos; offset = find_start_code3(bytes, offset + 3u)) {
-        const uint8_t start_code = bytes[offset + 3u];
-        if (start_code == 0x00) {
-            if (current_frame_start != npos) {
-                const size_t frame_end = next_frame_start != npos ? next_frame_start : offset;
-                if (frame_end > current_frame_start) {
-                    frames.push_back(FrameRange{
-                        .offset = current_frame_start,
-                        .size = frame_end - current_frame_start,
-                        .is_keyframe = current_keyframe,
-                    });
-                }
-            }
-
-            current_frame_start = next_frame_start != npos ? next_frame_start : offset;
-            next_frame_start = npos;
-            current_keyframe = is_intra_picture_at(bytes, offset);
-        } else if (is_picture_prefix_header(start_code) && next_frame_start == npos) {
-            next_frame_start = offset;
-        }
-    }
-
-    if (current_frame_start != npos && current_frame_start < bytes.size()) {
-        frames.push_back(FrameRange{
-            .offset = current_frame_start,
-            .size = bytes.size() - current_frame_start,
-            .is_keyframe = current_keyframe,
-        });
-    }
-
-    if (frames.empty() && !bytes.empty()) {
-        frames.push_back(FrameRange{
-            .offset = 0,
-            .size = bytes.size(),
-            .is_keyframe = true,
-        });
-    }
-
-    return frames;
 }
 
 std::expected<MpegVideoFrame, std::string> MpegVideoReader::read_next_frame() {

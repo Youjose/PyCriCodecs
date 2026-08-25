@@ -2,9 +2,8 @@
  * @file cvm_container.cpp
  * @brief CVM/ROFS container object helpers.
  *
- * The object model is based on reviewed CVM/ROFS images, official
- * runtime/tool evidence, and the current bounded mutable-image contract.
- * C++23 implementation and verification by Youjose.
+ * The object keeps the format fields needed for inspection and rebuilding,
+ * while payloads remain borrowed until an entry is changed.
  */
 
 #include "cvm_container.hpp"
@@ -34,24 +33,6 @@ constexpr size_t sector_size = CvmContainer::sector_length();
     return normalize_archive_lookup_key(lhs) == normalize_archive_lookup_key(rhs);
 }
 
-[[nodiscard]] bool archive_path_is_descendant_of(
-    const std::filesystem::path& candidate,
-    const std::filesystem::path& ancestor
-) {
-    if (is_root_archive_path(ancestor)) {
-        return !normalize_archive_path(candidate).empty();
-    }
-
-    std::filesystem::path current = candidate.lexically_normal();
-    while (!current.empty()) {
-        if (is_same_archive_directory(current, ancestor)) {
-            return true;
-        }
-        current = current.parent_path();
-    }
-    return false;
-}
-
 [[nodiscard]] std::optional<std::string> normalize_runtime_archive_path(
     const std::filesystem::path& runtime_path,
     std::string_view mounted_volume_name
@@ -72,10 +53,23 @@ constexpr size_t sector_size = CvmContainer::sector_length();
     }
 
     normalized.erase(0, volume_delimiter + 1);
-    while (!normalized.empty() && normalized.front() == '/') {
-        normalized.erase(normalized.begin());
-    }
+    normalized.erase(0, normalized.find_first_not_of('/'));
     return uppercase_ascii(std::move(normalized));
+}
+
+[[nodiscard]] std::expected<void, std::string> write_output_file(
+    const std::filesystem::path& path,
+    std::span<const uint8_t> data,
+    std::string_view context
+) {
+    if (path.has_parent_path()) {
+        std::error_code error;
+        std::filesystem::create_directories(path.parent_path(), error);
+        if (error) {
+            return std::unexpected(std::string(context) + ": could not create output directory: " + error.message());
+        }
+    }
+    return io::write_file_bytes(path, data, context);
 }
 
 } // namespace
@@ -88,7 +82,6 @@ std::expected<void, std::string> CvmContainer::ensure_contents_accessible() cons
 }
 
 void CvmContainer::invalidate_layout() {
-    m_layout_is_current = false;
     m_directories.clear();
     for (auto& entry : m_entries) {
         entry.extent_sector = 0;
@@ -163,58 +156,54 @@ std::expected<CvmDirectoryRecord, std::string> CvmContainer::directory_record(
     }
 
     const std::filesystem::path normalized_directory = normalize_archive_path(archive_directory);
-    bool directory_exists = is_root_archive_path(normalized_directory);
+    const bool root_directory = is_root_archive_path(normalized_directory);
+    bool directory_exists = root_directory;
     std::optional<std::filesystem::path> canonical_directory_path;
+    if (root_directory) {
+        canonical_directory_path.emplace();
+    }
     std::flat_map<std::string, CvmDirectoryEntry> directory_entries;
 
     for (const auto& entry : m_entries) {
         const std::filesystem::path parent = entry.path.parent_path();
-        if (is_same_archive_directory(parent, normalized_directory)) {
-            directory_exists = true;
-            if (!canonical_directory_path.has_value()) {
-                canonical_directory_path = parent;
-            }
-            const std::string name = entry.path.filename().generic_string();
-            directory_entries.emplace(
-                normalize_archive_lookup_key(name),
-                CvmDirectoryEntry{
-                    .name = name,
-                    .archive_path = entry.path,
-                    .is_directory = false,
-                    .size = entry.size,
-                }
-            );
-        }
-
-        if (archive_path_is_descendant_of(parent, normalized_directory)) {
-            directory_exists = true;
-        }
-
+        std::optional<std::filesystem::path> child_directory;
         std::filesystem::path ancestor = parent;
-        while (!ancestor.empty()) {
-            if (is_same_archive_directory(ancestor, normalized_directory)) {
-                if (!canonical_directory_path.has_value()) {
-                    canonical_directory_path = ancestor;
-                }
-                break;
+
+        if (root_directory) {
+            while (!ancestor.empty() && !ancestor.parent_path().empty()) {
+                ancestor = ancestor.parent_path();
             }
-            ancestor = ancestor.parent_path();
+            if (!ancestor.empty()) {
+                child_directory = ancestor;
+            }
+        } else {
+            while (!ancestor.empty() && !is_same_archive_directory(ancestor, normalized_directory)) {
+                child_directory = ancestor;
+                ancestor = ancestor.parent_path();
+            }
+            if (ancestor.empty()) {
+                continue;
+            }
+            canonical_directory_path = ancestor;
         }
 
-        std::filesystem::path current = parent;
-        while (!is_root_archive_path(current) && !is_same_archive_directory(current.parent_path(), normalized_directory)) {
-            current = current.parent_path();
-        }
-        if (!is_root_archive_path(current) && is_same_archive_directory(current.parent_path(), normalized_directory)) {
-            const std::string name = current.filename().generic_string();
+        directory_exists = true;
+        if (child_directory) {
+            const std::string name = child_directory->filename().generic_string();
             directory_entries.try_emplace(
                 normalize_archive_lookup_key(name),
                 CvmDirectoryEntry{
                     .name = name,
-                    .archive_path = current,
+                    .archive_path = *child_directory,
                     .is_directory = true,
                     .size = 0,
                 }
+            );
+        } else {
+            const std::string name = entry.path.filename().generic_string();
+            directory_entries.emplace(
+                normalize_archive_lookup_key(name),
+                CvmDirectoryEntry{name, entry.path, false, entry.size}
             );
         }
     }
@@ -225,7 +214,7 @@ std::expected<CvmDirectoryRecord, std::string> CvmContainer::directory_record(
 
     CvmDirectoryRecord record;
     record.directory_path = canonical_directory_path.value_or(normalized_directory);
-    if (m_layout_is_current) {
+    if (has_current_layout()) {
         for (const auto& directory : m_directories) {
             if (is_same_archive_directory(directory.directory_path, record.directory_path)) {
                 record.extent_sector = directory.extent_sector;
@@ -250,7 +239,7 @@ std::expected<CvmDirectoryRecord, std::string> CvmContainer::directory_record_fr
     if (auto accessible = ensure_contents_accessible(); !accessible) {
         return std::unexpected(accessible.error());
     }
-    if (!m_layout_is_current) {
+    if (!has_current_layout()) {
         return std::unexpected("CVM raw ISO layout is unavailable after unsaved mutations");
     }
     for (const auto& directory : m_directories) {
@@ -264,7 +253,7 @@ std::expected<CvmDirectoryRecord, std::string> CvmContainer::directory_record_fr
 std::expected<std::span<const uint8_t>, std::string> CvmContainer::iso_directory_data(
     const std::filesystem::path& archive_directory
 ) const {
-    if (!m_layout_is_current) {
+    if (!has_current_layout()) {
         return std::unexpected("CVM raw ISO layout is unavailable after unsaved mutations");
     }
     auto directory = directory_record(archive_directory);
@@ -277,7 +266,7 @@ std::expected<std::span<const uint8_t>, std::string> CvmContainer::iso_directory
 std::expected<std::span<const uint8_t>, std::string> CvmContainer::iso_directory_data_from_extent_sector(
     uint32_t extent_sector
 ) const {
-    if (!m_layout_is_current) {
+    if (!has_current_layout()) {
         return std::unexpected("CVM raw ISO layout is unavailable after unsaved mutations");
     }
     auto directory = directory_record_from_extent_sector(extent_sector);
@@ -285,7 +274,7 @@ std::expected<std::span<const uint8_t>, std::string> CvmContainer::iso_directory
         return std::unexpected(directory.error());
     }
 
-    const size_t offset = m_iso_offset + static_cast<size_t>(directory->extent_sector) * sector_size;
+    const size_t offset = embedded_iso_offset() + static_cast<size_t>(directory->extent_sector) * sector_size;
     const size_t padded_size = align_up(directory->byte_size, sector_size);
     if (offset > m_source.size() || padded_size > m_source.size() - offset) {
         return std::unexpected("CVM ISO directory record data is out of bounds");
@@ -301,15 +290,16 @@ std::expected<std::span<const uint8_t>, std::string> CvmContainer::sector_range_
     if (auto accessible = ensure_contents_accessible(); !accessible) {
         return std::unexpected(accessible.error());
     }
-    if (!m_layout_is_current) {
+    if (!has_current_layout()) {
         return std::unexpected("CVM raw ISO layout is unavailable after unsaved mutations");
     }
 
-    const size_t byte_offset = m_iso_offset + static_cast<size_t>(start_sector) * sector_size;
+    const size_t iso_offset = embedded_iso_offset();
+    const size_t byte_offset = iso_offset + static_cast<size_t>(start_sector) * sector_size;
     const size_t byte_size = static_cast<size_t>(sector_count) * sector_size;
-    const size_t iso_end = m_iso_offset + m_iso_size;
+    const size_t iso_end = iso_offset + embedded_iso_size();
 
-    if (byte_offset < m_iso_offset || byte_offset > iso_end) {
+    if (byte_offset < iso_offset || byte_offset > iso_end) {
         return std::unexpected("CVM sector range starts outside the embedded ISO span");
     }
     if (byte_size > iso_end - byte_offset) {
@@ -328,13 +318,13 @@ std::expected<std::span<const uint8_t>, std::string> CvmContainer::file_data_fro
 
     const auto& entry = m_entries[index];
     const auto& payload = m_entry_payloads[index];
-    if (payload.kind == EntryPayloadKind::original_source) {
+    if (!payload.owned_bytes) {
         if (payload.source_offset > m_source.size() || entry.size > m_source.size() - payload.source_offset) {
             return std::unexpected("CVM entry data is out of bounds");
         }
         return m_source.subspan(payload.source_offset, entry.size);
     }
-    return std::span<const uint8_t>(payload.owned_bytes.data(), payload.owned_bytes.size());
+    return std::span<const uint8_t>(*payload.owned_bytes);
 }
 
 std::expected<std::span<const uint8_t>, std::string> CvmContainer::file_data(uint32_t index) const {
@@ -402,16 +392,7 @@ std::expected<void, std::string> CvmContainer::extract(
         return std::unexpected(data.error());
     }
 
-    const std::filesystem::path output_path = output_root / entry.path;
-    std::error_code filesystem_error;
-    if (output_path.has_parent_path()) {
-        std::filesystem::create_directories(output_path.parent_path(), filesystem_error);
-        if (filesystem_error) {
-            return std::unexpected("CVM extract failed: could not create output directory: " + filesystem_error.message());
-        }
-    }
-
-    return io::write_file_bytes(output_path, *data, "CVM extract failed");
+    return write_output_file(output_root / entry.path, *data, "CVM extract failed");
 }
 
 std::expected<void, std::string> CvmContainer::extract_file(
@@ -423,15 +404,7 @@ std::expected<void, std::string> CvmContainer::extract_file(
         return std::unexpected(data.error());
     }
 
-    std::error_code filesystem_error;
-    if (output_path.has_parent_path()) {
-        std::filesystem::create_directories(output_path.parent_path(), filesystem_error);
-        if (filesystem_error) {
-            return std::unexpected("CVM extract failed: could not create output directory: " + filesystem_error.message());
-        }
-    }
-
-    return io::write_file_bytes(output_path, *data, "CVM extract failed");
+    return write_output_file(output_path, *data, "CVM extract failed");
 }
 
 std::expected<void, std::string> CvmContainer::extract_all(const std::filesystem::path& output_root) const {
@@ -492,15 +465,7 @@ std::expected<void, std::string> CvmContainer::save_to_file(
         return std::unexpected(bytes.error());
     }
 
-    std::error_code filesystem_error;
-    if (output_path.has_parent_path()) {
-        std::filesystem::create_directories(output_path.parent_path(), filesystem_error);
-        if (filesystem_error) {
-            return std::unexpected("CVM save failed: could not create output directory: " + filesystem_error.message());
-        }
-    }
-
-    return io::write_file_bytes(output_path, *bytes, "CVM save failed");
+    return write_output_file(output_path, *bytes, "CVM save failed");
 }
 
 std::expected<std::string, std::string> CvmContainer::export_script_text() const {
@@ -605,13 +570,11 @@ std::expected<uint32_t, std::string> CvmContainer::add_bytes(
         .size = static_cast<uint32_t>(data.size()),
     });
     m_entry_payloads.push_back({
-        .kind = EntryPayloadKind::owned_bytes,
         .source_path = {},
         .source_offset = 0,
         .owned_bytes = std::vector<uint8_t>(data.begin(), data.end()),
     });
     invalidate_layout();
-    reindex_entries();
     return static_cast<uint32_t>(m_entries.size() - 1);
 }
 
@@ -651,7 +614,6 @@ std::expected<void, std::string> CvmContainer::replace_bytes(uint32_t index, std
     }
     m_entries[index].size = static_cast<uint32_t>(data.size());
     m_entry_payloads[index] = {
-        .kind = EntryPayloadKind::owned_bytes,
         .source_path = {},
         .source_offset = 0,
         .owned_bytes = std::vector<uint8_t>(data.begin(), data.end()),
@@ -726,13 +688,8 @@ std::expected<void, std::string> CvmContainer::rename(uint32_t index, const std:
     if (normalized.empty()) {
         return std::unexpected("CVM archive path must not be empty");
     }
-    for (size_t other = 0; other < m_entries.size(); ++other) {
-        if (other == index) {
-            continue;
-        }
-        if (normalize_archive_lookup_key(m_entries[other].path) == uppercase_ascii(normalized)) {
-            return std::unexpected("CVM rename failed: duplicate archive path: " + normalized);
-        }
+    if (const auto* duplicate = find_entry(normalized); duplicate && duplicate->index != index) {
+        return std::unexpected("CVM rename failed: duplicate archive path: " + normalized);
     }
     m_entries[index].path = normalized;
     invalidate_layout();

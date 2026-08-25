@@ -1,9 +1,6 @@
 /**
  * @file cvm_reader.cpp
  * @brief CVM/ROFS image reader.
- *
- * Parsing is grounded in reviewed official CRI ROFS/CVM images and official
- * ROFS runtime behavior. C++23 reader implementation by Youjose.
  */
 
 #include "cvm_container.hpp"
@@ -41,6 +38,10 @@ constexpr size_t pvd_root_record_offset = 156;
 
 [[nodiscard]] std::optional<CvmKey> key_from_string(std::string_view key) {
     return key.empty() ? std::nullopt : std::optional<CvmKey>{crypto::calc_key_from_string(key)};
+}
+
+[[nodiscard]] std::string read_ascii(std::span<const uint8_t> source, size_t offset, size_t length) {
+    return trim_ascii(source.subspan(offset, length));
 }
 
 struct IsoDirectoryRecord {
@@ -412,10 +413,7 @@ std::expected<void, std::string> CvmContainer::parse(std::optional<CvmKey> key) 
     m_entries.clear();
     m_entry_payloads.clear();
     m_directories.clear();
-    m_iso_offset = 0;
-    m_iso_size = 0;
     m_contents_accessible = true;
-    m_layout_is_current = true;
 
     if (m_source.size() < zone_offset + sector_size) {
         return std::unexpected("CVM data is too small");
@@ -431,8 +429,8 @@ std::expected<void, std::string> CvmContainer::parse(std::optional<CvmKey> key) 
     m_header.total_size = read_be<uint64_t>(m_source.data() + cvmh_offset + 0x1C);
     std::copy_n(m_source.data() + cvmh_offset + 0x24, m_header.recording_date.size(), m_header.recording_date.begin());
     m_header.flags = read_be<uint32_t>(m_source.data() + cvmh_offset + 0x30);
-    m_header.filesystem_id = trim_ascii(std::string_view(reinterpret_cast<const char*>(m_source.data() + cvmh_offset + 0x34), 4));
-    m_header.maker_id = trim_ascii(std::string_view(reinterpret_cast<const char*>(m_source.data() + cvmh_offset + 0x38), 64));
+    m_header.filesystem_id = read_ascii(m_source, cvmh_offset + 0x34, 4);
+    m_header.maker_id = read_ascii(m_source, cvmh_offset + 0x38, 64);
     m_header.sector_table_entry_count = read_be<uint32_t>(m_source.data() + cvmh_offset + 0x80);
     m_header.zone_sector_index = read_be<uint32_t>(m_source.data() + cvmh_offset + 0x84);
     m_header.iso_start_sector = read_be<uint32_t>(m_source.data() + cvmh_offset + 0x88);
@@ -468,9 +466,9 @@ std::expected<void, std::string> CvmContainer::parse(std::optional<CvmKey> key) 
         return std::unexpected("CVM ISO sector disagrees between CVMH and ZONE");
     }
 
-    m_iso_offset = static_cast<size_t>(m_header.iso_start_sector) * sector_size;
-    m_iso_size = static_cast<size_t>(m_zone.iso_length);
-    if (m_iso_offset > m_source.size() || m_iso_size > m_source.size() - m_iso_offset) {
+    const size_t iso_offset = embedded_iso_offset();
+    const size_t iso_size = embedded_iso_size();
+    if (iso_offset > m_source.size() || iso_size > m_source.size() - iso_offset) {
         return std::unexpected("CVM embedded ISO range is out of bounds");
     }
 
@@ -485,37 +483,25 @@ std::expected<void, std::string> CvmContainer::parse(std::optional<CvmKey> key) 
             }
             key = *recovered_key;
         }
-        auto toc_result = decrypt_scrambled_toc_in_place(m_owned_source, m_iso_offset, *key);
+        auto toc_result = decrypt_scrambled_toc_in_place(m_owned_source, iso_offset, *key);
         if (!toc_result) {
             return std::unexpected(toc_result.error());
         }
         m_source = m_owned_source;
     }
 
-    auto pvd_ok = validate_primary_volume_descriptor(m_source, m_iso_offset);
+    auto pvd_ok = validate_primary_volume_descriptor(m_source, iso_offset);
     if (!pvd_ok) {
         return std::unexpected(pvd_ok.error());
     }
 
-    const size_t pvd_offset = m_iso_offset + static_cast<size_t>(pvd_sector) * sector_size;
-    m_primary_volume.system_identifier = trim_ascii(
-        std::string_view(reinterpret_cast<const char*>(m_source.data() + pvd_offset + 8), 32)
-    );
-    m_primary_volume.volume_identifier = trim_ascii(
-        std::string_view(reinterpret_cast<const char*>(m_source.data() + pvd_offset + 40), 32)
-    );
-    m_primary_volume.volume_set_identifier = trim_ascii(
-        std::string_view(reinterpret_cast<const char*>(m_source.data() + pvd_offset + 190), 128)
-    );
-    m_primary_volume.publisher_identifier = trim_ascii(
-        std::string_view(reinterpret_cast<const char*>(m_source.data() + pvd_offset + 318), 128)
-    );
-    m_primary_volume.data_preparer_identifier = trim_ascii(
-        std::string_view(reinterpret_cast<const char*>(m_source.data() + pvd_offset + 446), 128)
-    );
-    m_primary_volume.application_identifier = trim_ascii(
-        std::string_view(reinterpret_cast<const char*>(m_source.data() + pvd_offset + 574), 128)
-    );
+    const size_t pvd_offset = iso_offset + static_cast<size_t>(pvd_sector) * sector_size;
+    m_primary_volume.system_identifier = read_ascii(m_source, pvd_offset + 8, 32);
+    m_primary_volume.volume_identifier = read_ascii(m_source, pvd_offset + 40, 32);
+    m_primary_volume.volume_set_identifier = read_ascii(m_source, pvd_offset + 190, 128);
+    m_primary_volume.publisher_identifier = read_ascii(m_source, pvd_offset + 318, 128);
+    m_primary_volume.data_preparer_identifier = read_ascii(m_source, pvd_offset + 446, 128);
+    m_primary_volume.application_identifier = read_ascii(m_source, pvd_offset + 574, 128);
 
     auto volume_space_size = read_iso_both_endian<uint32_t>(m_source, pvd_offset + 80, "volume space size");
     if (!volume_space_size) {
@@ -531,7 +517,7 @@ std::expected<void, std::string> CvmContainer::parse(std::optional<CvmKey> key) 
     if (m_primary_volume.logical_block_size != sector_size) {
         return std::unexpected("CVM parse failed: unsupported ISO9660 logical block size");
     }
-    if (static_cast<uint64_t>(m_primary_volume.volume_space_size) * m_primary_volume.logical_block_size != m_iso_size) {
+    if (static_cast<uint64_t>(m_primary_volume.volume_space_size) * m_primary_volume.logical_block_size != iso_size) {
         return std::unexpected("CVM ISO volume space size does not match the embedded ISO span");
     }
 
@@ -543,7 +529,7 @@ std::expected<void, std::string> CvmContainer::parse(std::optional<CvmKey> key) 
     std::flat_set<uint32_t> visited_directories;
     auto parsed_tree = parse_iso_directory_tree(
         m_source,
-        m_iso_offset,
+        iso_offset,
         root_record->extent_sector,
         root_record->data_length,
         {},
@@ -564,10 +550,9 @@ std::expected<void, std::string> CvmContainer::parse(std::optional<CvmKey> key) 
         }
         m_entries[index].index = static_cast<uint32_t>(index);
         m_entry_payloads.push_back({
-            .kind = EntryPayloadKind::original_source,
             .source_path = {},
-            .source_offset = m_iso_offset + static_cast<size_t>(m_entries[index].extent_sector) * sector_size,
-            .owned_bytes = {},
+            .source_offset = iso_offset + static_cast<size_t>(m_entries[index].extent_sector) * sector_size,
+            .owned_bytes = std::nullopt,
         });
     }
 

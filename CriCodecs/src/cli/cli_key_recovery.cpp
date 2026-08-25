@@ -14,11 +14,13 @@ void print_cri_key_recovery_note(std::ostream& out) {
     return std::ranges::find(formats, Format::hca) != formats.end();
 }
 
-[[nodiscard]] bool is_hca_recovery_file(const std::filesystem::path& path) {
+[[nodiscard]] bool has_any_format(
+    const std::filesystem::path& path,
+    std::initializer_list<Format> accepted
+) {
     const auto formats = sniff_format_order(path, false);
-    return std::ranges::any_of(formats, [](Format format) {
-        return format == Format::hca || format == Format::awb ||
-            format == Format::acb || format == Format::usm;
+    return std::ranges::any_of(accepted, [&](Format format) {
+        return std::ranges::contains(formats, format);
     });
 }
 
@@ -27,85 +29,10 @@ struct RecoveryPath {
     bool explicit_input = false;
 };
 
-[[nodiscard]] std::expected<std::vector<RecoveryPath>, std::string> expand_hca_recovery_paths(
-    std::span<const std::filesystem::path> input_paths
-) {
-    std::vector<RecoveryPath> paths;
-    for (const auto& input : input_paths) {
-        if (!std::filesystem::is_directory(input)) {
-            paths.push_back({.path = input, .explicit_input = true});
-            continue;
-        }
-
-        auto files = collect_directory_files(input);
-        if (!files) {
-            return std::unexpected(files.error());
-        }
-        for (const auto& [path, _] : *files) {
-            if (is_hca_recovery_file(path)) {
-                paths.push_back({.path = path, .explicit_input = false});
-            }
-        }
-    }
-    return paths;
-}
-
-[[nodiscard]] std::expected<std::vector<RecoveryPath>, std::string> expand_usm_recovery_paths(
-    std::span<const std::filesystem::path> input_paths
-) {
-    std::vector<RecoveryPath> paths;
-    for (const auto& input : input_paths) {
-        if (!std::filesystem::is_directory(input)) {
-            paths.push_back({.path = input, .explicit_input = true});
-            continue;
-        }
-
-        auto files = collect_directory_files(input);
-        if (!files) {
-            return std::unexpected(files.error());
-        }
-        for (const auto& [path, _] : *files) {
-            const auto formats = sniff_format_order(path, false);
-            if (std::ranges::find(formats, Format::usm) != formats.end()) {
-                paths.push_back({.path = path, .explicit_input = false});
-            }
-        }
-    }
-    return paths;
-}
-
-[[nodiscard]] std::expected<std::vector<RecoveryPath>, std::string> expand_adx_family_recovery_paths(
-    std::span<const std::filesystem::path> input_paths
-) {
-    std::vector<RecoveryPath> paths;
-    for (const auto& input : input_paths) {
-        if (!std::filesystem::is_directory(input)) {
-            paths.push_back({.path = input, .explicit_input = true});
-            continue;
-        }
-
-        auto files = collect_directory_files(input);
-        if (!files) {
-            return std::unexpected(files.error());
-        }
-        for (const auto& [path, _] : *files) {
-            const auto formats = sniff_format_order(path, false);
-            if (std::ranges::find(formats, Format::adx) != formats.end() ||
-                std::ranges::find(formats, Format::aax) != formats.end() ||
-                std::ranges::find(formats, Format::awb) != formats.end() ||
-                std::ranges::find(formats, Format::acb) != formats.end() ||
-                std::ranges::find(formats, Format::csb) != formats.end() ||
-                std::ranges::find(formats, Format::cpk) != formats.end()) {
-                paths.push_back({.path = path, .explicit_input = false});
-            }
-        }
-    }
-    return paths;
-}
-
-[[nodiscard]] std::expected<std::vector<RecoveryPath>, std::string> expand_aac_recovery_paths(
+template <class Accept>
+[[nodiscard]] std::expected<std::vector<RecoveryPath>, std::string> expand_recovery_paths(
     std::span<const std::filesystem::path> input_paths,
-    Format container_format
+    Accept accept
 ) {
     std::vector<RecoveryPath> paths;
     for (const auto& input : input_paths) {
@@ -119,8 +46,7 @@ struct RecoveryPath {
             return std::unexpected(files.error());
         }
         for (const auto& [path, _] : *files) {
-            const auto formats = sniff_format_order(path, false);
-            if (std::ranges::find(formats, container_format) != formats.end()) {
+            if (accept(path)) {
                 paths.push_back({.path = path, .explicit_input = false});
             }
         }
@@ -133,7 +59,11 @@ collect_adx_family_sources(
     std::span<const std::filesystem::path> input_paths,
     bool want_ahx
 ) {
-    auto paths = expand_adx_family_recovery_paths(input_paths);
+    auto paths = expand_recovery_paths(input_paths, [](const auto& path) {
+        return has_any_format(path, {
+            Format::adx, Format::aax, Format::awb, Format::acb, Format::csb, Format::cpk
+        });
+    });
     if (!paths) {
         return std::unexpected(paths.error());
     }
@@ -266,11 +196,13 @@ void print_u64_list(std::ostream& out, std::span<const uint64_t> values) {
 
 } // namespace
 
-std::expected<HcaRecoveryOutput, std::string> perform_hca_key_recovery(
+std::expected<hca::KeyRecoveryResult, std::string> perform_hca_key_recovery(
     std::span<const std::filesystem::path> input_paths,
     const Options& options
 ) {
-    auto paths = expand_hca_recovery_paths(input_paths);
+    auto paths = expand_recovery_paths(input_paths, [](const auto& path) {
+        return has_any_format(path, {Format::hca, Format::awb, Format::acb, Format::usm});
+    });
     if (!paths) {
         return std::unexpected(paths.error());
     }
@@ -358,33 +290,30 @@ std::expected<HcaRecoveryOutput, std::string> perform_hca_key_recovery(
     if (!recovery) {
         return std::unexpected(recovery.error());
     }
-    return HcaRecoveryOutput{
-        .recovery = std::move(*recovery),
-        .hca_count = collected.size(),
-    };
+    return std::move(*recovery);
 }
 
-void print_hca_key_recovery_text(std::ostream& out, const HcaRecoveryOutput& result) {
+void print_hca_key_recovery_text(std::ostream& out, const hca::KeyRecoveryResult& result) {
     print_cri_key_recovery_note(out);
-    out << "candidates: " << result.recovery.candidates.size() << '\n';
-    for (size_t index = 0; index < result.recovery.candidates.size(); ++index) {
-        const auto& candidate = result.recovery.candidates[index];
+    out << "candidates: " << result.candidates.size() << '\n';
+    for (size_t index = 0; index < result.candidates.size(); ++index) {
+        const auto& candidate = result.candidates[index];
         out << index + 1 << ". key: " << key_text(candidate.key)
             << ", score: " << std::fixed << std::setprecision(6) << candidate.score
             << ", files: " << candidate.source_count
             << ", evidence: " << candidate.evidence_count
             << ", equivalents: " << candidate.equivalent_count << '\n';
     }
-    out << "hca_count: " << result.hca_count << '\n';
+    out << "hca_count: " << result.source_count << '\n';
 }
 
-void print_hca_key_recovery_json(std::ostream& out, const HcaRecoveryOutput& result) {
+void print_hca_key_recovery_json(std::ostream& out, const hca::KeyRecoveryResult& result) {
     out << "{\"candidates\":[";
-    for (size_t index = 0; index < result.recovery.candidates.size(); ++index) {
+    for (size_t index = 0; index < result.candidates.size(); ++index) {
         if (index != 0) {
             out << ',';
         }
-        const auto& candidate = result.recovery.candidates[index];
+        const auto& candidate = result.candidates[index];
         out << "{\"key\":" << quote_json(key_text(candidate.key))
             << ",\"score\":" << std::fixed << std::setprecision(6) << candidate.score
             << ",\"source_count\":" << candidate.source_count
@@ -392,7 +321,7 @@ void print_hca_key_recovery_json(std::ostream& out, const HcaRecoveryOutput& res
             << ",\"unknown_high_bits\":" << static_cast<unsigned>(candidate.unknown_high_bits)
             << ",\"equivalent_count\":" << candidate.equivalent_count << '}';
     }
-    out << "],\"hca_count\":" << result.hca_count << '}';
+    out << "],\"hca_count\":" << result.source_count << '}';
 }
 
 std::expected<AacRecoveryOutput, std::string> perform_aac_key_recovery(
@@ -400,7 +329,9 @@ std::expected<AacRecoveryOutput, std::string> perform_aac_key_recovery(
     Format container_format,
     const Options& options
 ) {
-    auto paths = expand_aac_recovery_paths(input_paths, container_format);
+    auto paths = expand_recovery_paths(input_paths, [container_format](const auto& path) {
+        return has_any_format(path, {container_format});
+    });
     if (!paths) {
         return std::unexpected(paths.error());
     }
@@ -539,7 +470,7 @@ void print_aac_key_recovery_json(std::ostream& out, const AacRecoveryOutput& res
     out << "],\"container_count\":" << result.container_count << '}';
 }
 
-std::expected<AdxRecoveryOutput, std::string> perform_adx_key_recovery(
+std::expected<adx::AdxRecoveryResult, std::string> perform_adx_key_recovery(
     std::span<const std::filesystem::path> input_paths,
     const Options& options
 ) {
@@ -560,67 +491,67 @@ std::expected<AdxRecoveryOutput, std::string> perform_adx_key_recovery(
     if (!guess) {
         return std::unexpected("ADX key recovery failed: " + guess.error());
     }
-    return AdxRecoveryOutput{.guess = std::move(*guess), .source_count = sources.size()};
+    return std::move(*guess);
 }
 
-void print_adx_key_recovery_text(std::ostream& out, const AdxRecoveryOutput& result) {
-    for (size_t index = 0; index < result.guess.candidates.size(); ++index) {
-        const auto& candidate = result.guess.candidates[index];
+void print_adx_key_recovery_text(std::ostream& out, const adx::AdxRecoveryResult& result) {
+    for (size_t index = 0; index < result.candidates.size(); ++index) {
+        const auto& candidate = result.candidates[index];
         out << index + 1 << ". key: " << triplet_text(
                 candidate.key.xor_value, candidate.key.mult, candidate.key.add)
             << ", score: " << std::fixed << std::setprecision(6) << candidate.score
             << ", sources: " << candidate.source_count
             << ", evidence: " << candidate.evidence_count << '\n';
     }
-    out << "encryption_type: " << static_cast<unsigned>(result.guess.encryption_type) << '\n'
+    out << "encryption_type: " << static_cast<unsigned>(result.encryption_type) << '\n'
         << "source_count: " << result.source_count << '\n'
         << "source_frames: ";
-    print_u64_list(out, result.guess.source_frames);
+    print_u64_list(out, result.source_frames);
     out << '\n'
-        << "total_frames: " << result.guess.total_frames << '\n'
-        << "examined_frames: " << result.guess.examined_frames << '\n'
-        << "evidence_frames: " << result.guess.evidence_frames << '\n';
-    if (result.guess.encryption_type == 9u) {
-        out << "canonical_type9_code: " << hex_text(result.guess.canonical_type9_code) << '\n';
+        << "total_frames: " << result.total_frames << '\n'
+        << "examined_frames: " << result.examined_frames << '\n'
+        << "evidence_frames: " << result.evidence_frames << '\n';
+    if (result.encryption_type == 9u) {
+        out << "canonical_type9_code: " << hex_text(result.canonical_type9_code) << '\n';
     }
 }
 
-void print_adx_key_recovery_json(std::ostream& out, const AdxRecoveryOutput& result) {
+void print_adx_key_recovery_json(std::ostream& out, const adx::AdxRecoveryResult& result) {
     out << "{\"candidates\":[";
-    for (size_t index = 0; index < result.guess.candidates.size(); ++index) {
+    for (size_t index = 0; index < result.candidates.size(); ++index) {
         if (index != 0) out << ',';
-        const auto& candidate = result.guess.candidates[index];
+        const auto& candidate = result.candidates[index];
         out << "{\"key\":" << quote_json(triplet_text(
                 candidate.key.xor_value, candidate.key.mult, candidate.key.add))
             << ",\"score\":" << std::fixed << std::setprecision(6) << candidate.score
             << ",\"source_count\":" << candidate.source_count
             << ",\"evidence_count\":" << candidate.evidence_count
             << ",\"canonical_type9_code\":";
-        if (result.guess.encryption_type == 9u) {
+        if (result.encryption_type == 9u) {
             out << quote_json(hex_text(candidate.canonical_type9_code));
         } else {
             out << "null";
         }
         out << '}';
     }
-    out << "],\"encryption_type\":" << static_cast<unsigned>(result.guess.encryption_type)
+    out << "],\"encryption_type\":" << static_cast<unsigned>(result.encryption_type)
         << ",\"source_count\":" << result.source_count
         << ",\"source_frames\":[";
-    print_u64_list(out, result.guess.source_frames);
+    print_u64_list(out, result.source_frames);
     out << "]"
-        << ",\"total_frames\":" << result.guess.total_frames
-        << ",\"examined_frames\":" << result.guess.examined_frames
-        << ",\"evidence_frames\":" << result.guess.evidence_frames
+        << ",\"total_frames\":" << result.total_frames
+        << ",\"examined_frames\":" << result.examined_frames
+        << ",\"evidence_frames\":" << result.evidence_frames
         << ",\"canonical_type9_code\":";
-    if (result.guess.encryption_type == 9u) {
-        out << quote_json(hex_text(result.guess.canonical_type9_code));
+    if (result.encryption_type == 9u) {
+        out << quote_json(hex_text(result.canonical_type9_code));
     } else {
         out << "null";
     }
     out << '}';
 }
 
-std::expected<AhxRecoveryOutput, std::string> perform_ahx_key_recovery(
+std::expected<ahx::AhxRecoveryResult, std::string> perform_ahx_key_recovery(
     std::span<const std::filesystem::path> input_paths,
     const Options& options
 ) {
@@ -641,12 +572,12 @@ std::expected<AhxRecoveryOutput, std::string> perform_ahx_key_recovery(
     if (!guess) {
         return std::unexpected("AHX key recovery failed: " + guess.error());
     }
-    return AhxRecoveryOutput{.guess = std::move(*guess), .source_count = sources.size()};
+    return std::move(*guess);
 }
 
-void print_ahx_key_recovery_text(std::ostream& out, const AhxRecoveryOutput& result) {
-    for (size_t index = 0; index < result.guess.candidates.size(); ++index) {
-        const auto& candidate = result.guess.candidates[index];
+void print_ahx_key_recovery_text(std::ostream& out, const ahx::AhxRecoveryResult& result) {
+    for (size_t index = 0; index < result.candidates.size(); ++index) {
+        const auto& candidate = result.candidates[index];
         out << index + 1 << ". key: " << triplet_text(
                 candidate.key.start, candidate.key.mult, candidate.key.add)
             << ", score: " << std::fixed << std::setprecision(6) << candidate.score
@@ -655,27 +586,27 @@ void print_ahx_key_recovery_text(std::ostream& out, const AhxRecoveryOutput& res
             << ", ambiguity: " << candidate.candidate_counts[0] << ','
             << candidate.candidate_counts[1] << ',' << candidate.candidate_counts[2] << '\n';
     }
-    out << "encryption_type: " << static_cast<unsigned>(result.guess.encryption_type) << '\n'
+    out << "encryption_type: " << static_cast<unsigned>(result.encryption_type) << '\n'
         << "source_count: " << result.source_count << '\n'
         << "source_frames: ";
-    print_u64_list(out, result.guess.source_frames);
+    print_u64_list(out, result.source_frames);
     out << '\n'
-        << "total_frames: " << result.guess.total_frames << '\n'
-        << "evidence_frames: " << result.guess.evidence_frames << '\n'
-        << "component_frames: " << result.guess.component_frames[0] << ','
-        << result.guess.component_frames[1] << ',' << result.guess.component_frames[2] << '\n'
-        << "candidate_counts: " << result.guess.candidate_counts[0] << ','
-        << result.guess.candidate_counts[1] << ',' << result.guess.candidate_counts[2] << '\n';
-    if (result.guess.encryption_type == 9u) {
-        out << "canonical_type9_code: " << hex_text(result.guess.canonical_type9_code) << '\n';
+        << "total_frames: " << result.total_frames << '\n'
+        << "evidence_frames: " << result.evidence_frames << '\n'
+        << "component_frames: " << result.component_frames[0] << ','
+        << result.component_frames[1] << ',' << result.component_frames[2] << '\n'
+        << "candidate_counts: " << result.candidate_counts[0] << ','
+        << result.candidate_counts[1] << ',' << result.candidate_counts[2] << '\n';
+    if (result.encryption_type == 9u) {
+        out << "canonical_type9_code: " << hex_text(result.canonical_type9_code) << '\n';
     }
 }
 
-void print_ahx_key_recovery_json(std::ostream& out, const AhxRecoveryOutput& result) {
+void print_ahx_key_recovery_json(std::ostream& out, const ahx::AhxRecoveryResult& result) {
     out << "{\"candidates\":[";
-    for (size_t index = 0; index < result.guess.candidates.size(); ++index) {
+    for (size_t index = 0; index < result.candidates.size(); ++index) {
         if (index != 0) out << ',';
-        const auto& candidate = result.guess.candidates[index];
+        const auto& candidate = result.candidates[index];
         out << "{\"key\":" << quote_json(triplet_text(
                 candidate.key.start, candidate.key.mult, candidate.key.add))
             << ",\"score\":" << std::fixed << std::setprecision(6) << candidate.score
@@ -684,27 +615,27 @@ void print_ahx_key_recovery_json(std::ostream& out, const AhxRecoveryOutput& res
             << ",\"candidate_counts\":[" << candidate.candidate_counts[0] << ','
             << candidate.candidate_counts[1] << ',' << candidate.candidate_counts[2] << ']'
             << ",\"canonical_type9_code\":";
-        if (result.guess.encryption_type == 9u) {
+        if (result.encryption_type == 9u) {
             out << quote_json(hex_text(candidate.canonical_type9_code));
         } else {
             out << "null";
         }
         out << '}';
     }
-    out << "],\"encryption_type\":" << static_cast<unsigned>(result.guess.encryption_type)
+    out << "],\"encryption_type\":" << static_cast<unsigned>(result.encryption_type)
         << ",\"source_count\":" << result.source_count
         << ",\"source_frames\":[";
-    print_u64_list(out, result.guess.source_frames);
+    print_u64_list(out, result.source_frames);
     out << "]"
-        << ",\"total_frames\":" << result.guess.total_frames
-        << ",\"evidence_frames\":" << result.guess.evidence_frames
-        << ",\"component_frames\":[" << result.guess.component_frames[0] << ','
-        << result.guess.component_frames[1] << ',' << result.guess.component_frames[2] << ']'
-        << ",\"candidate_counts\":[" << result.guess.candidate_counts[0] << ','
-        << result.guess.candidate_counts[1] << ',' << result.guess.candidate_counts[2] << ']'
+        << ",\"total_frames\":" << result.total_frames
+        << ",\"evidence_frames\":" << result.evidence_frames
+        << ",\"component_frames\":[" << result.component_frames[0] << ','
+        << result.component_frames[1] << ',' << result.component_frames[2] << ']'
+        << ",\"candidate_counts\":[" << result.candidate_counts[0] << ','
+        << result.candidate_counts[1] << ',' << result.candidate_counts[2] << ']'
         << ",\"canonical_type9_code\":";
-    if (result.guess.encryption_type == 9u) {
-        out << quote_json(hex_text(result.guess.canonical_type9_code));
+    if (result.encryption_type == 9u) {
+        out << quote_json(hex_text(result.canonical_type9_code));
     } else {
         out << "null";
     }
@@ -715,7 +646,9 @@ std::expected<std::vector<UsmRecoveryOutput>, std::string> perform_usm_key_recov
     std::span<const std::filesystem::path> input_paths,
     const Options& options
 ) {
-    auto paths = expand_usm_recovery_paths(input_paths);
+    auto paths = expand_recovery_paths(input_paths, [](const auto& path) {
+        return has_any_format(path, {Format::usm});
+    });
     if (!paths) {
         return std::unexpected(paths.error());
     }

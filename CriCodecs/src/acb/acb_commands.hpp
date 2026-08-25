@@ -25,7 +25,7 @@
 namespace cricodecs::acb {
 
 /**
- * CRI uses separate interpreters for authored track-event/action programs and
+ * CRI uses separate interpreters for track-event/action programs and
  * compact Sequence/Track/Synth parameter-pallet programs. Opcode values are
  * meaningful only within the interpreter selected by the containing table.
  */
@@ -442,14 +442,14 @@ struct AcbCommand {
             return {code, AcbCommandFamily::midi, AcbCommandPayloadKind::none, "midi_event_marker", 0};
         case 0x0FD2:
             // AtomCraft build_timed_acb_track_event emits this zero-payload
-            // marker at the authored event end time. CriSolv then finalizes
+            // marker at the event end time. CriSolv then finalizes
             // the timed track event and related block-transition behavior.
             return {code, AcbCommandFamily::timing, AcbCommandPayloadKind::none, "end_track_event", 0};
         case 0x0FD3:
             return {code, AcbCommandFamily::timing, AcbCommandPayloadKind::raw, "transition_track", std::nullopt};
         case 7099:
             // Alternate AcOoActionStart encoding emitted by AtomCraft for a
-            // resolved authored start target.
+            // resolved start target.
             return {code, AcbCommandFamily::action, AcbCommandPayloadKind::raw, "start_action_variant", std::nullopt};
         case 7100:
             return {code, AcbCommandFamily::action, AcbCommandPayloadKind::none, "start_action", 0};
@@ -457,7 +457,7 @@ struct AcbCommand {
             return {code, AcbCommandFamily::action, AcbCommandPayloadKind::none, "stop_action", 0};
         case 7102:
             // AtomCraft AcOoActionMute. Payload variants are retained raw
-            // until their authored fields are mapped across SDK versions.
+            // until their fields are mapped across SDK versions.
             return {code, AcbCommandFamily::action, AcbCommandPayloadKind::raw, "mute_action", std::nullopt};
         case 7103:
             return {code, AcbCommandFamily::action, AcbCommandPayloadKind::raw, "action_7103", std::nullopt};

@@ -2,9 +2,8 @@
  * @file acb_commands.cpp
  * @brief ACB command-stream parser implementation.
  *
- * Command coverage is based various sample scans, vgmstream/PyCriCodecsEx
- * research, and official lib authoring/runtime evidence. The current typed
- * dictionary and TLV scan verification are CriCodecs work by Youjose.
+ * Command coverage comes from sample scans, vgmstream, PyCriCodecsEx, and the
+ * official libraries. I added the typed dictionary and TLV validation here.
  */
 
 #include "acb_commands.hpp"

@@ -4,7 +4,7 @@
  * @brief Checked numeric helpers shared by format modules.
  *
  * Project-local arithmetic and alignment helpers for CriCodecs parsers and
- * builders. Implemented by Youjose.
+ * builders.
  */
 
 #include <algorithm>
@@ -26,12 +26,6 @@ namespace cricodecs::util {
 #define CRICODECS_UTIL_CONSTEXPR_CMATH 1
 #else
 #define CRICODECS_UTIL_CONSTEXPR_CMATH 0
-#endif
-
-#if CRICODECS_UTIL_CONSTEXPR_CMATH
-inline constexpr bool constexpr_cmath_available = true;
-#else
-inline constexpr bool constexpr_cmath_available = false;
 #endif
 
 namespace detail {
@@ -194,29 +188,6 @@ template <std::floating_point T>
 }
 
 } // namespace detail
-
-template <typename T>
-[[nodiscard]] constexpr T powi(T base, int exponent) noexcept {
-    auto pow_positive = [](T value, unsigned int power) constexpr noexcept {
-        T result = static_cast<T>(1);
-        while (power != 0) {
-            if ((power & 1u) != 0) {
-                result *= value;
-            }
-            power >>= 1u;
-            if (power != 0) {
-                value *= value;
-            }
-        }
-        return result;
-    };
-
-    const auto magnitude = exponent < 0
-        ? static_cast<unsigned int>(-(exponent + 1)) + 1u
-        : static_cast<unsigned int>(exponent);
-    const T result = pow_positive(base, magnitude);
-    return exponent < 0 ? static_cast<T>(1) / result : result;
-}
 
 template <std::floating_point T>
 [[nodiscard]] constexpr T cos(T angle) {

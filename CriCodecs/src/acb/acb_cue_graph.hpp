@@ -4,7 +4,7 @@
  * @brief Lossless, inspectable ACB cue and command graph.
  *
  * This model is intentionally separate from AcbContainer's waveform extraction
- * surface. It preserves authored table-row identities, reference lists, raw
+ * surface. It preserves table-row identities, reference lists, raw
  * command streams, and conservative command interpretations without attempting
  * to emulate the CRI Atom runtime.
  */
@@ -13,6 +13,8 @@
 
 #include "../utilities/text_encoding.hpp"
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
@@ -58,13 +60,6 @@ enum class AcbCueCommandMeaning : uint8_t {
     set_selector_label,
 };
 
-enum class AcbInterpretationEvidence : uint8_t {
-    none,
-    structural,
-    runtime_confirmed,
-    fixture_inferred,
-};
-
 enum class AcbCommandTableKind : uint8_t {
     track_event,
     legacy_command,
@@ -78,7 +73,6 @@ struct AcbCueCommand {
     AcbCommandDispatcher dispatcher = AcbCommandDispatcher::serialized_event;
     AcbCommandFamily family = AcbCommandFamily::unknown;
     AcbCueCommandMeaning meaning = AcbCueCommandMeaning::unknown;
-    AcbInterpretationEvidence evidence = AcbInterpretationEvidence::none;
     std::vector<uint8_t> payload;
     std::optional<AcbCommandTarget> target;
     std::optional<uint16_t> argument_u16;
@@ -101,7 +95,6 @@ struct AcbCueCommandStream {
     std::vector<AcbCueCommand> commands;
     std::vector<AcbScheduledTarget> scheduled_targets;
     int64_t duration_us = 0;
-    bool uses_inferred_timing = false;
 };
 
 struct AcbCueName {
@@ -251,11 +244,6 @@ struct AcbOutsideLink {
     uint16_t acb_name_string_index = invalid_acb_index;
 };
 
-struct AcbCueDiagnostic {
-    std::string context;
-    std::string message;
-};
-
 enum class AcbCueNodeKind : uint8_t {
     cue,
     waveform,
@@ -318,7 +306,7 @@ struct AcbCueAssembly {
  * Two intentionally different cue-name projections for a waveform row.
  *
  * exact_cue_name_rows contains only cues whose playback graph reaches this
- * exact WaveformTable row. preferred_cue_name_rows is its nearest authored
+ * exact WaveformTable row. preferred_cue_name_rows is its nearest
  * cue (or all equally-near cues), which is normally the most specific useful
  * display/file label. associated_awb_cue_name_rows additionally identifies
  * all cues attached to the same physical memory/stream AWB asset.
@@ -361,23 +349,22 @@ public:
     [[nodiscard]] const std::vector<AcbOutsideLink>& outside_links() const noexcept {
         return m_outside_links;
     }
-    [[nodiscard]] const std::vector<AcbCueDiagnostic>& diagnostics() const noexcept { return m_diagnostics; }
     [[nodiscard]] bool has_embedded_awb() const noexcept { return m_has_embedded_awb; }
 
     [[nodiscard]] const std::vector<AcbCueCommandStream>& track_events() const noexcept {
-        return m_track_events;
+        return commands(AcbCommandTableKind::track_event);
     }
     [[nodiscard]] const std::vector<AcbCueCommandStream>& legacy_commands() const noexcept {
-        return m_legacy_commands;
+        return commands(AcbCommandTableKind::legacy_command);
     }
     [[nodiscard]] const std::vector<AcbCueCommandStream>& sequence_commands() const noexcept {
-        return m_sequence_commands;
+        return commands(AcbCommandTableKind::sequence_command);
     }
     [[nodiscard]] const std::vector<AcbCueCommandStream>& track_commands() const noexcept {
-        return m_track_commands;
+        return commands(AcbCommandTableKind::track_command);
     }
     [[nodiscard]] const std::vector<AcbCueCommandStream>& synth_commands() const noexcept {
-        return m_synth_commands;
+        return commands(AcbCommandTableKind::synth_command);
     }
 
     [[nodiscard]] const AcbCue* cue_by_id(uint32_t cue_id) const noexcept;
@@ -404,6 +391,15 @@ public:
 private:
     friend class AcbCueGraphParser;
 
+    [[nodiscard]] const std::vector<AcbCueCommandStream>& commands(
+        AcbCommandTableKind kind) const noexcept {
+        return m_commands[static_cast<std::size_t>(kind)];
+    }
+    [[nodiscard]] std::vector<AcbCueCommandStream>& commands(
+        AcbCommandTableKind kind) noexcept {
+        return m_commands[static_cast<std::size_t>(kind)];
+    }
+
     std::vector<AcbCue> m_cues;
     std::vector<AcbCueName> m_cue_names;
     std::vector<AcbSynth> m_synths;
@@ -417,12 +413,7 @@ private:
     std::vector<AcbStringValue> m_strings;
     std::vector<AcbOutsideLink> m_outside_links;
 
-    std::vector<AcbCueCommandStream> m_track_events;
-    std::vector<AcbCueCommandStream> m_legacy_commands;
-    std::vector<AcbCueCommandStream> m_sequence_commands;
-    std::vector<AcbCueCommandStream> m_track_commands;
-    std::vector<AcbCueCommandStream> m_synth_commands;
-    std::vector<AcbCueDiagnostic> m_diagnostics;
+    std::array<std::vector<AcbCueCommandStream>, 5> m_commands;
     bool m_has_embedded_awb = false;
 };
 

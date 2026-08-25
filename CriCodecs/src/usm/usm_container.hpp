@@ -2,10 +2,6 @@
 /**
  * @file usm_container.hpp
  * @brief USM/SofDec 2 chunked stream container API.
- *
- * Chunk IDs, metadata schemas, SFSH handling, and stream-header behavior are
- * grounded in official SofDec 2 tool evidence.
- * Public C++23 surface by Youjose.
  */
 
 #include <array>
@@ -24,6 +20,7 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <variant>
 
 #include "../utf/utf_table.hpp"
 #include "../utilities/io.hpp"
@@ -34,11 +31,8 @@
 
 namespace cricodecs::usm {
 
-// Confirmed against official SofDec 2 tools. SFSH is a fixed header variant,
-// while the uncommon @-prefixed metadata IDs are kept symbolic so demuxed
-// streams remain inspectable before their full payload semantics are modeled.
-// PST is a picture-size table, ELM is an element/index table, STA carries
-// ofs_byte/ofs_frmid/num_skip/resv rows, and ATP carries pic_size rows.
+// SFSH is a fixed header variant. PST stores picture sizes, ELM indexes
+// metadata, STA stores seek rows, and ATP stores picture sizes.
 enum class UsmChunkType : uint32_t {
     CRID = 0x43524944, // "CRID"
     SFSH = 0x53465348, // "SFSH"
@@ -116,6 +110,25 @@ struct UsmChunkHeader {
     uint32_t reserved_18 = 0;
     uint32_t reserved_1c = 0;
 
+    [[nodiscard]] static UsmChunkHeader read(std::span<const uint8_t> source) noexcept {
+        UsmChunkHeader header;
+        if (source.size() < raw_header_size) {
+            return header;
+        }
+        header.magic = io::read_be<uint32_t>(source.data() + 0x00);
+        header.chunk_size = io::read_be<uint32_t>(source.data() + 0x04);
+        header.payload_offset = io::read_be<uint16_t>(source.data() + 0x08);
+        header.padding = io::read_be<uint16_t>(source.data() + 0x0A);
+        header.channel_no = source[0x0C];
+        header.reserved_0d = source[0x0D];
+        header.payload_type_and_flags = io::read_be<uint16_t>(source.data() + 0x0E);
+        header.frame_time = io::read_be<uint32_t>(source.data() + 0x10);
+        header.frame_rate = io::read_be<uint32_t>(source.data() + 0x14);
+        header.reserved_18 = io::read_be<uint32_t>(source.data() + 0x18);
+        header.reserved_1c = io::read_be<uint32_t>(source.data() + 0x1C);
+        return header;
+    }
+
     [[nodiscard]] uint32_t body_size() const noexcept {
         return chunk_size >= encoded_header_size ? chunk_size - encoded_header_size : 0;
     }
@@ -134,7 +147,9 @@ public:
     BasicUsmChunkView(std::span<Byte> source, size_t offset)
         : m_source(source)
         , m_offset(offset)
-        , m_header(read_header(source, offset)) {}
+        , m_header(offset <= source.size()
+              ? UsmChunkHeader::read(source.subspan(offset))
+              : UsmChunkHeader{}) {}
 
     [[nodiscard]] const UsmChunkHeader& header() const noexcept { return m_header; }
     [[nodiscard]] size_t offset() const noexcept { return m_offset; }
@@ -149,7 +164,7 @@ public:
         };
     }
     [[nodiscard]] bool is_valid() const noexcept {
-        return valid_chunk_at(m_source, m_offset);
+        return valid_chunk_at(m_source, m_offset, m_header);
     }
     [[nodiscard]] std::span<Byte> full_bytes() const noexcept {
         if (!is_valid()) {
@@ -190,34 +205,17 @@ public:
     }
 
 private:
-    [[nodiscard]] static UsmChunkHeader read_header(std::span<Byte> source, size_t offset) noexcept {
-        UsmChunkHeader header{};
-        if (offset > source.size() || source.size() - offset < UsmChunkHeader::raw_header_size) {
-            return header;
-        }
-        const auto* data = source.data() + offset;
-        header.magic = io::read_be<uint32_t>(data + 0x00);
-        header.chunk_size = io::read_be<uint32_t>(data + 0x04);
-        header.payload_offset = io::read_be<uint16_t>(data + 0x08);
-        header.padding = io::read_be<uint16_t>(data + 0x0A);
-        header.channel_no = data[0x0C];
-        header.reserved_0d = data[0x0D];
-        header.payload_type_and_flags = io::read_be<uint16_t>(data + 0x0E);
-        header.frame_time = io::read_be<uint32_t>(data + 0x10);
-        header.frame_rate = io::read_be<uint32_t>(data + 0x14);
-        header.reserved_18 = io::read_be<uint32_t>(data + 0x18);
-        header.reserved_1c = io::read_be<uint32_t>(data + 0x1C);
-        return header;
-    }
-
-    [[nodiscard]] static bool valid_chunk_at(std::span<Byte> source, size_t offset) noexcept {
+    [[nodiscard]] static bool valid_chunk_at(
+        std::span<Byte> source,
+        size_t offset,
+        const UsmChunkHeader& header
+    ) noexcept {
         if (offset > source.size() || source.size() - offset < UsmChunkHeader::raw_header_size) {
             return false;
         }
-        const auto* data = source.data() + offset;
-        const auto chunk_size = io::read_be<uint32_t>(data + 0x04);
-        const auto payload_offset = io::read_be<uint16_t>(data + 0x08);
-        const auto padding = io::read_be<uint16_t>(data + 0x0A);
+        const auto chunk_size = header.chunk_size;
+        const auto payload_offset = header.payload_offset;
+        const auto padding = header.padding;
         if (chunk_size < UsmChunkHeader::encoded_header_size ||
             payload_offset < UsmChunkHeader::encoded_header_size ||
             8u + static_cast<size_t>(chunk_size) > source.size() - offset) {
@@ -313,23 +311,14 @@ struct SfshHeader {
 
     std::array<uint8_t, raw_header_size> raw{};
     uint16_t version = 0;
-    uint16_t field_06 = 0;
-    uint16_t field_08 = 0;
-    uint16_t field_0a = 0;
-    uint16_t field_0c = 0;
-    uint32_t field_0e = 0;
-    uint32_t field_12 = 0;
     uint32_t payload_size = 0;
-    uint32_t codec_word = 0;
-    uint16_t field_1e = 0;
-    uint16_t field_20 = 0;
 
     [[nodiscard]] uint32_t payload_offset() const noexcept {
         return payload_offset_value;
     }
 
     [[nodiscard]] uint8_t codec_marker() const noexcept {
-        return static_cast<uint8_t>(codec_word >> 24);
+        return raw[0x1D];
     }
 
     [[nodiscard]] uint8_t normalized_codec_marker() const noexcept {
@@ -346,50 +335,32 @@ struct SfshHeader {
     }
 };
 
-struct UsmPayload {
-    std::vector<uint8_t> owned;
-    std::span<const uint8_t> view;
-
+class UsmPayload {
+public:
     UsmPayload() = default;
 
     UsmPayload(std::span<const uint8_t> bytes)
-        : view(bytes) {}
+        : m_bytes(bytes) {}
 
     UsmPayload(std::vector<uint8_t>&& bytes)
-        : owned(std::move(bytes))
-        , view(owned) {}
+        : m_bytes(std::in_place_type<std::vector<uint8_t>>, std::move(bytes)) {}
 
-    UsmPayload(const UsmPayload& other)
-        : owned(other.owned)
-        , view(owned.empty() ? other.view : std::span<const uint8_t>(owned)) {}
-
-    UsmPayload& operator=(const UsmPayload& other) {
-        if (this != &other) {
-            owned = other.owned;
-            view = owned.empty() ? other.view : std::span<const uint8_t>(owned);
+    [[nodiscard]] std::span<const uint8_t> bytes() const noexcept {
+        if (const auto* owned = std::get_if<std::vector<uint8_t>>(&m_bytes)) {
+            return *owned;
         }
-        return *this;
+        return std::get<std::span<const uint8_t>>(m_bytes);
     }
+    [[nodiscard]] const uint8_t* data() const noexcept { return bytes().data(); }
+    [[nodiscard]] size_t size() const noexcept { return bytes().size(); }
+    [[nodiscard]] bool empty() const noexcept { return bytes().empty(); }
+    [[nodiscard]] const uint8_t* begin() const noexcept { return data(); }
+    [[nodiscard]] const uint8_t* end() const noexcept { return empty() ? data() : data() + size(); }
+    [[nodiscard]] const uint8_t& operator[](size_t index) const noexcept { return bytes()[index]; }
+    [[nodiscard]] operator std::span<const uint8_t>() const noexcept { return bytes(); }
 
-    UsmPayload(UsmPayload&& other) noexcept
-        : owned(std::move(other.owned))
-        , view(owned.empty() ? other.view : std::span<const uint8_t>(owned)) {}
-
-    UsmPayload& operator=(UsmPayload&& other) noexcept {
-        if (this != &other) {
-            owned = std::move(other.owned);
-            view = owned.empty() ? other.view : std::span<const uint8_t>(owned);
-        }
-        return *this;
-    }
-
-    [[nodiscard]] const uint8_t* data() const noexcept { return view.data(); }
-    [[nodiscard]] size_t size() const noexcept { return view.size(); }
-    [[nodiscard]] bool empty() const noexcept { return view.empty(); }
-    [[nodiscard]] const uint8_t* begin() const noexcept { return view.data(); }
-    [[nodiscard]] const uint8_t* end() const noexcept { return view.data() + view.size(); }
-    [[nodiscard]] const uint8_t& operator[](size_t index) const noexcept { return view[index]; }
-    [[nodiscard]] operator std::span<const uint8_t>() const noexcept { return view; }
+private:
+    std::variant<std::span<const uint8_t>, std::vector<uint8_t>> m_bytes;
 };
 
 struct UsmChunk {
@@ -496,8 +467,8 @@ struct UsmBuildInput {
     std::string alpha_filename{};
     text::EncodingOptions encoding;
 
-    // Audio paths may contain ADX or HCA. Encryption is codec-aware: ADX uses
-    // the USM audio mask, while plain HCA is converted to cipher type 56.
+    // Audio paths may contain ADX or HCA. ADX uses the USM audio mask; plain
+    // HCA is converted to cipher type 56.
     // Already-encrypted HCA input is preserved rather than encrypted again.
     struct AudioTrack {
         std::filesystem::path path;
@@ -590,7 +561,6 @@ struct UsmSubtitleCue {
 
 class UsmReader {
 public:
-    UsmReader() = default;
     using AudioCodecMap = std::flat_map<UsmStreamId, UsmAudioCodec>;
     using OutputNameMap = std::flat_map<UsmStreamId, std::string>;
 
@@ -623,9 +593,7 @@ public:
     void clear_key() noexcept { m_crypto.clear_key(); }
     void set_encoding(text::EncodingOptions options) {
         m_encoding = std::move(options);
-        m_output_names_ready = false;
-        m_output_names.clear();
-        m_output_name_error.clear();
+        m_output_names.reset();
     }
 
     [[nodiscard]] const std::filesystem::path& source_path() const noexcept { return m_source_path; }
@@ -669,9 +637,7 @@ private:
     AudioCodecMap m_audio_codecs;
     UsmCrypto m_crypto;
     text::EncodingOptions m_encoding;
-    mutable OutputNameMap m_output_names;
-    mutable std::string m_output_name_error;
-    mutable bool m_output_names_ready = false;
+    mutable std::optional<std::expected<OutputNameMap, std::string>> m_output_names;
 
     std::expected<void, std::string> parse_file();
     std::expected<void, std::string> parse_sfsh_file();
@@ -701,16 +667,11 @@ private:
 
 class UsmBuilder {
 public:
-    UsmBuilder() = default;
-
     std::expected<std::vector<uint8_t>, std::string> build(const UsmBuildInput& input);
     std::expected<void, std::string> build_to_file(
         const std::filesystem::path& output_path,
         const UsmBuildInput& input
     );
-
-private:
-    UsmCrypto m_crypto;
 };
 
 } // namespace cricodecs::usm

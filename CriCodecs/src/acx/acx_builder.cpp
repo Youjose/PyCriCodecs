@@ -23,21 +23,14 @@ using util::align_up_checked;
 
 struct AcxBuildLayout {
     std::vector<uint32_t> offsets;
-    std::vector<uint32_t> sizes;
-    uint64_t first_offset = 0;
     uint64_t archive_size = 0;
 };
 
 [[nodiscard]] std::string trim_ascii_whitespace(std::string_view value) {
-    size_t start = 0;
-    size_t end = value.size();
-    while (start < end && (value[start] == ' ' || value[start] == '\t' || value[start] == '\r' || value[start] == '\n')) {
-        ++start;
-    }
-    while (end > start && (value[end - 1] == ' ' || value[end - 1] == '\t' || value[end - 1] == '\r' || value[end - 1] == '\n')) {
-        --end;
-    }
-    return std::string(value.substr(start, end - start));
+    constexpr std::string_view whitespace = " \t\r\n";
+    const auto first = value.find_first_not_of(whitespace);
+    if (first == std::string_view::npos) return {};
+    return std::string(value.substr(first, value.find_last_not_of(whitespace) - first + 1));
 }
 
 [[nodiscard]] std::expected<std::vector<uint8_t>, std::string> resolve_entry_bytes(const AcxBuildEntry& entry) {
@@ -90,10 +83,8 @@ struct AcxBuildLayout {
     }
 
     AcxBuildLayout layout;
-    layout.first_offset = *first_offset;
     layout.archive_size = *first_offset;
     layout.offsets.reserve(sizes.size());
-    layout.sizes.reserve(sizes.size());
 
     for (const uint32_t size : sizes) {
         if (layout.archive_size > std::numeric_limits<uint32_t>::max()) {
@@ -101,7 +92,6 @@ struct AcxBuildLayout {
         }
 
         layout.offsets.push_back(static_cast<uint32_t>(layout.archive_size));
-        layout.sizes.push_back(size);
 
         const uint64_t raw_end = layout.archive_size + size;
         const auto aligned_end = align_up_checked(raw_end, alignment, "ACX build failed");
@@ -114,9 +104,7 @@ struct AcxBuildLayout {
     return layout;
 }
 
-} // namespace
-
-std::expected<std::vector<uint8_t>, std::string> AcxBuilder::build(const AcxBuildInput& input) const {
+std::expected<void, std::string> validate_input(const AcxBuildInput& input) {
     if (input.entries.empty()) {
         return std::unexpected("ACX build failed: no entries were provided");
     }
@@ -126,6 +114,13 @@ std::expected<std::vector<uint8_t>, std::string> AcxBuilder::build(const AcxBuil
     if (input.entries.size() > std::numeric_limits<uint32_t>::max()) {
         return std::unexpected("ACX build failed: entry count exceeds supported range");
     }
+    return {};
+}
+
+} // namespace
+
+std::expected<std::vector<uint8_t>, std::string> AcxBuilder::build(const AcxBuildInput& input) const {
+    if (auto valid = validate_input(input); !valid) return std::unexpected(valid.error());
 
     std::vector<std::vector<uint8_t>> payloads;
     payloads.reserve(input.entries.size());
@@ -161,7 +156,7 @@ std::expected<std::vector<uint8_t>, std::string> AcxBuilder::build(const AcxBuil
     for (size_t index = 0; index < payloads.size(); ++index) {
         const size_t table_offset = 0x08u + index * 0x08u;
         write_be<uint32_t>(built.data() + table_offset + 0x00, layout->offsets[index]);
-        write_be<uint32_t>(built.data() + table_offset + 0x04, layout->sizes[index]);
+        write_be<uint32_t>(built.data() + table_offset + 0x04, sizes[index]);
         std::ranges::copy(payloads[index], built.begin() + static_cast<size_t>(layout->offsets[index]));
     }
 
@@ -172,15 +167,7 @@ std::expected<void, std::string> AcxBuilder::build_to_file(
     const std::filesystem::path& output_path,
     const AcxBuildInput& input
 ) const {
-    if (input.entries.empty()) {
-        return std::unexpected("ACX build failed: no entries were provided");
-    }
-    if (input.alignment == 0) {
-        return std::unexpected("ACX build failed: alignment must be non-zero");
-    }
-    if (input.entries.size() > std::numeric_limits<uint32_t>::max()) {
-        return std::unexpected("ACX build failed: entry count exceeds supported range");
-    }
+    if (auto valid = validate_input(input); !valid) return std::unexpected(valid.error());
 
     std::vector<uint32_t> sizes;
     sizes.reserve(input.entries.size());
@@ -207,15 +194,16 @@ std::expected<void, std::string> AcxBuilder::build_to_file(
     output.write_be<uint32_t>(static_cast<uint32_t>(input.entries.size()));
     for (size_t index = 0; index < input.entries.size(); ++index) {
         output.write_be<uint32_t>(layout->offsets[index]);
-        output.write_be<uint32_t>(layout->sizes[index]);
+        output.write_be<uint32_t>(sizes[index]);
     }
 
     const size_t table_size = 0x08u + input.entries.size() * 0x08u;
-    if (layout->first_offset > table_size) {
-        output.write_zeros(static_cast<size_t>(layout->first_offset - table_size));
+    const uint64_t first_offset = layout->offsets.front();
+    if (first_offset > table_size) {
+        output.write_zeros(static_cast<size_t>(first_offset - table_size));
     }
 
-    uint64_t cursor = layout->first_offset;
+    uint64_t cursor = first_offset;
     for (size_t index = 0; index < input.entries.size(); ++index) {
         const auto& entry = input.entries[index];
         if (entry.data.has_value()) {
@@ -228,7 +216,7 @@ std::expected<void, std::string> AcxBuilder::build_to_file(
             output.write_bytes(*bytes);
         }
 
-        cursor += layout->sizes[index];
+        cursor += sizes[index];
         const uint64_t next_offset = (index + 1 < input.entries.size())
             ? layout->offsets[index + 1]
             : layout->archive_size;
@@ -283,11 +271,8 @@ std::expected<std::vector<uint8_t>, std::string> AcxBuilder::build_from_file_lis
     const std::filesystem::path& file_list_path,
     uint32_t alignment
 ) const {
-    auto input = parse_file_list(file_list_path, alignment);
-    if (!input) {
-        return std::unexpected(input.error());
-    }
-    return build(*input);
+    return parse_file_list(file_list_path, alignment).and_then(
+        [this](const AcxBuildInput& input) { return build(input); });
 }
 
 std::expected<void, std::string> AcxBuilder::build_file_list_to_file(
@@ -295,11 +280,8 @@ std::expected<void, std::string> AcxBuilder::build_file_list_to_file(
     const std::filesystem::path& output_path,
     uint32_t alignment
 ) const {
-    auto input = parse_file_list(file_list_path, alignment);
-    if (!input) {
-        return std::unexpected(input.error());
-    }
-    return build_to_file(output_path, *input);
+    return parse_file_list(file_list_path, alignment).and_then(
+        [&](const AcxBuildInput& input) { return build_to_file(output_path, input); });
 }
 
 } // namespace cricodecs::acx

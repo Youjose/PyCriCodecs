@@ -2,14 +2,14 @@
  * @file crilayla.cpp
  * @brief CRILAYLA compression and decompression.
  *
- * CRILAYLA behavior is derived from CRI CPK tooling evidence and local
- * roundtrip validation. The current compressor/decompressor implementation is
+ * The format behavior follows CRI's CPK tools. The implementation is
  * CriCodecs work by Youjose.
  */
 
 #include "crilayla.hpp"
 
 #include "../utilities/io_endian.hpp"
+#include "../utilities/io_reader.hpp"
 
 #include <algorithm>
 #include <array>
@@ -87,6 +87,44 @@ bool write_decoded_byte(std::vector<uint8_t>& output, int64_t& write_index, uint
     return false;
 }
 
+std::expected<uint32_t, std::string> read_match_length(ReverseBitReader& reader) {
+    auto base = reader.read(2);
+    if (!base) {
+        return std::unexpected(base.error());
+    }
+    uint32_t length = *base;
+    if (length < 3) {
+        return length + 3;
+    }
+
+    auto extra = reader.read(3);
+    if (!extra) {
+        return std::unexpected(extra.error());
+    }
+    length += *extra;
+    if (length < 10) {
+        return length + 3;
+    }
+
+    extra = reader.read(5);
+    if (!extra) {
+        return std::unexpected(extra.error());
+    }
+    length += *extra;
+    if (length == 41) {
+        uint32_t extension;
+        do {
+            auto value = reader.read(8);
+            if (!value) {
+                return std::unexpected(value.error());
+            }
+            extension = *value;
+            length += extension;
+        } while (extension == 255);
+    }
+    return length + 3;
+}
+
 std::expected<std::vector<uint8_t>, std::string> decode_payload(
     std::span<const uint8_t> payload,
     std::span<const uint8_t> prefix,
@@ -127,39 +165,11 @@ std::expected<std::vector<uint8_t>, std::string> decode_payload(
         }
         const uint32_t offset = *offset_result;
 
-        auto length_result = reader.read(2);
+        auto length_result = read_match_length(reader);
         if (!length_result) {
             return std::unexpected(length_result.error());
         }
         uint32_t length = *length_result;
-
-        if (length == 3) {
-            auto extra_length = reader.read(3);
-            if (!extra_length) {
-                return std::unexpected(extra_length.error());
-            }
-            length += *extra_length;
-            if (length == 10) {
-                extra_length = reader.read(5);
-                if (!extra_length) {
-                    return std::unexpected(extra_length.error());
-                }
-                length += *extra_length;
-                if (length == 41) {
-                    uint32_t extra = 0;
-                    do {
-                        auto extra_result = reader.read(8);
-                        if (!extra_result) {
-                            return std::unexpected(extra_result.error());
-                        }
-                        extra = *extra_result;
-                        length += extra;
-                    } while (extra == 255);
-                }
-            }
-        }
-
-        length += 3;
         // Offsets are relative to the current backwards write position.
         int64_t read_index = write_index + static_cast<int64_t>(offset) + 3;
         while (length > 0) {
@@ -194,58 +204,11 @@ bool spans_equal(std::span<const uint8_t> bytes, uint32_t lhs, uint32_t rhs, uin
     );
 }
 
-class ForwardBitWriter {
-public:
-    explicit ForwardBitWriter(std::span<uint8_t> bytes) : m_bytes(bytes) {}
-
-    bool write(uint32_t bit_width, uint32_t value) {
-        if (bit_width == 0) {
-            return true;
-        }
-        if (bit_width > 32 || m_bit_count + bit_width > 32) {
-            return false;
-        }
-
-        m_bit_data |= value << (32u - m_bit_count - bit_width);
-        m_bit_count += bit_width;
-
-        while (m_bit_count >= 8) {
-            if (m_index >= m_bytes.size()) {
-                return false;
-            }
-            m_bytes[m_index++] = static_cast<uint8_t>(m_bit_data >> 24u);
-            m_bit_data <<= 8u;
-            m_bit_count -= 8u;
-        }
-
-        return true;
-    }
-
-    bool flush() {
-        const uint32_t bytes_to_write = (m_bit_count + 7u) / 8u;
-        for (uint32_t i = 0; i < bytes_to_write; ++i) {
-            if (m_index >= m_bytes.size()) {
-                return false;
-            }
-            m_bytes[m_index++] = static_cast<uint8_t>(m_bit_data >> 24u);
-            m_bit_data <<= 8u;
-        }
-
-        m_bit_data = 0;
-        m_bit_count = 0;
-        return true;
-    }
-
-    [[nodiscard]] uint32_t bytes_written() const {
-        return static_cast<uint32_t>(m_index);
-    }
-
-private:
-    std::span<uint8_t> m_bytes;
-    size_t m_index = 0;
-    uint32_t m_bit_data = 0;
-    uint32_t m_bit_count = 0;
-};
+bool write_bits(io::bit_writer& writer, uint32_t width, uint32_t value) {
+    const size_t position = writer.position();
+    writer.write(value, static_cast<int>(width));
+    return writer.position() == position + width;
+}
 
 struct MatchResult {
     uint32_t position = 0;
@@ -269,11 +232,7 @@ public:
         }
     }
 
-    void set_window_low(uint32_t window_low) {
-        m_window_low = window_low;
-    }
-
-    MatchResult find(uint32_t position) const {
+    MatchResult find(uint32_t position, uint32_t window_low) const {
         MatchResult best;
         const uint32_t bucket = hash_triplet(m_bytes, position);
 
@@ -281,14 +240,14 @@ public:
         // brute-force search over the entire 0x2002-byte window.
         for (int32_t node_index = m_heads[bucket]; node_index >= 0; node_index = m_nodes[static_cast<size_t>(node_index)].next) {
             const uint32_t candidate = m_nodes[static_cast<size_t>(node_index)].position;
-            if (candidate < m_window_low || position - candidate < 3u) {
+            if (candidate < window_low || position - candidate < 3u) {
                 continue;
             }
 
-            uint32_t max_length = static_cast<uint32_t>(m_bytes.size()) - position;
-            if (max_length >= hash_window_size || max_length >= max_general_match_length) {
-                max_length = max_general_match_length;
-            }
+            const uint32_t max_length = std::min(
+                static_cast<uint32_t>(m_bytes.size()) - position,
+                max_general_match_length
+            );
 
             if (m_bytes[candidate] != m_bytes[position]) {
                 continue;
@@ -312,7 +271,7 @@ public:
         return best;
     }
 
-    void insert(uint32_t position) {
+    void insert(uint32_t position, uint32_t window_low) {
         const uint32_t bucket = hash_triplet(m_bytes, position);
         uint32_t carried = position;
         int32_t last = -1;
@@ -342,11 +301,11 @@ public:
             }
         }
 
-        if (depth >= max_bucket_depth || carried <= m_window_low) {
+        if (depth >= max_bucket_depth || carried <= window_low) {
             return;
         }
 
-        const int32_t new_node = allocate_node();
+        const int32_t new_node = allocate_node(window_low);
         if (new_node < 0) {
             return;
         }
@@ -360,9 +319,9 @@ public:
     }
 
 private:
-    int32_t allocate_node() {
+    int32_t allocate_node(uint32_t window_low) {
         if (m_free_nodes.empty()) {
-            prune_old_nodes();
+            prune_old_nodes(window_low);
         }
         if (m_free_nodes.empty()) {
             return -1;
@@ -378,13 +337,13 @@ private:
         m_free_nodes.push_back(node_index);
     }
 
-    void prune_old_nodes() {
+    void prune_old_nodes(uint32_t window_low) {
         for (uint32_t bucket = 0; bucket < hash_bucket_count; ++bucket) {
             int32_t* link = &m_heads[static_cast<size_t>(bucket)];
             while (*link >= 0) {
                 const int32_t node_index = *link;
                 HashNode& node = m_nodes[static_cast<size_t>(node_index)];
-                if (node.position < m_window_low) {
+                if (node.position < window_low) {
                     *link = node.next;
                     recycle_node(node_index);
                     continue;
@@ -395,51 +354,50 @@ private:
     }
 
     std::span<const uint8_t> m_bytes;
-    uint32_t m_window_low = 0;
     std::vector<int32_t> m_heads;
     std::vector<HashNode> m_nodes;
     std::vector<int32_t> m_free_nodes;
 };
 
-bool encode_match_length(ForwardBitWriter& writer, uint32_t length) {
+bool encode_match_length(io::bit_writer& writer, uint32_t length) {
     // Match lengths are stored as length-3 using the native 2/3/5/8/+255 tiers.
     uint32_t encoded = length - 3u;
     if (encoded < 3u) {
-        return writer.write(2, encoded);
+        return write_bits(writer, 2, encoded);
     }
-    if (!writer.write(2, 3u)) {
+    if (!write_bits(writer, 2, 3u)) {
         return false;
     }
 
     if (encoded < 10u) {
-        return writer.write(3, encoded - 3u);
+        return write_bits(writer, 3, encoded - 3u);
     }
-    if (!writer.write(3, 7u)) {
+    if (!write_bits(writer, 3, 7u)) {
         return false;
     }
 
     if (encoded < 41u) {
-        return writer.write(5, encoded - 10u);
+        return write_bits(writer, 5, encoded - 10u);
     }
-    if (!writer.write(5, 31u)) {
+    if (!write_bits(writer, 5, 31u)) {
         return false;
     }
 
     if (encoded < 296u) {
-        return writer.write(8, encoded - 41u);
+        return write_bits(writer, 8, encoded - 41u);
     }
-    if (!writer.write(8, 255u)) {
+    if (!write_bits(writer, 8, 255u)) {
         return false;
     }
 
     encoded -= 296u;
     while (encoded >= 255u) {
-        if (!writer.write(8, 255u)) {
+        if (!write_bits(writer, 8, 255u)) {
             return false;
         }
         encoded -= 255u;
     }
-    return writer.write(8, encoded);
+    return write_bits(writer, 8, encoded);
 }
 
 std::expected<uint32_t, std::string> encode_body(
@@ -448,7 +406,7 @@ std::expected<uint32_t, std::string> encode_body(
 ) {
     // The core encoder operates on the reversed post-prefix body so that the
     // final payload can still be decoded backwards by the stock Layla decoder.
-    ForwardBitWriter writer(inner_block.subspan(header_size));
+    io::bit_writer writer(inner_block.subspan(header_size));
     HashMatchState state(reversed_body);
 
     const uint32_t body_size = static_cast<uint32_t>(reversed_body.size());
@@ -456,11 +414,9 @@ std::expected<uint32_t, std::string> encode_body(
     uint32_t position = 0;
 
     while (position < search_limit) {
-        state.set_window_low(position > hash_window_size ? position - hash_window_size : 0u);
+        const uint32_t window_low = position > hash_window_size ? position - hash_window_size : 0u;
 
         uint32_t consumed = 0;
-        bool encoded = false;
-
         if (position >= 3u && position + 16u < search_limit) {
             const uint8_t repeated = reversed_body[position];
             uint32_t run_probe = position - 3u;
@@ -480,10 +436,9 @@ std::expected<uint32_t, std::string> encode_body(
                     ++run_length;
                 }
 
-                encoded = writer.write(1, 1u) &&
-                    writer.write(13, 0u) &&
-                    encode_match_length(writer, run_length);
-                if (!encoded) {
+                if (!write_bits(writer, 1, 1u) ||
+                    !write_bits(writer, 13, 0u) ||
+                    !encode_match_length(writer, run_length)) {
                     return std::unexpected("CRILAYLA encoder buffer overflow");
                 }
                 consumed = run_length;
@@ -491,10 +446,10 @@ std::expected<uint32_t, std::string> encode_body(
         }
 
         if (consumed == 0) {
-            MatchResult match = state.find(position);
+            MatchResult match = state.find(position, window_low);
             if (match.length == 0) {
-                encoded = writer.write(1, 0u) && writer.write(8, reversed_body[position]);
-                if (!encoded) {
+                if (!write_bits(writer, 1, 0u) ||
+                    !write_bits(writer, 8, reversed_body[position])) {
                     return std::unexpected("CRILAYLA encoder buffer overflow");
                 }
                 consumed = 1;
@@ -503,10 +458,9 @@ std::expected<uint32_t, std::string> encode_body(
                 const uint32_t offset = position - match.position - 3u;
                 // General matches use a 13-bit offset and are capped to 0xB20
                 // bytes exactly like the native path in CpkMaker.dll.
-                encoded = writer.write(1, 1u) &&
-                    writer.write(13, offset) &&
-                    encode_match_length(writer, length);
-                if (!encoded) {
+                if (!write_bits(writer, 1, 1u) ||
+                    !write_bits(writer, 13, offset) ||
+                    !encode_match_length(writer, length)) {
                     return std::unexpected("CRILAYLA encoder buffer overflow");
                 }
                 consumed = length;
@@ -515,26 +469,24 @@ std::expected<uint32_t, std::string> encode_body(
 
         const uint32_t next_position = position + consumed;
         while (position < next_position) {
-            state.set_window_low(position > hash_window_size ? position - hash_window_size : 0u);
             if (position < search_limit) {
-                state.insert(position);
+                state.insert(
+                    position,
+                    position > hash_window_size ? position - hash_window_size : 0u
+                );
             }
             ++position;
         }
     }
 
     while (position < body_size) {
-        if (!writer.write(1, 0u) || !writer.write(8, reversed_body[position])) {
+        if (!write_bits(writer, 1, 0u) || !write_bits(writer, 8, reversed_body[position])) {
             return std::unexpected("CRILAYLA encoder buffer overflow");
         }
         ++position;
     }
 
-    if (!writer.flush()) {
-        return std::unexpected("CRILAYLA encoder buffer overflow");
-    }
-
-    return writer.bytes_written();
+    return static_cast<uint32_t>((writer.position() + 7u) / 8u);
 }
 
 uint32_t align_payload_size(uint32_t raw_size) {

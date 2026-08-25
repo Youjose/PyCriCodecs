@@ -2,9 +2,7 @@
  * @file cpk_reader.cpp
  * @brief CPK archive reader.
  *
- * Parsing behavior is checked against official CRI CPK Maker outputs,
- * UTF-backed section layouts, and CRILAYLA-compressed sample data. C++23
- * reader implementation by Youjose.
+ * C++23 reader implementation by Youjose.
  */
 
 #include "cpk_container.hpp"
@@ -29,7 +27,6 @@ namespace cricodecs::cpk {
 
 namespace {
 
-constexpr uint64_t root_chunk_size = 0x800;
 constexpr uint32_t chunk_encrypted_flag = 0xFF;
 
 using util::align_up;
@@ -162,15 +159,6 @@ std::expected<T, std::string> get_required_unsigned_at(
     return **value;
 }
 
-template<typename T>
-std::expected<T, std::string> get_required_unsigned(
-    const utf::UtfTable& table,
-    uint32_t row,
-    std::string_view column_name
-) {
-    return get_required_unsigned_at<T>(table, row, table.find_column(column_name), column_name);
-}
-
 std::expected<std::string, std::string> get_optional_string_at(
     const utf::UtfTable& table,
     uint32_t row,
@@ -220,15 +208,6 @@ std::expected<std::string, std::string> decode_cri_string(
     return *decoded;
 }
 
-void decrypt_utf_payload(std::vector<uint8_t>& payload) {
-    uint64_t m = 0x655F;
-    constexpr uint64_t t = 0x4115;
-    for (auto& byte : payload) {
-        byte ^= static_cast<uint8_t>(m & 0xFF);
-        m = (m * t) & 0xFFFFFFFFull;
-    }
-}
-
 std::filesystem::path with_appended_suffix(
     const std::filesystem::path& path,
     std::string_view suffix
@@ -267,14 +246,6 @@ std::filesystem::path disambiguate_output_path(
     return indexed_path;
 }
 
-std::expected<utf::UtfTable, std::string> load_nested_utf(std::span<const uint8_t> data) {
-    auto table = utf::UtfTable::load(data);
-    if (!table) {
-        return std::unexpected(table.error());
-    }
-    return *table;
-}
-
 CpkPreset decode_declared_preset(uint32_t raw_mode) {
     switch (raw_mode) {
         case 0:
@@ -294,19 +265,22 @@ CpkPreset decode_declared_preset(uint32_t raw_mode) {
     }
 }
 
-std::expected<CpkMode, std::string> detect_layout_mode(bool has_toc, bool has_itoc, bool has_gtoc) {
-    if (has_toc) {
-        return has_itoc
-            ? (has_gtoc ? CpkMode::Mode3 : CpkMode::Mode2)
-            : CpkMode::Mode1;
-    }
-    if (has_itoc) {
-        return CpkMode::Mode0;
-    }
-    return std::unexpected("CPK archive has neither TOC nor ITOC");
+template<typename T>
+void move_element(std::vector<T>& values, size_t from, size_t to) {
+    auto value = std::move(values[from]);
+    values.erase(values.begin() + static_cast<std::ptrdiff_t>(from));
+    values.insert(values.begin() + static_cast<std::ptrdiff_t>(to), std::move(value));
 }
 
 } // namespace
+
+void Cpk::crypt_utf_payload(std::span<uint8_t> payload) {
+    uint64_t key = 0x655F;
+    for (auto& byte : payload) {
+        byte ^= static_cast<uint8_t>(key);
+        key = (key * 0x4115) & 0xFFFFFFFFull;
+    }
+}
 
 std::expected<Cpk, std::string> Cpk::load(
     const std::filesystem::path& path,
@@ -347,10 +321,9 @@ std::expected<Cpk, std::string> Cpk::load(
 Cpk Cpk::create(const CpkOptions& options) {
     Cpk archive;
     archive.m_options = options;
-    archive.m_align = options.align;
-    archive.m_preset = options.preset;
-    archive.m_has_declared_preset = options.preset != CpkPreset::Custom;
-    archive.m_declared_preset = options.preset;
+    if (options.preset != CpkPreset::Custom) {
+        archive.m_declared_preset = options.preset;
+    }
     archive.m_dirty = true;
     return archive;
 }
@@ -366,14 +339,10 @@ std::expected<void, std::string> Cpk::load_from_path(const std::filesystem::path
 }
 
 std::expected<void, std::string> Cpk::load_from_bytes(std::span<const uint8_t> data) {
-    return load_owned_bytes(std::vector<uint8_t>(data.begin(), data.end()));
+    return load_from_bytes(std::vector<uint8_t>(data.begin(), data.end()));
 }
 
 std::expected<void, std::string> Cpk::load_from_bytes(std::vector<uint8_t>&& data) {
-    return load_owned_bytes(std::move(data));
-}
-
-std::expected<void, std::string> Cpk::load_owned_bytes(std::vector<uint8_t>&& data) {
     m_source_path.clear();
     m_reader = io::reader{};
     m_owned_archive_bytes = std::move(data);
@@ -389,19 +358,7 @@ void Cpk::add_file(
     bool compress,
     std::optional<uint32_t> id
 ) {
-    CpkEntry entry;
-    normalize_entry_path(entry, cpk_path);
-    entry.id = id.value_or(0);
-    entry.request_compress = compress;
-    entry.is_compressed = compress;
-
-    m_files.push_back(std::move(entry));
-    EntrySource source;
-    source.kind = EntrySourceKind::FilePath;
-    source.path = local_path;
-    source.explicit_id = id;
-    m_sources.push_back(std::move(source));
-    m_dirty = true;
+    add_source(EntrySource{local_path, id}, cpk_path, compress);
 }
 
 void Cpk::add_bytes(
@@ -410,17 +367,15 @@ void Cpk::add_bytes(
     bool compress,
     std::optional<uint32_t> id
 ) {
+    add_source(EntrySource{std::vector<uint8_t>(bytes.begin(), bytes.end()), id}, cpk_path, compress);
+}
+
+void Cpk::add_source(EntrySource source, const std::string& cpk_path, bool compress) {
     CpkEntry entry;
     normalize_entry_path(entry, cpk_path);
-    entry.id = id.value_or(0);
+    entry.id = source.explicit_id.value_or(0);
     entry.request_compress = compress;
     entry.is_compressed = compress;
-
-    EntrySource source;
-    source.kind = EntrySourceKind::OwnedBytes;
-    source.bytes.assign(bytes.begin(), bytes.end());
-    source.explicit_id = id;
-
     m_files.push_back(std::move(entry));
     m_sources.push_back(std::move(source));
     m_dirty = true;
@@ -444,12 +399,8 @@ std::expected<void, std::string> Cpk::move_file(size_t from_index, size_t to_ind
         return {};
     }
 
-    auto file = std::move(m_files[from_index]);
-    auto source = std::move(m_sources[from_index]);
-    m_files.erase(m_files.begin() + static_cast<std::ptrdiff_t>(from_index));
-    m_sources.erase(m_sources.begin() + static_cast<std::ptrdiff_t>(from_index));
-    m_files.insert(m_files.begin() + static_cast<std::ptrdiff_t>(to_index), std::move(file));
-    m_sources.insert(m_sources.begin() + static_cast<std::ptrdiff_t>(to_index), std::move(source));
+    move_element(m_files, from_index, to_index);
+    move_element(m_sources, from_index, to_index);
     m_dirty = true;
     return {};
 }
@@ -512,20 +463,7 @@ std::expected<void, std::string> Cpk::replace_file(
     const std::filesystem::path& local_path,
     std::optional<bool> compress
 ) {
-    if (index >= m_files.size()) {
-        return std::unexpected("CPK file index out of range");
-    }
-    auto& entry = m_files[index];
-    auto& source = m_sources[index];
-    source = EntrySource{};
-    source.kind = EntrySourceKind::FilePath;
-    source.path = local_path;
-    source.explicit_id = entry.id;
-    if (compress.has_value()) {
-        entry.request_compress = *compress;
-    }
-    m_dirty = true;
-    return {};
+    return replace_source(index, EntrySource{local_path, std::nullopt}, compress);
 }
 
 std::expected<void, std::string> Cpk::replace_bytes(
@@ -533,15 +471,24 @@ std::expected<void, std::string> Cpk::replace_bytes(
     std::span<const uint8_t> bytes,
     std::optional<bool> compress
 ) {
+    return replace_source(
+        index,
+        EntrySource{std::vector<uint8_t>(bytes.begin(), bytes.end()), std::nullopt},
+        compress
+    );
+}
+
+std::expected<void, std::string> Cpk::replace_source(
+    size_t index,
+    EntrySource source,
+    std::optional<bool> compress
+) {
     if (index >= m_files.size()) {
         return std::unexpected("CPK file index out of range");
     }
     auto& entry = m_files[index];
-    auto& source = m_sources[index];
-    source = EntrySource{};
-    source.kind = EntrySourceKind::OwnedBytes;
     source.explicit_id = entry.id;
-    source.bytes.assign(bytes.begin(), bytes.end());
+    m_sources[index] = std::move(source);
     if (compress.has_value()) {
         entry.request_compress = *compress;
     }
@@ -612,19 +559,7 @@ std::expected<void, std::string> Cpk::write_entry_to_file(
         }
     }
 
-    io::writer writer;
-    if (auto result = writer.open(output_path); !result) {
-        return std::unexpected("CPK extract failed: could not open output: " + output_path.string());
-    }
-
-    if (auto result = writer.write(output_bytes); !result) {
-        return std::unexpected("CPK extract failed: could not write output: " + output_path.string());
-    }
-
-    if (auto result = writer.close(); !result) {
-        return std::unexpected("CPK extract failed: could not finalize output: " + output_path.string());
-    }
-    return {};
+    return io::write_file_bytes(output_path, output_bytes, "CPK extract failed");
 }
 
 std::expected<std::vector<uint8_t>, std::string> Cpk::file_bytes(size_t index) const {
@@ -634,21 +569,18 @@ std::expected<std::vector<uint8_t>, std::string> Cpk::file_bytes(size_t index) c
 
     const auto& source = m_sources[index];
     const auto& entry = m_files[index];
-    switch (source.kind) {
-        case EntrySourceKind::Archive:
-            return extract_to_memory(entry);
-        case EntrySourceKind::FilePath: {
-            io::reader reader;
-            if (auto result = reader.open(source.path); !result) {
-                return std::unexpected("CPK entry load failed: could not open input file: " + source.path.string());
-            }
-            const auto data = reader.data();
-            return std::vector<uint8_t>(data.begin(), data.end());
-        }
-        case EntrySourceKind::OwnedBytes:
-            return source.bytes;
+    if (std::holds_alternative<ArchiveSource>(source.data)) {
+        return extract_to_memory(entry);
     }
-    return std::unexpected("CPK entry load failed: unsupported entry source");
+    if (const auto* path = std::get_if<std::filesystem::path>(&source.data)) {
+        io::reader reader;
+        if (auto result = reader.open(*path); !result) {
+            return std::unexpected("CPK entry load failed: could not open input file: " + path->string());
+        }
+        const auto data = reader.data();
+        return std::vector<uint8_t>(data.begin(), data.end());
+    }
+    return std::get<std::vector<uint8_t>>(source.data);
 }
 
 std::expected<void, std::string> Cpk::extract(
@@ -692,6 +624,11 @@ CpkEntry& Cpk::edit_file(size_t index) {
     return m_files.at(index);
 }
 
+uint64_t Cpk::content_offset() const {
+    auto offset = get_optional_unsigned<uint64_t>(m_cpk_header, 0, "ContentOffset");
+    return offset ? offset->value_or(0) : 0;
+}
+
 CpkOptions& Cpk::edit_options() noexcept {
     m_dirty = true;
     return m_options;
@@ -713,18 +650,7 @@ std::expected<void, std::string> Cpk::parse() {
     m_gtoc = utf::UtfTable{};
     m_etoc = utf::UtfTable{};
 
-    m_has_declared_preset = false;
-    m_declared_preset = CpkPreset::Custom;
-    m_preset = CpkPreset::Custom;
-    m_layout_mode = CpkMode::Mode1;
-    m_content_offset = 0;
-    m_align = 0x800;
-
-    m_cpk_header_storage.clear();
-    m_toc_storage.clear();
-    m_itoc_storage.clear();
-    m_gtoc_storage.clear();
-    m_etoc_storage.clear();
+    m_declared_preset.reset();
     m_files.clear();
     m_sources.clear();
 
@@ -739,33 +665,32 @@ std::expected<void, std::string> Cpk::parse() {
     if (!cpk_header) {
         return std::unexpected(cpk_header.error());
     }
-    m_cpk_header_storage = std::move(cpk_header->owned_payload);
-    m_cpk_header = std::move(cpk_header->table);
+    m_cpk_header = std::move(*cpk_header);
 
-    if (auto content_offset = get_optional_unsigned<uint64_t>(m_cpk_header, 0, "ContentOffset"); !content_offset) {
-        return std::unexpected(content_offset.error());
-    } else if (content_offset->has_value()) {
-        m_content_offset = **content_offset;
+    uint64_t content_offset = 0;
+    if (auto offset = get_optional_unsigned<uint64_t>(m_cpk_header, 0, "ContentOffset"); !offset) {
+        return std::unexpected(offset.error());
+    } else {
+        content_offset = offset->value_or(0);
     }
 
+    uint16_t alignment = 0x800;
     if (auto align = get_optional_unsigned<uint16_t>(m_cpk_header, 0, "Align"); !align) {
         return std::unexpected(align.error());
     } else if (align->has_value() && **align != 0) {
-        m_align = **align;
+        alignment = **align;
     }
 
     if (auto declared_preset = get_optional_unsigned<uint32_t>(m_cpk_header, 0, "CpkMode"); !declared_preset) {
         return std::unexpected(declared_preset.error());
     } else if (declared_preset->has_value()) {
-        m_has_declared_preset = true;
         m_declared_preset = decode_declared_preset(**declared_preset);
     }
 
     auto maybe_load_chunk = [this](std::string_view offset_name,
                                    std::string_view size_name,
                                    std::string_view expected_magic,
-                                   utf::UtfTable& destination,
-                                   std::vector<uint8_t>& storage) -> std::expected<void, std::string> {
+                                   utf::UtfTable& destination) -> std::expected<void, std::string> {
         auto offset = get_optional_unsigned<uint64_t>(m_cpk_header, 0, offset_name);
         if (!offset) {
             return std::unexpected(offset.error());
@@ -785,44 +710,39 @@ std::expected<void, std::string> Cpk::parse() {
         if (!chunk) {
             return std::unexpected(chunk.error());
         }
-        storage = std::move(chunk->owned_payload);
-        destination = std::move(chunk->table);
+        destination = std::move(*chunk);
         return {};
     };
 
-    if (auto result = maybe_load_chunk("TocOffset", "TocSize", "TOC ", m_toc, m_toc_storage); !result) {
+    if (auto result = maybe_load_chunk("TocOffset", "TocSize", "TOC ", m_toc); !result) {
         return std::unexpected(result.error());
     }
-    if (auto result = maybe_load_chunk("ItocOffset", "ItocSize", "ITOC", m_itoc, m_itoc_storage); !result) {
+    if (auto result = maybe_load_chunk("ItocOffset", "ItocSize", "ITOC", m_itoc); !result) {
         return std::unexpected(result.error());
     }
-    if (auto result = maybe_load_chunk("GtocOffset", "GtocSize", "GTOC", m_gtoc, m_gtoc_storage); !result) {
+    if (auto result = maybe_load_chunk("GtocOffset", "GtocSize", "GTOC", m_gtoc); !result) {
         return std::unexpected(result.error());
     }
-    if (auto result = maybe_load_chunk("EtocOffset", "EtocSize", "ETOC", m_etoc, m_etoc_storage); !result) {
-        return std::unexpected(result.error());
-    }
-
-    auto layout_mode = detect_layout_mode(has_toc(), has_itoc(), has_gtoc());
-    if (!layout_mode) {
-        return std::unexpected(layout_mode.error());
-    }
-    m_layout_mode = *layout_mode;
-    m_preset = preset_from_chunks(has_toc(), has_itoc(), has_gtoc(), has_etoc());
-
-    if (auto result = populate_file_entries(); !result) {
+    if (auto result = maybe_load_chunk("EtocOffset", "EtocSize", "ETOC", m_etoc); !result) {
         return std::unexpected(result.error());
     }
 
+    if (!has_toc() && !has_itoc()) {
+        return std::unexpected("CPK archive has neither TOC nor ITOC");
+    }
     auto encoding = m_options.encoding;
     m_options = {};
     m_options.encoding = std::move(encoding);
-    m_options.preset = m_has_declared_preset ? m_declared_preset : m_preset;
+    m_options.preset = m_declared_preset.value_or(preset());
     m_options.enable_toc = has_toc();
     m_options.enable_itoc = has_itoc();
     m_options.enable_gtoc = has_gtoc();
     m_options.enable_etoc = has_etoc();
-    m_options.align = m_align;
+    m_options.align = alignment;
+
+    if (auto result = populate_file_entries(content_offset); !result) {
+        return std::unexpected(result.error());
+    }
 
     auto enable_toc_crc = get_optional_unsigned<uint16_t>(m_cpk_header, 0, "EnableTocCrc");
     if (!enable_toc_crc) {
@@ -843,7 +763,7 @@ std::expected<void, std::string> Cpk::parse() {
     if (!tver) {
         return std::unexpected(tver.error());
     }
-    m_options.tver = tver->empty() ? default_tver(m_options.preset) : *tver;
+    m_options.tver = tver->empty() ? default_tool_version : std::string_view(*tver);
 
     auto comment = get_optional_string(m_cpk_header, 0, "Comment");
     if (!comment) {
@@ -863,7 +783,7 @@ std::expected<void, std::string> Cpk::parse() {
     return {};
 }
 
-std::expected<Cpk::LoadedUtfChunk, std::string> Cpk::load_chunk_utf(
+std::expected<utf::UtfTable, std::string> Cpk::load_chunk_utf(
     uint64_t offset,
     uint64_t declared_chunk_size,
     std::string_view expected_magic
@@ -900,28 +820,15 @@ std::expected<Cpk::LoadedUtfChunk, std::string> Cpk::load_chunk_utf(
     );
 
     if (enc_flag != chunk_encrypted_flag) {
-        LoadedUtfChunk chunk;
-        chunk.owned_payload.assign(payload.begin(), payload.end());
-        decrypt_utf_payload(chunk.owned_payload);
-
-        auto table = utf::UtfTable::load(std::span<const uint8_t>(chunk.owned_payload));
-        if (!table) {
-            return std::unexpected(table.error());
-        }
-        chunk.table = std::move(*table);
-        return chunk;
+        std::vector<uint8_t> decrypted(payload.begin(), payload.end());
+        crypt_utf_payload(decrypted);
+        return utf::UtfTable::load(std::move(decrypted));
     }
 
-    auto table = utf::UtfTable::load(payload);
-    if (!table) {
-        return std::unexpected(table.error());
-    }
-    LoadedUtfChunk chunk;
-    chunk.table = std::move(*table);
-    return chunk;
+    return utf::UtfTable::load(payload);
 }
 
-std::expected<void, std::string> Cpk::populate_file_entries() {
+std::expected<void, std::string> Cpk::populate_file_entries(uint64_t content_offset) {
     m_files.clear();
     m_sources.clear();
 
@@ -1002,11 +909,8 @@ std::expected<void, std::string> Cpk::populate_file_entries() {
 
             entry.is_compressed = entry.extract_size > entry.file_size;
             entry.request_compress = entry.is_compressed;
-            EntrySource source;
-            source.kind = EntrySourceKind::Archive;
-            source.explicit_id = entry.id;
             m_files.push_back(std::move(entry));
-            m_sources.push_back(std::move(source));
+            m_sources.push_back({ArchiveSource{}, m_files.back().id});
         }
 
         if (has_itoc() &&
@@ -1055,11 +959,11 @@ std::expected<void, std::string> Cpk::populate_file_entries() {
         return std::unexpected(data_h_span.error());
     }
 
-    auto data_l = load_nested_utf(*data_l_span);
+    auto data_l = utf::UtfTable::load(*data_l_span);
     if (!data_l) {
         return std::unexpected(data_l.error());
     }
-    auto data_h = load_nested_utf(*data_h_span);
+    auto data_h = utf::UtfTable::load(*data_h_span);
     if (!data_h) {
         return std::unexpected(data_h.error());
     }
@@ -1092,11 +996,8 @@ std::expected<void, std::string> Cpk::populate_file_entries() {
             entry.is_compressed = entry.extract_size > entry.file_size;
             entry.request_compress = entry.is_compressed;
 
-            EntrySource source;
-            source.kind = EntrySourceKind::Archive;
-            source.explicit_id = entry.id;
             m_files.push_back(std::move(entry));
-            m_sources.push_back(std::move(source));
+            m_sources.push_back({ArchiveSource{}, m_files.back().id});
         }
 
         return {};
@@ -1124,12 +1025,12 @@ std::expected<void, std::string> Cpk::populate_file_entries() {
     m_files = std::move(sorted_files);
     m_sources = std::move(sorted_sources);
 
-    uint64_t running_offset = m_content_offset;
+    uint64_t running_offset = content_offset;
     for (size_t index = 0; index < m_files.size(); ++index) {
         auto& entry = m_files[index];
         entry.toc_index = static_cast<uint32_t>(index);
         entry.file_offset = running_offset;
-        running_offset += align_up(entry.file_size, m_align);
+        running_offset += align_up(entry.file_size, m_options.align);
     }
 
     return {};

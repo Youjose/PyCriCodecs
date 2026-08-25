@@ -17,24 +17,12 @@ namespace cricodecs::hca {
 
 namespace {
 
-using io::bit_reader;
+using io::read_be;
 using io::write_be;
 
-void transform_frame_payload(const std::span<const uint8_t, 256> table, uint8_t* data, size_t size) noexcept {
-    for (size_t i = 2; i + 2 < size; ++i) {
-        data[i] = table[data[i]];
-    }
-}
-
-consteval uint32_t masked_chunk_id(uint32_t clear_id) noexcept {
+constexpr uint32_t masked_chunk_id(uint32_t clear_id) noexcept {
     const uint32_t zero_lanes = ((clear_id - 0x01010101u) & ~clear_id & 0x80808080u);
     return clear_id ^ (zero_lanes ^ 0x80808080u);
-}
-
-template <uint32_t ClearId>
-void write_target_chunk_id(uint8_t* chunk_id, uint16_t target_cipher_type) noexcept {
-    constexpr uint32_t masked_id = masked_chunk_id(ClearId);
-    write_be<uint32_t>(chunk_id, target_cipher_type == 0 ? ClearId : masked_id);
 }
 
 void crypt_header(uint8_t* data, size_t header_size, uint16_t cipher_type) noexcept {
@@ -42,75 +30,53 @@ void crypt_header(uint8_t* data, size_t header_size, uint16_t cipher_type) noexc
         return;
     }
 
-    bit_reader reader(data, header_size);
-    size_t remaining = header_size;
-
-    if ((reader.peek(32) & HCA_MASK) == HCA_CHUNK_ID_HCA) {
-        write_target_chunk_id<HCA_CHUNK_ID_HCA>(data + (reader.position() / 8), cipher_type);
-        reader.skip(32 + 16 + 16);
-        remaining -= 0x08;
-    }
-
-    if (remaining >= 0x10 && (reader.peek(32) & HCA_MASK) == HCA_CHUNK_ID_FMT) {
-        write_target_chunk_id<HCA_CHUNK_ID_FMT>(data + (reader.position() / 8), cipher_type);
-        reader.skip(32 + 8 + 24 + 32 + 16 + 16);
-        remaining -= 0x10;
-    }
-
-    if (remaining >= 0x10 && (reader.peek(32) & HCA_MASK) == HCA_CHUNK_ID_COMP) {
-        write_target_chunk_id<HCA_CHUNK_ID_COMP>(data + (reader.position() / 8), cipher_type);
-        reader.skip(0x10 * 8);
-        remaining -= 0x10;
-    } else if (remaining >= 0x0C && (reader.peek(32) & HCA_MASK) == HCA_CHUNK_ID_DEC) {
-        write_target_chunk_id<HCA_CHUNK_ID_DEC>(data + (reader.position() / 8), cipher_type);
-        reader.skip(0x0C * 8);
-        remaining -= 0x0C;
-    }
-
-    if (remaining >= 0x08 && (reader.peek(32) & HCA_MASK) == HCA_CHUNK_ID_VBR) {
-        write_target_chunk_id<HCA_CHUNK_ID_VBR>(data + (reader.position() / 8), cipher_type);
-        reader.skip(0x08 * 8);
-        remaining -= 0x08;
-    }
-
-    if (remaining >= 0x06 && (reader.peek(32) & HCA_MASK) == HCA_CHUNK_ID_ATH) {
-        write_target_chunk_id<HCA_CHUNK_ID_ATH>(data + (reader.position() / 8), cipher_type);
-        reader.skip(0x06 * 8);
-        remaining -= 0x06;
-    }
-
-    if (remaining >= 0x10 && (reader.peek(32) & HCA_MASK) == HCA_CHUNK_ID_LOOP) {
-        write_target_chunk_id<HCA_CHUNK_ID_LOOP>(data + (reader.position() / 8), cipher_type);
-        reader.skip(0x10 * 8);
-        remaining -= 0x10;
-    }
-
-    if (remaining >= 0x06 && (reader.peek(32) & HCA_MASK) == HCA_CHUNK_ID_CIPH) {
-        const size_t offset = reader.position() / 8;
-        write_target_chunk_id<HCA_CHUNK_ID_CIPH>(data + offset, cipher_type);
-        write_be<uint16_t>(data + offset + 4, cipher_type);
-        reader.skip(0x06 * 8);
-        remaining -= 0x06;
-    }
-
-    if (remaining >= 0x08 && (reader.peek(32) & HCA_MASK) == HCA_CHUNK_ID_RVA) {
-        write_target_chunk_id<HCA_CHUNK_ID_RVA>(data + (reader.position() / 8), cipher_type);
-        reader.skip(0x08 * 8);
-        remaining -= 0x08;
-    }
-
-    if (remaining >= 0x05 && (reader.peek(32) & HCA_MASK) == HCA_CHUNK_ID_COMM) {
-        write_target_chunk_id<HCA_CHUNK_ID_COMM>(data + (reader.position() / 8), cipher_type);
-        reader.skip(32);
-        const uint8_t comment_len = static_cast<uint8_t>(reader.read(8));
-        reader.skip(comment_len * 8);
-        remaining = remaining >= static_cast<size_t>(0x05 + comment_len)
-            ? remaining - static_cast<size_t>(0x05 + comment_len)
-            : 0;
-    }
-
-    if (remaining >= 0x04 && (reader.peek(32) & HCA_MASK) == HCA_CHUNK_ID_PAD) {
-        write_target_chunk_id<HCA_CHUNK_ID_PAD>(data + (reader.position() / 8), cipher_type);
+    const size_t payload_end = header_size - 2;
+    for (size_t offset = 0; offset + 4 <= payload_end;) {
+        const uint32_t id = read_be<uint32_t>(data + offset) & HCA_MASK;
+        size_t chunk_size = 0;
+        switch (id) {
+            case HCA_CHUNK_ID_HCA:
+                chunk_size = 8;
+                break;
+            case HCA_CHUNK_ID_FMT:
+                chunk_size = 16;
+                break;
+            case HCA_CHUNK_ID_COMP:
+                chunk_size = 16;
+                break;
+            case HCA_CHUNK_ID_DEC:
+                chunk_size = 12;
+                break;
+            case HCA_CHUNK_ID_VBR:
+                chunk_size = 8;
+                break;
+            case HCA_CHUNK_ID_ATH:
+                chunk_size = 6;
+                break;
+            case HCA_CHUNK_ID_LOOP:
+                chunk_size = 16;
+                break;
+            case HCA_CHUNK_ID_CIPH:
+                write_be<uint16_t>(data + offset + 4, cipher_type);
+                chunk_size = 6;
+                break;
+            case HCA_CHUNK_ID_RVA:
+                chunk_size = 8;
+                break;
+            case HCA_CHUNK_ID_COMM:
+                chunk_size = offset + 5 <= payload_end ? 5 + data[offset + 4] : 0;
+                break;
+            case HCA_CHUNK_ID_PAD:
+                chunk_size = payload_end - offset;
+                break;
+            default:
+                break;
+        }
+        if (chunk_size == 0 || chunk_size > payload_end - offset) {
+            break;
+        }
+        write_be<uint32_t>(data + offset, cipher_type == 0 ? id : masked_chunk_id(id));
+        offset += chunk_size;
     }
 
     write_be<uint16_t>(data + header_size - 2, tables::crc16_checksum(data, header_size - 2));
@@ -124,7 +90,7 @@ void transform_frames_in_place(
     const uint32_t available_frames = info.available_frame_count(hca_data.size());
     for (uint32_t frame_index = 0; frame_index < available_frames; ++frame_index) {
         auto* frame = frame_data + frame_index * info.codec.frame_size;
-        transform_frame_payload(table, frame, info.codec.frame_size);
+        cipher::transform_frame(table, {frame, info.codec.frame_size});
         write_be<uint16_t>(frame + info.codec.frame_size - 2, tables::crc16_checksum(frame, info.codec.frame_size - 2));
     }
 }

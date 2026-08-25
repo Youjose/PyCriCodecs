@@ -638,7 +638,7 @@ void print_usage(std::ostream& out, bool show_identity) {
         "      --cue            resolve, deduplicate, and render static cue paths instead of flat AWB waveforms\n"
         "      --cue --list     list unique cue-plan indexes; add --index N to show its blocks\n"
         "                        selector names/values distinguish different plans sharing one cue name\n"
-        "      --cue-loop-count N  loop each authored infinite audio block N times (default 0)\n"
+        "      --cue-loop-count N  loop each infinite audio block N times (default 0)\n"
         "      --cue-block-loop-count P=N  set loops for block position P; requires --index\n"
         "      --cue-stop-at-loop  stop after the first rendered infinite block instead of advancing\n"
         "      --cue-include-empty-holds  include waveform-less infinite holds (omitted by default)\n"

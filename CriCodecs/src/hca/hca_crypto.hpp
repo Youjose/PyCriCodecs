@@ -153,9 +153,10 @@ inline void init_cipher(std::span<uint8_t, 256> table, uint16_t cipher_type, uin
     init_cipher(table, cipher_type, detail::apply_subkey(keycode, subkey));
 }
 
-inline void decrypt_frame(const std::span<const uint8_t, 256> table, uint8_t* data, size_t size) noexcept {
-    for (size_t i = 2; i < size - 2; i++) {
-        data[i] = table[data[i]];
+inline void transform_frame(
+    const std::span<const uint8_t, 256> table, std::span<uint8_t> frame) noexcept {
+    for (size_t i = 2; i + 2 < frame.size(); ++i) {
+        frame[i] = table[frame[i]];
     }
 }
 

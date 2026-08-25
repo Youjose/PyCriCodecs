@@ -23,15 +23,7 @@ namespace cricodecs::acb {
 
 namespace {
 
-struct ReferenceKey {
-    uint16_t type = 0;
-    uint16_t index = invalid_acb_index;
-    friend bool operator<(const ReferenceKey& lhs, const ReferenceKey& rhs) noexcept {
-        return std::tie(lhs.type, lhs.index) < std::tie(rhs.type, rhs.index);
-    }
-};
-
-struct AuthoredAwbReference {
+struct AwbReference {
     uint16_t wave_id = invalid_acb_index;
     AcbCueAwbBank bank = AcbCueAwbBank::memory;
 };
@@ -45,7 +37,7 @@ struct PendingChoice {
     std::vector<std::pair<std::string, std::string>> selector_labels;
 };
 
-std::optional<AuthoredAwbReference> authored_awb_reference(
+std::optional<AwbReference> awb_reference(
     const AcbCueWaveform& waveform) {
     const bool stream_bank = waveform.streaming != 0;
     const auto first = stream_bank
@@ -62,7 +54,7 @@ std::optional<AuthoredAwbReference> authored_awb_reference(
     if (wave_id == invalid_acb_index) {
         return std::nullopt;
     }
-    return AuthoredAwbReference{
+    return AwbReference{
         .wave_id = wave_id,
         .bank = stream_bank
             ? AcbCueAwbBank::stream
@@ -160,20 +152,6 @@ private:
                 "ACB cue plan failed: block-sequence index is out of range");
         }
         const auto& sequence = m_graph.block_sequences()[index];
-        // Individual Block.TrackIndex lists schedule audio. Top-level
-        // BlockSequence tracks carry sequence parameters in Music.acb and do
-        // not have TrackEvent rows; those parameters remain inspectable.
-        if (!sequence.track_indices.empty()) {
-            m_plan.diagnostics.push_back(
-                "top-level BlockSequence track parameters are preserved by the "
-                "graph but are not applied by the static renderer");
-        }
-        if (sequence.num_watch_actions != 0 || sequence.num_stop_actions != 0) {
-            m_plan.diagnostics.push_back(
-                "watch/stop action tracks are preserved by the graph but are not executed "
-                "by the static renderer");
-        }
-
         for (const auto& override : m_options.block_loop_overrides) {
             if (override.block_position >= sequence.block_indices.size()) {
                 return std::unexpected(
@@ -191,13 +169,13 @@ private:
                 return std::unexpected(
                     "ACB cue plan failed: block index is out of range");
             }
-            const auto& authored = m_graph.blocks()[block_index];
-            const int32_t loop_count = static_cast<int16_t>(authored.num_loops);
+            const auto& source = m_graph.blocks()[block_index];
+            const int32_t loop_count = static_cast<int16_t>(source.num_loops);
             AcbCueBlockPlan block{
                 .block_position = block_position,
                 .block_index = block_index,
-                .name = std::string(m_graph.string_value(authored.name_index)),
-                .duration_us = authored.duration_us(),
+                .name = std::string(m_graph.string_value(source.name_index)),
+                .duration_us = source.duration_us(),
                 .authored_loop_count = loop_count,
                 .render_loop_count = loop_count < 0
                     ? m_options.infinite_block_loop_count
@@ -208,16 +186,10 @@ private:
                 block.name = "block_" + std::to_string(block_index);
             }
 
-            for (const auto track_index : authored.track_indices) {
+            for (const auto track_index : source.track_indices) {
                 auto result = append_track(track_index, 0, block.clips);
                 if (!result) return result;
             }
-            if (authored.num_action_tracks != 0) {
-                m_plan.diagnostics.push_back(
-                    "block `" + block.name +
-                    "` has action tracks that are not executed by the static renderer");
-            }
-
             const auto override = std::ranges::find_if(
                 m_options.block_loop_overrides,
                 [block_position](const AcbCueBlockLoopOverride& candidate) {
@@ -227,11 +199,6 @@ private:
                 override != m_options.block_loop_overrides.end();
             if (has_override) {
                 block.render_loop_count = override->loop_count;
-                m_plan.diagnostics.push_back(
-                    "block `" + block.name + "` at position " +
-                    std::to_string(block_position) + " repeats " +
-                    std::to_string(block.render_loop_count) +
-                    " time(s) by explicit override");
             }
 
             if (loop_count < 0) {
@@ -243,24 +210,10 @@ private:
                     !has_override) {
                     block.render_loop_count = 0;
                     block.skipped_empty_hold = true;
-                    m_plan.diagnostics.push_back(
-                        "block `" + block.name +
-                        "` is an authored infinite hold with no scheduled waveform; "
-                        "the static render skips its synthesized duration");
                 } else {
                     if (empty_hold && !has_override) {
                         block.render_loop_count = 0;
                     }
-                    m_plan.diagnostics.push_back(
-                        "block `" + block.name +
-                        "` is authored with LoopNum=-1 (infinite); "
-                        "the static render repeats it " +
-                        std::to_string(block.render_loop_count) + " time(s)" +
-                        (block.forced_advance
-                             ? " and then forces the next authored block"
-                             : empty_hold
-                                 ? " without applying the global loop/stop policy"
-                                 : " and stops there"));
                 }
             }
             m_plan.blocks.push_back(std::move(block));
@@ -308,7 +261,7 @@ private:
             return std::unexpected(
                 "ACB cue plan failed: negative scheduled waveform time is unsupported");
         }
-        const ReferenceKey key{type, index};
+        const auto key = std::pair{type, index};
         if (m_active.size() >= 64 || !m_active.insert(key).second) {
             return std::unexpected(
                 "ACB cue plan failed: cyclic or excessively deep playback reference");
@@ -330,7 +283,7 @@ private:
                         .awb_stream_index = std::nullopt,
                         .awb_bank = std::nullopt,
                     };
-                    if (const auto awb = authored_awb_reference(
+                    if (const auto awb = awb_reference(
                             m_graph.waveforms()[index])) {
                         clip.awb_wave_id = awb->wave_id;
                         clip.awb_bank = awb->bank;
@@ -456,13 +409,6 @@ private:
             return append_track(
                 sequence.track_indices[*choice], start_time_us, clips);
         }
-        if (sequence.num_action_tracks != 0 ||
-            sequence.num_watch_actions != 0 ||
-            sequence.num_stop_actions != 0) {
-            m_plan.diagnostics.push_back(
-                "cue sequence action tracks are preserved by the graph but are not "
-                "executed by the static renderer");
-        }
         for (const auto track_index : sequence.track_indices) {
             auto result = append_track(track_index, start_time_us, clips);
             if (!result) return result;
@@ -493,7 +439,7 @@ private:
             }
             if (selected->mode != mode) {
                 m_choice_error =
-                    "ACB cue plan failed: runtime choice mode does not match the authored node";
+                    "ACB cue plan failed: choice mode does not match the node";
                 return std::nullopt;
             }
             if (selected->option_index < selector_labels.size()) {
@@ -503,7 +449,7 @@ private:
                     (!selected->selector_value.empty() &&
                      selected->selector_value != label.second)) {
                     m_choice_error =
-                        "ACB cue plan failed: runtime selector label does not match the authored option";
+                        "ACB cue plan failed: selector label does not match the option";
                     return std::nullopt;
                 }
             }
@@ -542,7 +488,7 @@ private:
     uint32_t m_cue_index;
     const AcbCueRenderOptions& m_options;
     AcbCuePlaybackPlan m_plan;
-    std::set<ReferenceKey> m_active;
+    std::set<std::pair<uint16_t, uint16_t>> m_active;
     std::span<const AcbCueChoiceSelection> m_choices;
     std::map<std::pair<AcbCueChoiceDomain, uint32_t>, uint32_t> m_choice_occurrences;
     std::optional<PendingChoice> m_pending_choice;
@@ -589,7 +535,9 @@ int16_t saturate_sample(int64_t sample) noexcept {
         std::numeric_limits<int16_t>::max()));
 }
 
-std::string safe_cue_name(std::string_view name) {
+} // namespace
+
+std::string sanitize_cue_filename_component(std::string_view name) {
     std::string result;
     result.reserve(name.size());
     for (const unsigned char ch : name) {
@@ -605,6 +553,8 @@ std::string safe_cue_name(std::string_view name) {
     }
     return result.empty() ? "cue" : result;
 }
+
+namespace {
 
 std::string semantic_plan_signature(
     const AcbCueGraph& graph,
@@ -772,11 +722,7 @@ static std::expected<AcbCuePlaybackPlan, std::string> resolve_plan_awb_entries(
         for (auto& clip : block.clips) {
             if (attempted.insert(clip.waveform_index).second) {
                 auto entry = acb.waveform_awb_entry(clip.waveform_index);
-                if (!entry) {
-                    plan.diagnostics.push_back(
-                        "waveform " + std::to_string(clip.waveform_index) +
-                        " AWB provenance is unresolved: " + entry.error());
-                } else {
+                if (entry) {
                     resolved.emplace(clip.waveform_index, *entry);
                 }
             }
@@ -1114,9 +1060,6 @@ std::expected<AcbRenderedCue, std::string> render_cue_plan(
     // TODO(acb-runtime): Model runtime transitions, live actions, dynamic
     // selector changes, gains, and transition curves after their ordering and
     // scheduling semantics are verified against the official runtime.
-    plan.diagnostics.push_back(
-        "waveform gain, envelopes, transition curves, and runtime selector/action "
-        "changes are not applied by the static renderer");
     return AcbRenderedCue{
         .plan = std::move(plan),
         .sample_rate = output_rate,
@@ -1163,7 +1106,7 @@ std::string cue_filename(
         result = std::to_string(cue_index + 1);
         result += '_';
     }
-    result += safe_cue_name(acb.cue_graph().cue_name(cue_index));
+    result += sanitize_cue_filename_component(acb.cue_graph().cue_name(cue_index));
     result += ".wav";
     return result;
 }

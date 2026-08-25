@@ -22,19 +22,9 @@ namespace {
 using SelectorState = std::map<std::string, std::string, std::less<>>;
 using CueSelectorMap = std::map<std::string, std::set<std::string>>;
 
-struct ReferenceKey {
-    uint16_t type = 0;
-    uint16_t index = invalid_acb_index;
-
-    friend bool operator<(const ReferenceKey& lhs, const ReferenceKey& rhs) noexcept {
-        return std::tie(lhs.type, lhs.index) < std::tie(rhs.type, rhs.index);
-    }
-};
-
 struct ControlEffects {
     SelectorState selectors;
     std::vector<uint32_t> start_cue_indices;
-    std::vector<std::string> diagnostics;
 };
 
 const AcbCueCommandStream* action_stream(
@@ -79,7 +69,7 @@ public:
 
 private:
     std::expected<void, std::string> walk_reference(uint16_t type, uint16_t index) {
-        const ReferenceKey key{type, index};
+        const auto key = std::pair{type, index};
         if (m_active.size() >= 64 || !m_active.insert(key).second) {
             return std::unexpected(
                 "ACB cue action resolution failed: cyclic or excessively deep reference");
@@ -234,10 +224,6 @@ private:
                 }
                 if (command.meaning == AcbCueCommandMeaning::set_selector_label) {
                     if (action_time_us != 0) {
-                        m_effects.diagnostics.push_back(
-                            "delayed selector action at " +
-                            std::to_string(action_time_us) +
-                            " us is not statically applied");
                         continue;
                     }
                     std::string selector;
@@ -254,27 +240,9 @@ private:
                             std::move(selector), std::move(value));
                     }
                 } else if (command.meaning == AcbCueCommandMeaning::start_action) {
-                    if (action_time_us != 0) {
-                        m_effects.diagnostics.push_back(
-                            "delayed Start action at " +
-                            std::to_string(action_time_us) +
-                            " us is not statically followed");
-                        continue;
-                    }
-                    if (action.target_type != 1) {
-                        m_effects.diagnostics.push_back(
-                            "Start action target type " +
-                            std::to_string(action.target_type) +
-                            " is not a cue target");
-                        continue;
-                    }
+                    if (action_time_us != 0 || action.target_type != 1) continue;
                     const auto target = cue_index_for_id(m_graph, action.target_id);
-                    if (!target) {
-                        m_effects.diagnostics.push_back(
-                            "Start action cue ID " +
-                            std::to_string(action.target_id) + " was not found");
-                        continue;
-                    }
+                    if (!target) continue;
                     if (!std::ranges::contains(m_effects.start_cue_indices, *target)) {
                         m_effects.start_cue_indices.push_back(*target);
                     }
@@ -304,7 +272,7 @@ private:
     const AcbCueGraph& m_graph;
     std::span<const AcbCueChoiceSelection> m_choices;
     std::map<std::pair<AcbCueChoiceDomain, uint32_t>, uint32_t> m_occurrences;
-    std::set<ReferenceKey> m_active;
+    std::set<std::pair<uint16_t, uint16_t>> m_active;
     ControlEffects m_effects;
 };
 
@@ -357,61 +325,54 @@ public:
         : m_graph(graph), m_options(options) {}
 
     std::expected<AcbCueSheetResolution, std::string> resolve() {
-        if (m_options.max_action_depth == 0) {
-            return std::unexpected(
-                "ACB cue-sheet resolution failed: max_action_depth must be greater than zero");
-        }
-        const auto initial_selectors =
-            make_selector_state(m_options.selector_values);
+        if (auto valid = validate_options(); !valid) return std::unexpected(valid.error());
+        const auto selectors = make_selector_state(m_options.selector_values);
         for (uint32_t cue_index = 0;
              cue_index < m_graph.cues().size();
              ++cue_index) {
-            std::vector<uint32_t> active;
-            auto candidates = resolve_cue(
-                cue_index, initial_selectors, active, 0);
-            if (!candidates) {
-                return std::unexpected(candidates.error());
-            }
-            if (candidates->empty()) {
-                m_result.non_playable_cues.push_back(cue_index);
-                continue;
-            }
-            for (auto& candidate : *candidates) {
-                add_candidate(cue_index, std::move(candidate));
-            }
+            if (auto resolved = resolve_into(cue_index, selectors); !resolved)
+                return std::unexpected(resolved.error());
         }
         return std::move(m_result);
     }
 
     std::expected<AcbCueSheetResolution, std::string> resolve_one(
         uint32_t cue_index) {
-        if (m_options.max_action_depth == 0) {
-            return std::unexpected(
-                "ACB cue-sheet resolution failed: max_action_depth must be greater than zero");
-        }
+        if (auto valid = validate_options(); !valid) return std::unexpected(valid.error());
         if (cue_index >= m_graph.cues().size()) {
             return std::unexpected(
                 "ACB cue-sheet resolution failed: cue index is out of range");
         }
-        const auto initial_selectors =
-            make_selector_state(m_options.selector_values);
-        std::vector<uint32_t> active;
-        auto candidates = resolve_cue(
-            cue_index, initial_selectors, active, 0);
-        if (!candidates) {
-            return std::unexpected(candidates.error());
-        }
-        if (candidates->empty()) {
-            m_result.non_playable_cues.push_back(cue_index);
-        } else {
-            for (auto& candidate : *candidates) {
-                add_candidate(cue_index, std::move(candidate));
-            }
-        }
+        const auto selectors = make_selector_state(m_options.selector_values);
+        if (auto resolved = resolve_into(cue_index, selectors); !resolved)
+            return std::unexpected(resolved.error());
         return std::move(m_result);
     }
 
 private:
+    std::expected<void, std::string> validate_options() const {
+        if (m_options.max_action_depth == 0) {
+            return std::unexpected(
+                "ACB cue-sheet resolution failed: max_action_depth must be greater than zero");
+        }
+        return {};
+    }
+
+    std::expected<void, std::string> resolve_into(
+        uint32_t cue_index,
+        const SelectorState& selectors) {
+        std::vector<uint32_t> active;
+        auto candidates = resolve_cue(cue_index, selectors, active, 0);
+        if (!candidates) return std::unexpected(candidates.error());
+        if (candidates->empty()) {
+            m_result.non_playable_cues.push_back(cue_index);
+        } else {
+            for (auto& candidate : *candidates)
+                add_candidate(cue_index, std::move(candidate));
+        }
+        return {};
+    }
+
     std::expected<std::vector<Candidate>, std::string> resolve_cue(
         uint32_t cue_index,
         const SelectorState& selectors,
@@ -457,21 +418,11 @@ private:
                 continue;
             }
             auto effects = ControlWalker(m_graph, terminal.choices).walk(cue_index);
-            if (!effects) {
-                m_result.diagnostics.push_back(effects.error());
-                continue;
-            }
-            for (auto& diagnostic : effects->diagnostics) {
-                m_result.diagnostics.push_back(std::move(diagnostic));
-            }
+            if (!effects) continue;
             if (effects->start_cue_indices.empty()) {
                 continue;
             }
             if (effects->start_cue_indices.size() > 1) {
-                m_result.diagnostics.push_back(
-                    "cue " + std::to_string(cue_index) +
-                    " has multiple immediate Start targets; simultaneous "
-                    "action composition is not implemented");
                 continue;
             }
 
@@ -528,23 +479,6 @@ private:
     std::map<std::string, size_t> m_signature_to_plan;
 };
 
-[[nodiscard]] std::string safe_cue_filename_component(std::string_view text) {
-    std::string result;
-    result.reserve(text.size());
-    for (const unsigned char ch : text) {
-        if (ch < 0x20 || ch == '/' || ch == '\\' || ch == ':' || ch == '*' ||
-            ch == '?' || ch == '"' || ch == '<' || ch == '>' || ch == '|') {
-            result.push_back('_');
-        } else {
-            result.push_back(static_cast<char>(ch));
-        }
-    }
-    while (!result.empty() && (result.back() == ' ' || result.back() == '.')) {
-        result.pop_back();
-    }
-    return result.empty() ? "cue" : result;
-}
-
 [[nodiscard]] CueSelectorMap canonical_cue_selectors(
     const AcbResolvedCuePlan& resolved) {
     CueSelectorMap selectors;
@@ -591,11 +525,7 @@ resolve_awb_provenance(
             for (auto& clip : block.clips) {
                 if (attempted.insert(clip.waveform_index).second) {
                     auto entry = acb.waveform_awb_entry(clip.waveform_index);
-                    if (!entry) {
-                        resolved.diagnostics.push_back(
-                            "waveform " + std::to_string(clip.waveform_index) +
-                            " AWB provenance is unresolved: " + entry.error());
-                    } else {
+                    if (entry) {
                         entries.emplace(clip.waveform_index, *entry);
                     }
                 }
@@ -662,7 +592,7 @@ std::vector<std::string> cue_plan_filenames(
     std::map<std::string, std::vector<size_t>> groups;
     for (size_t index = 0; index < resolution.plans.size(); ++index) {
         const auto& resolved = resolution.plans[index];
-        auto base = safe_cue_filename_component(resolved.plan.cue_name);
+        auto base = sanitize_cue_filename_component(resolved.plan.cue_name);
         groups[base].push_back(index);
         bases.push_back(std::move(base));
         selectors.push_back(canonical_cue_selectors(resolved));
@@ -751,10 +681,10 @@ std::vector<std::string> cue_plan_filenames(
                 }
                 suffixes[plan_index] += "__";
                 suffixes[plan_index] +=
-                    safe_cue_filename_component(selector_name);
+                    sanitize_cue_filename_component(selector_name);
                 suffixes[plan_index] += '-';
                 suffixes[plan_index] +=
-                    safe_cue_filename_component(*found->second.begin());
+                    sanitize_cue_filename_component(*found->second.begin());
             }
             if (!unresolved_pairs.empty() || suffixes[plan_index].empty()) {
                 suffixes[plan_index] += "__variant-";

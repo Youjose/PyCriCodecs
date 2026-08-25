@@ -4,7 +4,6 @@
  * @brief Endian-safe integer and byte helpers.
  *
  * Project-local serialization helpers used across the codec/container modules.
- * Implemented by Youjose.
  */
 
 #include <array>

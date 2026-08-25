@@ -105,12 +105,6 @@ std::vector<WaveformDistance> playback_waveform_distances(const AcbCueAssembly& 
     return rows;
 }
 
-void append_unique(std::vector<uint32_t>& rows, uint32_t value) {
-    if (std::ranges::find(rows, value) == rows.end()) {
-        rows.push_back(value);
-    }
-}
-
 uint32_t asset_key(bool memory, uint16_t id) noexcept {
     return (static_cast<uint32_t>(memory) << 16) | id;
 }
@@ -166,13 +160,13 @@ AcbCueGraph::waveform_cue_views() const {
 
         for (const auto [waveform_index, distance] : *cue_waveforms[cue_index]) {
             if (waveform_index < views.size()) {
-                append_unique(views[waveform_index].exact_cue_name_rows, name_row);
+                views[waveform_index].exact_cue_name_rows.push_back(name_row);
                 if (distance < preferred_distance[waveform_index]) {
                     preferred_distance[waveform_index] = distance;
                     views[waveform_index].preferred_cue_name_rows.clear();
                 }
                 if (distance == preferred_distance[waveform_index]) {
-                    append_unique(views[waveform_index].preferred_cue_name_rows, name_row);
+                    views[waveform_index].preferred_cue_name_rows.push_back(name_row);
                 }
             }
         }

@@ -20,7 +20,7 @@ namespace {
 using BitWriter = io::bit_writer;
 using io::write_be;
 
-void write_scalefactors(BitWriter& writer, const HcaHeader& info, const HcaChannel& channel) {
+void write_scalefactors(BitWriter& writer, const HcaHeader& info, const EncoderChannel& channel) {
     const uint8_t scalefactor_count = scalefactor_count_for_header(info, channel);
     const int delta_bits = channel.scalefactor_delta_bits;
     writer.write(delta_bits, 3);
@@ -51,7 +51,7 @@ void write_scalefactors(BitWriter& writer, const HcaHeader& info, const HcaChann
     }
 }
 
-void write_v3_intensity(BitWriter& writer, const HcaChannel& channel) {
+void write_v3_intensity(BitWriter& writer, const EncoderChannel& channel) {
     if (std::all_of(channel.intensity.begin(), channel.intensity.end(), [](uint8_t value) { return value == 7; })) {
         writer.write(15, 4);
         return;
@@ -64,7 +64,7 @@ void write_v3_intensity(BitWriter& writer, const HcaChannel& channel) {
     }
 }
 
-void write_spectra(BitWriter& writer, const HcaChannel& channel, int subframe) {
+void write_spectra(BitWriter& writer, const EncoderChannel& channel, int subframe) {
     for (uint8_t band = 0; band < channel.coded_count; ++band) {
         const uint8_t resolution = channel.resolution[band];
         if (resolution == 0) {
@@ -90,7 +90,7 @@ void write_spectra(BitWriter& writer, const HcaChannel& channel, int subframe) {
 
 } // namespace
 
-void pack_frame(HcaFrame& frame, uint8_t* buffer) {
+void pack_frame(EncoderFrame& frame, uint8_t* buffer) {
     const auto& info = frame.info;
     write_be<uint16_t>(buffer, 0xFFFF);
 

@@ -155,7 +155,6 @@ private:
     std::filesystem::path m_source_path;
     utf::UtfTable m_header;
     utf::UtfTable m_sound_element;
-    std::span<const uint8_t> m_sound_element_source;
     text::EncodingOptions m_encoding;
 
     std::vector<CsbSection> m_sections;
@@ -166,7 +165,6 @@ private:
     [[nodiscard]] std::expected<void, std::string> parse_sections();
     [[nodiscard]] std::expected<void, std::string> parse_sound_elements();
 
-    [[nodiscard]] std::expected<std::vector<uint8_t>, std::string> export_utf_payload(std::span<const uint8_t> wrapper) const;
     [[nodiscard]] std::expected<void, std::string> replace_sound_element(utf::UtfTable sound_element);
 };
 

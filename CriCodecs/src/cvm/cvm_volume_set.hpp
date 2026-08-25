@@ -1,14 +1,9 @@
 #pragma once
 /**
  * @file cvm_volume_set.hpp
- * @brief Small mounted-volume helper for ROFS runtime-style lookups.
+ * @brief Mounted-volume helper for ROFS lookups and synchronous sector reads.
  *
- * This surface models the bounded runtime behavior already exercised by the
- * official ROFS samples: mounting multiple named CVM images, choosing a default
- * volume, resolving runtime-style file paths through that mount table, and
- * opening reviewed file or directory-record sector spans synchronously.
- * It intentionally does not model scramble-aware TOC handling or true async
- * transfer machinery yet.
+ * Async transfer state is outside this helper's scope.
  */
 
 #include <array>
@@ -91,7 +86,9 @@ public:
     [[nodiscard]] std::expected<void, std::string> switch_image(std::string_view volume_name, CvmContainer&& image);
     [[nodiscard]] std::expected<void, std::string> unmount(std::string_view volume_name);
     [[nodiscard]] std::expected<void, std::string> set_default_volume(std::string_view volume_name);
-    [[nodiscard]] std::expected<void, std::string> change_directory(const std::filesystem::path& runtime_path);
+    [[nodiscard]] std::expected<void, std::string> change_directory(const std::filesystem::path& runtime_path) {
+        return set_current_directory(runtime_path);
+    }
     [[nodiscard]] std::expected<void, std::string> set_current_directory(const std::filesystem::path& runtime_path);
     [[nodiscard]] std::expected<void, std::string> set_current_directory(std::span<const uint8_t> rofs_directory_record);
     [[nodiscard]] std::expected<void, std::string> set_current_directory_iso(
@@ -134,7 +131,9 @@ public:
     [[nodiscard]] std::expected<uint32_t, std::string> tell(const CvmRofsRangeHandle& handle) const;
     [[nodiscard]] std::expected<CvmRofsTransferStatus, std::string> status(const CvmRofsRangeHandle& handle) const;
     [[nodiscard]] std::expected<uint64_t, std::string> transferred_bytes(const CvmRofsRangeHandle& handle) const;
-    [[nodiscard]] std::expected<uint64_t, std::string> transferred_bytes64(const CvmRofsRangeHandle& handle) const;
+    [[nodiscard]] std::expected<uint64_t, std::string> transferred_bytes64(const CvmRofsRangeHandle& handle) const {
+        return transferred_bytes(handle);
+    }
     [[nodiscard]] std::expected<void, std::string> close(CvmRofsRangeHandle& handle) const;
     [[nodiscard]] std::expected<void, std::string> stop_transfer(CvmRofsRangeHandle& handle) const;
     [[nodiscard]] std::expected<std::vector<uint8_t>, std::string> read_sectors(
@@ -161,7 +160,9 @@ public:
         std::span<const uint8_t> rofs_directory_record
     ) const noexcept;
     [[nodiscard]] std::expected<uint64_t, std::string> file_size(const std::filesystem::path& runtime_path) const;
-    [[nodiscard]] std::expected<uint64_t, std::string> file_size64(const std::filesystem::path& runtime_path) const;
+    [[nodiscard]] std::expected<uint64_t, std::string> file_size64(const std::filesystem::path& runtime_path) const {
+        return file_size(runtime_path);
+    }
     [[nodiscard]] std::expected<uint64_t, std::string> file_size(
         const std::filesystem::path& relative_path,
         std::span<const uint8_t> rofs_directory_record
@@ -169,7 +170,9 @@ public:
     [[nodiscard]] std::expected<uint64_t, std::string> file_size64(
         const std::filesystem::path& relative_path,
         std::span<const uint8_t> rofs_directory_record
-    ) const;
+    ) const {
+        return file_size(relative_path, rofs_directory_record);
+    }
     [[nodiscard]] static std::expected<uint32_t, std::string> rofs_num_files(
         std::span<const uint8_t> rofs_directory_record
     );

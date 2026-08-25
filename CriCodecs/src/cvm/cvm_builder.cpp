@@ -1,11 +1,8 @@
 /**
  * @file cvm_builder.cpp
- * @brief Bounded CVM/ROFS image builder.
+ * @brief CVM/ROFS image builder.
  *
- * Builder behavior targets a reviewed ROFS/CVM image shape,
- * with `cvm_tool` used as a concrete reference for CVMH/ZONE
- * structure and encrypted-TOC behavior.
- * C++23 Implementation by Youjose.
+ * CVMH/ZONE layout and TOC scrambling follow `cvm_tool`.
  */
 
 #include "cvm_builder.hpp"
@@ -64,7 +61,6 @@ struct IsoDateTime {
 
 struct BuildFileData {
     std::filesystem::path archive_path;
-    std::filesystem::path source_path;
     std::vector<uint8_t> owned_data;
     std::span<const uint8_t> data;
     uint32_t extent_sector = 0;
@@ -83,7 +79,7 @@ struct BuildDirectoryData {
 };
 
 struct BuildState {
-    CvmBuildInput input;
+    const CvmBuildInput* input;
     IsoDateTime recording_date;
     std::vector<BuildFileData> files;
     std::vector<BuildDirectoryData> directories;
@@ -303,11 +299,7 @@ void write_both_endian_32(uint8_t* destination, uint32_t value) {
         }
     }
 
-    BuildState state;
-    state.input = input;
-    if (state.input.volume_set_identifier.empty()) {
-        state.input.volume_set_identifier = state.input.volume_identifier;
-    }
+    BuildState state{.input = &input};
     state.recording_date = *recording_date;
     state.directories.push_back({});
     state.directories[0].archive_path.clear();
@@ -316,10 +308,10 @@ void write_both_endian_32(uint8_t* destination, uint32_t value) {
     state.directory_index_by_key.emplace("", 0u);
 
     util::flat_unordered_map<std::string, size_t> file_index_by_key;
-    state.directory_index_by_key.reserve(state.input.files.size() + 1u);
-    file_index_by_key.reserve(state.input.files.size());
-    state.files.reserve(state.input.files.size());
-    for (const auto& file : state.input.files) {
+    state.directory_index_by_key.reserve(input.files.size() + 1u);
+    file_index_by_key.reserve(input.files.size());
+    state.files.reserve(input.files.size());
+    for (const auto& file : input.files) {
         const std::string normalized_archive_path = normalize_archive_path(file.archive_path);
         if (normalized_archive_path.empty()) {
             return std::unexpected("CVM file archive_path must not be empty");
@@ -364,7 +356,6 @@ void write_both_endian_32(uint8_t* destination, uint32_t value) {
         const size_t file_index = state.files.size();
         state.files.push_back({
             .archive_path = archive_path,
-            .source_path = file.source_path,
             .owned_data = std::move(owned_file_bytes),
             .data = std::move(file_bytes),
             .extent_sector = 0,
@@ -396,7 +387,7 @@ void sort_directory_children(BuildState& state) {
         std::sort(directory.child_directories.begin(), directory.child_directories.end(), [&](size_t lhs, size_t rhs) {
             return key_of_directory(lhs) < key_of_directory(rhs);
         });
-        if (!state.input.preserve_file_order) {
+        if (!state.input->preserve_file_order) {
             std::sort(directory.child_files.begin(), directory.child_files.end(), [&](size_t lhs, size_t rhs) {
                 return key_of_file(lhs) < key_of_file(rhs);
             });
@@ -644,8 +635,8 @@ std::vector<uint8_t> build_embedded_iso(BuildState& state) {
     pvd[0] = 0x01u;
     std::copy_n("CD001", 5, reinterpret_cast<char*>(pvd.data() + 1));
     pvd[6] = 0x01u;
-    write_padded_ascii(std::span<uint8_t>(pvd.data() + 8, 32), state.input.system_identifier);
-    write_padded_ascii(std::span<uint8_t>(pvd.data() + 40, 32), state.input.volume_identifier);
+    write_padded_ascii(std::span<uint8_t>(pvd.data() + 8, 32), state.input->system_identifier);
+    write_padded_ascii(std::span<uint8_t>(pvd.data() + 40, 32), state.input->volume_identifier);
     write_both_endian_32(pvd.data() + 80, total_sectors);
     write_both_endian_16(pvd.data() + 120, volume_set_size);
     write_both_endian_16(pvd.data() + 124, volume_sequence_number);
@@ -666,10 +657,13 @@ std::vector<uint8_t> build_embedded_iso(BuildState& state) {
         true,
         state.recording_date
     );
-    write_padded_ascii(std::span<uint8_t>(pvd.data() + 190, 128), state.input.volume_set_identifier);
-    write_padded_ascii(std::span<uint8_t>(pvd.data() + 318, 128), state.input.publisher_identifier);
-    write_padded_ascii(std::span<uint8_t>(pvd.data() + 446, 128), state.input.data_preparer_identifier);
-    write_padded_ascii(std::span<uint8_t>(pvd.data() + 574, 128), state.input.application_identifier);
+    write_padded_ascii(
+        std::span<uint8_t>(pvd.data() + 190, 128),
+        state.input->volume_set_identifier.empty() ? state.input->volume_identifier : state.input->volume_set_identifier
+    );
+    write_padded_ascii(std::span<uint8_t>(pvd.data() + 318, 128), state.input->publisher_identifier);
+    write_padded_ascii(std::span<uint8_t>(pvd.data() + 446, 128), state.input->data_preparer_identifier);
+    write_padded_ascii(std::span<uint8_t>(pvd.data() + 574, 128), state.input->application_identifier);
     pvd[881] = 0x01u;
     copy_sector_aligned(pvd_sector, pvd);
 
@@ -828,14 +822,9 @@ std::expected<CvmBuildInput, std::string> CvmBuildInput::from_directory(
     std::vector<KeyedFile> keyed_files;
     keyed_files.reserve(input.files.size());
     for (auto& file : input.files) {
-        keyed_files.push_back({
-            .key = uppercase_ascii(file.archive_path.generic_string()),
-            .file = std::move(file),
-        });
+        keyed_files.push_back({uppercase_ascii(file.archive_path.generic_string()), std::move(file)});
     }
-    std::sort(keyed_files.begin(), keyed_files.end(), [](const KeyedFile& lhs, const KeyedFile& rhs) {
-        return lhs.key < rhs.key;
-    });
+    std::ranges::sort(keyed_files, {}, &KeyedFile::key);
     input.files.clear();
     input.files.reserve(keyed_files.size());
     for (auto& keyed_file : keyed_files) {

@@ -14,6 +14,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "../utilities/io.hpp"
@@ -105,20 +106,14 @@ public:
     [[nodiscard]] const std::filesystem::path& source_path() const noexcept { return m_source_path; }
     [[nodiscard]] const std::vector<AixSegment>& segments() const noexcept { return m_segments; }
     [[nodiscard]] const std::vector<AixLayer>& layers() const noexcept { return m_layers; }
-    [[nodiscard]] uint64_t total_sample_count() const noexcept { return m_total_sample_count; }
+    [[nodiscard]] uint64_t total_sample_count() const noexcept;
     [[nodiscard]] const std::optional<AixLoopInfo>& inferred_loop() const noexcept { return m_inferred_loop; }
 
 private:
-    struct AixPacket {
-        uint32_t file_offset = 0;
-        uint32_t total_size = 0;
-        uint16_t payload_size = 0;
-        int8_t layer_index = -1;
-    };
-
-    struct LayerPayloads {
-        std::vector<std::span<const uint8_t>> spans;
-        size_t total_size = 0;
+    struct AixPayload {
+        uint32_t offset = 0;
+        uint16_t size = 0;
+        uint8_t layer = 0;
     };
 
     static constexpr size_t max_segments = 120;
@@ -128,14 +123,28 @@ private:
     io::reader m_reader;
     std::vector<AixSegment> m_segments;
     std::vector<AixLayer> m_layers;
-    std::vector<std::vector<AixPacket>> m_segment_packets;
-    uint64_t m_total_sample_count = 0;
+    std::vector<std::vector<AixPayload>> m_segment_payloads;
     std::optional<AixLoopInfo> m_inferred_loop;
 
     std::expected<void, AixError> parse();
-    std::expected<LayerPayloads, AixError> layer_payloads(size_t segment_index, size_t layer_index) const;
+    std::expected<std::vector<std::span<const uint8_t>>, AixError> layer_payloads(
+        size_t segment_index,
+        size_t layer_index
+    ) const;
     [[nodiscard]] std::expected<std::vector<AixBuildSegment>, AixError> build_segments() const;
     [[nodiscard]] std::expected<void, AixError> replace_segments(std::vector<AixBuildSegment> segments);
+
+    template<class Edit>
+    std::expected<void, AixError> edit_segments(Edit edit) {
+        auto segments = build_segments();
+        if (!segments) {
+            return std::unexpected(segments.error());
+        }
+        if (auto result = edit(*segments); !result) {
+            return result;
+        }
+        return replace_segments(std::move(*segments));
+    }
 };
 
 using AixReader = Aix;

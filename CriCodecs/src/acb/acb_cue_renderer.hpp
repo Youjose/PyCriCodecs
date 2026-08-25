@@ -16,12 +16,13 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace cricodecs::acb {
 
 struct AcbCueBlockLoopOverride {
-    /// Zero-based position in the authored BlockSequence.BlockIndex order.
+    /// Zero-based position in BlockSequence.BlockIndex order.
     uint32_t block_position = 0;
     /// Number of repeats after the block's initial play.
     uint32_t loop_count = 0;
@@ -30,11 +31,11 @@ struct AcbCueBlockLoopOverride {
 struct AcbCueRenderOptions {
     /// Repeats after the initial play for an audio-bearing infinite block.
     uint32_t infinite_block_loop_count = 0;
-    /// Continue to the next authored block after the finite export substitute.
+    /// Continue to the next block after the finite export substitute.
     bool advance_after_infinite_block = true;
     /// Render infinite holding blocks that schedule no waveform material.
     bool include_empty_infinite_blocks = false;
-    /// Per-position repeat overrides, applied after authored loop policy.
+    /// Per-position repeat overrides, applied after the file's loop count.
     std::vector<AcbCueBlockLoopOverride> block_loop_overrides;
     uint64_t hca_keycode = 0;
     std::optional<uint16_t> hca_subkey;
@@ -48,11 +49,11 @@ enum class AcbCueAwbBank : uint8_t {
 struct AcbCueClipPlan {
     uint32_t waveform_index = 0;
     int64_t start_time_us = 0;
-    /// Selected authored AWB/AFS2 wave ID from the ACB waveform row.
+    /// AWB/AFS2 wave ID stored in the ACB waveform row.
     std::optional<uint16_t> awb_wave_id;
     /// Zero-based physical stream/file index in the resolved AWB.
     std::optional<uint32_t> awb_stream_index;
-    /// Authored memory/stream bank selection, refined when an AWB is resolved.
+    /// Memory or stream bank selected by the ACB, refined after resolving an AWB.
     std::optional<AcbCueAwbBank> awb_bank;
 };
 
@@ -73,7 +74,6 @@ struct AcbCuePlaybackPlan {
     uint32_t cue_id = 0;
     std::string cue_name;
     std::vector<AcbCueBlockPlan> blocks;
-    std::vector<std::string> diagnostics;
 };
 
 /** Exact frame range occupied by one rendered block iteration. */
@@ -93,7 +93,7 @@ enum class AcbCueChoiceDomain : uint8_t {
 /**
  * One explicit runtime choice used to materialize a static cue path.
  *
- * occurrence distinguishes repeated visits to the same authored row. Selector
+ * occurrence distinguishes repeated visits to the same row. Selector
  * names/values are populated when compact command metadata identifies them;
  * random/sequential modes normally leave those strings empty.
  */
@@ -109,7 +109,7 @@ struct AcbCueChoiceSelection {
 
 struct AcbCuePlanVariant {
     AcbCuePlaybackPlan plan;
-    /// Every authored choice path that normalizes to this audio plan.
+    /// Every choice path that produces this audio plan.
     std::vector<std::vector<AcbCueChoiceSelection>> paths;
 };
 
@@ -216,5 +216,7 @@ enumerate_cue_playback(
     const AcbContainer& acb,
     uint32_t cue_index,
     bool include_index_prefix = false);
+
+[[nodiscard]] std::string sanitize_cue_filename_component(std::string_view text);
 
 } // namespace cricodecs::acb

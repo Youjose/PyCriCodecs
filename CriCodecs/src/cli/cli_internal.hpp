@@ -12,6 +12,7 @@
 #include <fstream>
 #include <functional>
 #include <iomanip>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <map>
@@ -164,30 +165,9 @@ struct OutputListing {
     std::optional<AcbCueListingSummary> acb_cues;
 };
 
-struct Failure {
-    Format format;
-    std::string message;
-    int score = 0;
-};
-
-struct HcaRecoveryOutput {
-    hca::KeyRecoveryResult recovery;
-    size_t hca_count = 0;
-};
-
 struct UsmRecoveryOutput {
     std::filesystem::path input_path;
     usm::KeyRecoveryResult recovery;
-};
-
-struct AdxRecoveryOutput {
-    adx::AdxRecoveryResult guess;
-    size_t source_count = 0;
-};
-
-struct AhxRecoveryOutput {
-    ahx::AhxRecoveryResult guess;
-    size_t source_count = 0;
 };
 
 struct AacRecoveryOutput {
@@ -280,30 +260,30 @@ void print_item_list_json(std::ostream& out, const OutputListing& listing);
     const std::filesystem::path& input_path,
     const Options& options
 );
-[[nodiscard]] std::expected<HcaRecoveryOutput, std::string> perform_hca_key_recovery(
+[[nodiscard]] std::expected<hca::KeyRecoveryResult, std::string> perform_hca_key_recovery(
     std::span<const std::filesystem::path> input_paths,
     const Options& options
 );
-void print_hca_key_recovery_text(std::ostream& out, const HcaRecoveryOutput& result);
-void print_hca_key_recovery_json(std::ostream& out, const HcaRecoveryOutput& result);
+void print_hca_key_recovery_text(std::ostream& out, const hca::KeyRecoveryResult& result);
+void print_hca_key_recovery_json(std::ostream& out, const hca::KeyRecoveryResult& result);
 [[nodiscard]] std::expected<std::vector<UsmRecoveryOutput>, std::string> perform_usm_key_recovery(
     std::span<const std::filesystem::path> input_paths,
     const Options& options
 );
 void print_usm_key_recovery_text(std::ostream& out, std::span<const UsmRecoveryOutput> results);
 void print_usm_key_recovery_json(std::ostream& out, std::span<const UsmRecoveryOutput> results);
-[[nodiscard]] std::expected<AdxRecoveryOutput, std::string> perform_adx_key_recovery(
+[[nodiscard]] std::expected<adx::AdxRecoveryResult, std::string> perform_adx_key_recovery(
     std::span<const std::filesystem::path> input_paths,
     const Options& options
 );
-void print_adx_key_recovery_text(std::ostream& out, const AdxRecoveryOutput& result);
-void print_adx_key_recovery_json(std::ostream& out, const AdxRecoveryOutput& result);
-[[nodiscard]] std::expected<AhxRecoveryOutput, std::string> perform_ahx_key_recovery(
+void print_adx_key_recovery_text(std::ostream& out, const adx::AdxRecoveryResult& result);
+void print_adx_key_recovery_json(std::ostream& out, const adx::AdxRecoveryResult& result);
+[[nodiscard]] std::expected<ahx::AhxRecoveryResult, std::string> perform_ahx_key_recovery(
     std::span<const std::filesystem::path> input_paths,
     const Options& options
 );
-void print_ahx_key_recovery_text(std::ostream& out, const AhxRecoveryOutput& result);
-void print_ahx_key_recovery_json(std::ostream& out, const AhxRecoveryOutput& result);
+void print_ahx_key_recovery_text(std::ostream& out, const ahx::AhxRecoveryResult& result);
+void print_ahx_key_recovery_json(std::ostream& out, const ahx::AhxRecoveryResult& result);
 [[nodiscard]] std::expected<AacRecoveryOutput, std::string> perform_aac_key_recovery(
     std::span<const std::filesystem::path> input_paths,
     Format container_format,

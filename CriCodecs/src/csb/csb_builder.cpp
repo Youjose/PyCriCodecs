@@ -10,6 +10,8 @@
 #include "csb_container.hpp"
 
 #include <algorithm>
+#include <array>
+#include <optional>
 
 #include "csb_format.hpp"
 #include "../aax/aax_container.hpp"
@@ -50,34 +52,18 @@ std::string normalize_archive_name(const std::filesystem::path& path) {
     return name;
 }
 
-std::expected<std::vector<uint8_t>, std::string> build_hca_wrapper(std::span<const uint8_t> payload, bool looped) {
-    utf::UtfTable wrapper = utf::UtfTable::create("HCA");
+std::expected<std::vector<uint8_t>, std::string> build_wrapper(
+    std::string_view table_name,
+    std::span<const uint8_t> payload,
+    std::optional<bool> looped = std::nullopt
+) {
+    utf::UtfTable wrapper = utf::UtfTable::create(std::string(table_name));
     wrapper.add_column("data", utf::ColumnType::VLData);
-    wrapper.add_column("lpflg", utf::ColumnType::UInt8);
+    if (looped) wrapper.add_column("lpflg", utf::ColumnType::UInt8);
 
     const uint32_t row = wrapper.add_row();
     wrapper.set(row, "data", std::vector<uint8_t>(payload.begin(), payload.end())).value();
-    wrapper.set(row, "lpflg", static_cast<uint8_t>(looped ? 1 : 0)).value();
-    return wrapper.build();
-}
-
-std::expected<std::vector<uint8_t>, std::string> build_aax_wrapper(std::span<const uint8_t> payload, bool looped) {
-    utf::UtfTable wrapper = utf::UtfTable::create("AAX");
-    wrapper.add_column("data", utf::ColumnType::VLData);
-    wrapper.add_column("lpflg", utf::ColumnType::UInt8);
-
-    const uint32_t row = wrapper.add_row();
-    wrapper.set(row, "data", std::vector<uint8_t>(payload.begin(), payload.end())).value();
-    wrapper.set(row, "lpflg", static_cast<uint8_t>(looped ? 1 : 0)).value();
-    return wrapper.build();
-}
-
-std::expected<std::vector<uint8_t>, std::string> build_ahx_wrapper(std::span<const uint8_t> payload) {
-    utf::UtfTable wrapper = utf::UtfTable::create("AHX");
-    wrapper.add_column("data", utf::ColumnType::VLData);
-
-    const uint32_t row = wrapper.add_row();
-    wrapper.set(row, "data", std::vector<uint8_t>(payload.begin(), payload.end())).value();
+    if (looped) wrapper.set(row, "lpflg", static_cast<uint8_t>(*looped)).value();
     return wrapper.build();
 }
 
@@ -95,11 +81,7 @@ std::expected<BuildStreamInfo, std::string> inspect_stream_payload(
     info.name_raw = std::move(name_raw);
     info.payload = std::move(payload);
 
-    if (info.payload.size() >= 4 &&
-        info.payload[0] == '@' &&
-        info.payload[1] == 'U' &&
-        info.payload[2] == 'T' &&
-        info.payload[3] == 'F') {
+    if (std::ranges::starts_with(info.payload, std::array<uint8_t, 4>{'@', 'U', 'T', 'F'})) {
         auto aax_wrapper = aax::AaxContainer::load(info.payload);
         if (aax_wrapper) {
             info.format = 0;
@@ -114,11 +96,7 @@ std::expected<BuildStreamInfo, std::string> inspect_stream_payload(
         }
     }
 
-    if (info.payload.size() >= 4 &&
-        info.payload[0] == 'H' &&
-        info.payload[1] == 'C' &&
-        info.payload[2] == 'A' &&
-        info.payload[3] == '\0') {
+    if (std::ranges::starts_with(info.payload, std::array<uint8_t, 4>{'H', 'C', 'A', 0})) {
         auto hca = hca::Hca::load(info.payload);
         if (!hca) {
             return std::unexpected("CSB build failed: unsupported HCA payload: could not parse HCA header");
@@ -176,11 +154,11 @@ std::expected<std::vector<uint8_t>, std::string> build_wrapper_for_stream(const 
 
     switch (info.format) {
         case 0:
-            return build_aax_wrapper(info.payload, info.looped);
+            return build_wrapper("AAX", info.payload, info.looped);
         case 6:
-            return build_hca_wrapper(info.payload, info.looped);
+            return build_wrapper("HCA", info.payload, info.looped);
         case 2:
-            return build_ahx_wrapper(info.payload);
+            return build_wrapper("AHX", info.payload);
         default:
             return std::unexpected("CSB build failed: unsupported stream format");
     }
@@ -295,14 +273,31 @@ std::expected<void, std::string> set_stream_row(
         }
         return table.set(row, column, std::move(value));
     };
-    if (auto result = set_required("name", stream.name_raw.empty() ? stream.name : stream.name_raw); !result) return result;
-    if (auto result = set_required("data", std::move(*wrapper)); !result) return result;
-    if (auto result = set_required("fmt", stream.format); !result) return result;
-    if (auto result = set_required("nch", stream.channels); !result) return result;
-    if (auto result = set_required("stmflg", static_cast<uint8_t>(0)); !result) return result;
-    if (auto result = set_required("sfreq", stream.sample_rate); !result) return result;
-    if (auto result = set_required("nsmpl", stream.sample_count); !result) return result;
+
+    std::array<std::pair<std::string_view, utf::Value>, 7> fields{{
+        {"name", stream.name_raw.empty() ? stream.name : stream.name_raw},
+        {"data", std::move(*wrapper)},
+        {"fmt", stream.format},
+        {"nch", stream.channels},
+        {"stmflg", uint8_t{0}},
+        {"sfreq", stream.sample_rate},
+        {"nsmpl", stream.sample_count},
+    }};
+    for (auto& [column, value] : fields) {
+        if (auto result = set_required(column, std::move(value)); !result) return result;
+    }
     return {};
+}
+
+std::expected<void, std::string> write_csb(
+    std::expected<std::vector<uint8_t>, std::string> bytes,
+    const std::filesystem::path& output_path
+) {
+    if (!bytes) return std::unexpected(bytes.error());
+    if (output_path.has_parent_path()) {
+        std::filesystem::create_directories(output_path.parent_path());
+    }
+    return io::write_file_bytes(output_path, *bytes, "CSB build failed");
 }
 
 } // namespace
@@ -349,26 +344,9 @@ std::expected<std::vector<uint8_t>, std::string> CsbContainer::build_from_direct
         return std::unexpected("CSB input directory contains no files");
     }
 
-    struct KeyedEntry {
-        std::string key;
-        CsbBuildEntry entry;
-    };
-    std::vector<KeyedEntry> keyed_entries;
-    keyed_entries.reserve(entries.size());
-    for (auto& entry : entries) {
-        keyed_entries.push_back(KeyedEntry{
-            .key = normalize_archive_name(entry.archive_path),
-            .entry = std::move(entry),
-        });
-    }
-    std::sort(keyed_entries.begin(), keyed_entries.end(), [](const KeyedEntry& lhs, const KeyedEntry& rhs) {
-        return lhs.key < rhs.key;
+    std::ranges::sort(entries, {}, [](const CsbBuildEntry& entry) {
+        return normalize_archive_name(entry.archive_path);
     });
-    entries.clear();
-    entries.reserve(keyed_entries.size());
-    for (auto& entry : keyed_entries) {
-        entries.push_back(std::move(entry.entry));
-    }
 
     return build(entries, encoding);
 }
@@ -378,16 +356,7 @@ std::expected<void, std::string> CsbContainer::build_to_file(
     const std::filesystem::path& output_path,
     const text::EncodingOptions& encoding
 ) {
-    auto bytes = build(entries, encoding);
-    if (!bytes) {
-        return std::unexpected(bytes.error());
-    }
-
-    if (output_path.has_parent_path()) {
-        std::filesystem::create_directories(output_path.parent_path());
-    }
-
-    return io::write_file_bytes(output_path, *bytes, "CSB build failed");
+    return write_csb(build(entries, encoding), output_path);
 }
 
 std::expected<void, std::string> CsbContainer::replace_sound_element(utf::UtfTable sound_element) {
@@ -516,14 +485,7 @@ std::expected<void, std::string> CsbContainer::set_streamed(uint32_t index, bool
     if (index >= stream_count()) {
         return std::unexpected("CSB stream flag edit failed: stream index is out of range");
     }
-    const auto row_index = stream(index).row_index;
-    const auto element = std::ranges::find_if(m_elements, [row_index](const CsbStreamInfo& value) {
-        return value.row_index == row_index;
-    });
-    if (element == m_elements.end()) {
-        return std::unexpected("CSB stream flag edit failed: SOUND_ELEMENT row is missing");
-    }
-    return set_element_streamed(static_cast<uint32_t>(std::distance(m_elements.begin(), element)), streamed);
+    return set_element_streamed(stream(index).row_index, streamed);
 }
 
 std::expected<void, std::string> CsbContainer::set_element_streamed(uint32_t index, bool streamed) {
@@ -545,16 +507,7 @@ std::expected<void, std::string> CsbContainer::build_to_file(
     const std::filesystem::path& output_path,
     const text::EncodingOptions& encoding
 ) {
-    auto bytes = build_from_directory(input_dir, encoding);
-    if (!bytes) {
-        return std::unexpected(bytes.error());
-    }
-
-    if (output_path.has_parent_path()) {
-        std::filesystem::create_directories(output_path.parent_path());
-    }
-
-    return io::write_file_bytes(output_path, *bytes, "CSB build failed");
+    return write_csb(build_from_directory(input_dir, encoding), output_path);
 }
 
 } // namespace cricodecs::csb

@@ -2,11 +2,9 @@
  * @file usm_reader.cpp
  * @brief USM demuxer
  *
- * Chunk layout and masking behavior are adapted from the older PyCriCodecsEx
- * implementation, then checked against the official SofDec 2
- * toolchain. The reader keeps CRID UTF metadata and chunk payloads
- * inspectable, including VIDEO_HDRINFO/VIDEO_SEEKINFO inventories exposed by
- * the stream.
+ * Keeps CRID metadata and chunk payloads inspectable while exposing decoded
+ * stream payloads by channel.
+ * The original chunk reader was ported from PyCriCodecsEx.
  */
 
 #include "usm_container.hpp"
@@ -85,27 +83,15 @@ std::string dedupe_stream_name(std::string name, UsmStreamId id, const std::flat
 
     const auto dot = name.find_last_of('.');
     const std::string suffix = "." + std::string(chunk_type_name(id.stream_id)) + "_ch" + std::to_string(id.channel_no);
-    if (dot == std::string::npos) {
-        std::string unique = name + suffix;
-        if (!used_names.contains(unique)) {
-            return unique;
-        }
-        for (uint32_t copy_index = 2; ; ++copy_index) {
-            unique = name + suffix + "_" + std::to_string(copy_index);
-            if (!used_names.contains(unique)) {
-                return unique;
-            }
-        }
-    }
-
+    const size_t suffix_offset = dot == std::string::npos ? name.size() : dot;
     std::string unique = name;
-    unique.insert(dot, suffix);
+    unique.insert(suffix_offset, suffix);
     if (!used_names.contains(unique)) {
         return unique;
     }
     for (uint32_t copy_index = 2; ; ++copy_index) {
         std::string numbered = unique;
-        numbered.insert(dot + suffix.size(), "_" + std::to_string(copy_index));
+        numbered.insert(suffix_offset + suffix.size(), "_" + std::to_string(copy_index));
         if (!used_names.contains(numbered)) {
             return numbered;
         }
@@ -149,18 +135,8 @@ std::expected<UsmChunkHeader, std::string> read_chunk_header(io::reader& reader)
         return std::unexpected("USM parse failed: unexpected end of file while reading chunk header");
     }
 
-    UsmChunkHeader header;
-    header.magic = reader.read_be<uint32_t>();
-    header.chunk_size = reader.read_be<uint32_t>();
-    header.payload_offset = reader.read_be<uint16_t>();
-    header.padding = reader.read_be<uint16_t>();
-    header.channel_no = reader.read_le<uint8_t>();
-    header.reserved_0d = reader.read_le<uint8_t>();
-    header.payload_type_and_flags = reader.read_be<uint16_t>();
-    header.frame_time = reader.read_be<uint32_t>();
-    header.frame_rate = reader.read_be<uint32_t>();
-    header.reserved_18 = reader.read_be<uint32_t>();
-    header.reserved_1c = reader.read_be<uint32_t>();
+    const auto header = UsmChunkHeader::read(reader.data().subspan(reader.tell()));
+    reader.skip(UsmChunkHeader::raw_header_size);
 
     if (header.chunk_size < UsmChunkHeader::encoded_header_size) {
         return std::unexpected("USM chunk declares an invalid size");
@@ -212,16 +188,7 @@ std::expected<SfshHeader, std::string> read_sfsh_header(std::span<const uint8_t>
     SfshHeader header;
     std::ranges::copy(data.first(SfshHeader::raw_header_size), header.raw.begin());
     header.version = io::read_le<uint16_t>(data.data() + 0x04);
-    header.field_06 = io::read_le<uint16_t>(data.data() + 0x06);
-    header.field_08 = io::read_le<uint16_t>(data.data() + 0x08);
-    header.field_0a = io::read_le<uint16_t>(data.data() + 0x0A);
-    header.field_0c = io::read_le<uint16_t>(data.data() + 0x0C);
-    header.field_0e = io::read_le<uint32_t>(data.data() + 0x0E);
-    header.field_12 = io::read_le<uint32_t>(data.data() + 0x12);
     header.payload_size = io::read_le<uint32_t>(data.data() + 0x16);
-    header.codec_word = io::read_le<uint32_t>(data.data() + 0x1A);
-    header.field_1e = io::read_le<uint16_t>(data.data() + 0x1E);
-    header.field_20 = io::read_le<uint16_t>(data.data() + 0x20);
     return header;
 }
 
@@ -307,9 +274,7 @@ std::expected<void, std::string> UsmReader::parse_file() {
     m_crid_header = {};
     m_sfsh_header.reset();
     m_streams.clear();
-    m_output_names.clear();
-    m_output_name_error.clear();
-    m_output_names_ready = false;
+    m_output_names.reset();
     m_chunks.clear();
     m_audio_codecs.clear();
 
@@ -401,26 +366,13 @@ std::expected<void, std::string> UsmReader::parse_sfsh_file() {
 }
 
 std::expected<const UsmReader::OutputNameMap*, std::string> UsmReader::output_name_map() const {
-    if (m_output_names_ready) {
-        if (!m_output_name_error.empty()) {
-            return std::unexpected(m_output_name_error);
-        }
-        return &m_output_names;
+    if (!m_output_names) {
+        m_output_names.emplace(build_output_name_map(m_streams, m_encoding));
     }
-
-    m_output_names.clear();
-    m_output_name_error.clear();
-
-    auto output_names = build_output_name_map(m_streams, m_encoding);
-    if (!output_names) {
-        m_output_name_error = output_names.error();
-        m_output_names_ready = true;
-        return std::unexpected(m_output_name_error);
+    if (!*m_output_names) {
+        return std::unexpected(m_output_names->error());
     }
-
-    m_output_names = std::move(*output_names);
-    m_output_names_ready = true;
-    return &m_output_names;
+    return &m_output_names->value();
 }
 
 const UsmStreamInfo* UsmReader::find_stream(UsmStreamId id) const noexcept {

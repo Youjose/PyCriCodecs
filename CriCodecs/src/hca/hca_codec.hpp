@@ -152,11 +152,10 @@ private:
 
     [[nodiscard]] static std::expected<HcaHeader, std::string> parse_header(std::span<const uint8_t> data);
 
-    Hca(std::vector<uint8_t> bytes, HcaHeader header)
-        : m_bytes(std::move(bytes))
-        , m_header(std::move(header)) {}
-
-    Hca(std::vector<uint8_t> bytes, HcaHeader header, std::filesystem::path source_path)
+    Hca(
+        std::vector<uint8_t> bytes,
+        HcaHeader header,
+        std::filesystem::path source_path = {})
         : m_bytes(std::move(bytes))
         , m_header(std::move(header))
         , m_source_path(std::move(source_path)) {}

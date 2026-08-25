@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <ranges>
 #include <utility>
 #include <vector>
 
@@ -40,9 +41,7 @@ struct ParsedFrame {
     size_t quant_bits{};
 };
 
-struct ParsedSource {
-    std::vector<ParsedFrame> frames;
-};
+using ParsedSource = std::vector<ParsedFrame>;
 
 struct CandidateRank {
     uint64_t grammar_frames{};
@@ -172,10 +171,10 @@ struct RecoveredComponent {
         if (!frame) {
             return std::unexpected(frame.error());
         }
-        parsed.frames.push_back(std::move(*frame));
+        parsed.push_back(std::move(*frame));
         offset = next;
     }
-    if (parsed.frames.empty()) {
+    if (parsed.empty()) {
         return std::unexpected("AHX recovery: no audio frames");
     }
     return parsed;
@@ -240,7 +239,7 @@ struct RecoveredComponent {
     uint16_t key, uint8_t component, std::span<const ParsedSource> sources) noexcept {
     CandidateRank rank;
     for (const auto& source : sources) {
-        for (const auto& frame : source.frames) {
+        for (const auto& frame : source) {
             if (frame.component != component) {
                 continue;
             }
@@ -264,7 +263,7 @@ template <typename CandidateRange>
     RecoveredComponent recovered;
     for (const auto& source : sources) {
         recovered.evidence_frames += static_cast<uint64_t>(std::ranges::count_if(
-            source.frames, [component](const ParsedFrame& frame) {
+            source, [component](const ParsedFrame& frame) {
                 return frame.component == component;
             }));
     }
@@ -284,28 +283,11 @@ template <typename CandidateRange>
     return recovered;
 }
 
-[[nodiscard]] auto type9_start_values() {
-    std::array<uint16_t, 0x8000> values{};
-    for (size_t value = 0; value < values.size(); ++value) {
-        values[value] = static_cast<uint16_t>(value);
-    }
-    return values;
-}
-
-[[nodiscard]] auto type9_mult_values() {
-    std::array<uint16_t, 0x2000> values{};
-    for (size_t index = 0; index < values.size(); ++index) {
-        values[index] = static_cast<uint16_t>(index * 4u + 1u);
-    }
-    return values;
-}
-
-[[nodiscard]] auto type9_add_values() {
-    std::array<uint16_t, 0x4000> values{};
-    for (size_t index = 0; index < values.size(); ++index) {
-        values[index] = static_cast<uint16_t>(index * 2u + 1u);
-    }
-    return values;
+[[nodiscard]] auto type9_values(uint32_t count, uint32_t scale, uint32_t add) {
+    return std::views::iota(0u, count) |
+        std::views::transform([=](uint32_t value) {
+            return static_cast<uint16_t>(value * scale + add);
+        });
 }
 
 [[nodiscard]] uint64_t canonical_type9_code(AhxKey key) noexcept {
@@ -360,12 +342,9 @@ std::expected<AhxRecoveryResult, std::string> recover_key(
                 static_cast<uint8_t>(index + 1u), parsed, adx::KEY8_PRIMES);
         }
     } else {
-        const auto starts = type9_start_values();
-        const auto multipliers = type9_mult_values();
-        const auto additions = type9_add_values();
-        components[0] = recover_component(1u, parsed, starts);
-        components[1] = recover_component(2u, parsed, multipliers);
-        components[2] = recover_component(3u, parsed, additions);
+        components[0] = recover_component(1u, parsed, type9_values(0x8000, 1, 0));
+        components[1] = recover_component(2u, parsed, type9_values(0x2000, 4, 1));
+        components[2] = recover_component(3u, parsed, type9_values(0x4000, 2, 1));
     }
 
     AhxRecoveryResult result;
@@ -383,8 +362,8 @@ std::expected<AhxRecoveryResult, std::string> recover_key(
         result.score = std::min(result.score, component_score(components[index]));
     }
     for (const auto& source : parsed) {
-        result.source_frames.push_back(source.frames.size());
-        result.total_frames += source.frames.size();
+        result.source_frames.push_back(source.size());
+        result.total_frames += source.size();
     }
     if (encryption_type == 9u) {
         result.canonical_type9_code = canonical_type9_code(result.key);

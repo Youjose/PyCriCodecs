@@ -2,14 +2,13 @@
  * @file cvm_build_script.cpp
  * @brief CVM/ROFS build-script parser and formatter.
  *
- * Script behavior is grounded in the reviewed ROFSBLD script surface,
- * official tool evidence and `cvm_tool`.
- * C++23 implementation by Youjose.
+ * Script behavior follows the reviewed ROFSBLD script surface.
  */
 
 #include "cvm_build_script.hpp"
 
 #include <algorithm>
+#include <array>
 #include <flat_map>
 #include <fstream>
 #include <map>
@@ -341,8 +340,6 @@ std::expected<CvmBuildScript, std::string> CvmBuildScript::parse(
     const std::filesystem::path& script_directory
 ) {
     CvmBuildScript script;
-    script.m_script_directory = script_directory;
-
     std::flat_map<std::string, std::string> defines;
     std::vector<ScriptBlock> block_stack;
     std::vector<std::filesystem::path> directory_stack;
@@ -350,6 +347,14 @@ std::expected<CvmBuildScript, std::string> CvmBuildScript::parse(
     bool saw_disc = false;
     bool saw_end_disc = false;
     bool saw_zone = false;
+    static constexpr std::array primary_volume_fields{
+        std::pair<std::string_view, std::string CvmBuildScript::*>{"SystemIdentifier", &CvmBuildScript::m_system_identifier},
+        std::pair<std::string_view, std::string CvmBuildScript::*>{"VolumeIdentifier", &CvmBuildScript::m_volume_identifier},
+        std::pair<std::string_view, std::string CvmBuildScript::*>{"VolumeSetIdentifier", &CvmBuildScript::m_volume_set_identifier},
+        std::pair<std::string_view, std::string CvmBuildScript::*>{"PublisherIdentifier", &CvmBuildScript::m_publisher_identifier},
+        std::pair<std::string_view, std::string CvmBuildScript::*>{"DataPreparerIdentifier", &CvmBuildScript::m_data_preparer_identifier},
+        std::pair<std::string_view, std::string CvmBuildScript::*>{"ApplicationIdentifier", &CvmBuildScript::m_application_identifier},
+    };
 
     std::istringstream input{std::string(script_text)};
     std::string line;
@@ -462,42 +467,14 @@ std::expected<CvmBuildScript, std::string> CvmBuildScript::parse(
             if (!popped) {
                 return std::unexpected(popped.error());
             }
-        } else if (keyword == "SystemIdentifier") {
+        } else if (const auto field = std::ranges::find_if(primary_volume_fields, [&](const auto& item) {
+                       return item.first == keyword;
+                   }); field != primary_volume_fields.end()) {
             auto required = require_enclosing_block(block_stack, ScriptBlock::primary_volume, keyword, line_number);
             if (!required) {
                 return std::unexpected(required.error());
             }
-            script.m_system_identifier = unquote(remainder);
-        } else if (keyword == "VolumeIdentifier") {
-            auto required = require_enclosing_block(block_stack, ScriptBlock::primary_volume, keyword, line_number);
-            if (!required) {
-                return std::unexpected(required.error());
-            }
-            script.m_volume_identifier = unquote(remainder);
-        } else if (keyword == "VolumeSetIdentifier") {
-            auto required = require_enclosing_block(block_stack, ScriptBlock::primary_volume, keyword, line_number);
-            if (!required) {
-                return std::unexpected(required.error());
-            }
-            script.m_volume_set_identifier = unquote(remainder);
-        } else if (keyword == "PublisherIdentifier") {
-            auto required = require_enclosing_block(block_stack, ScriptBlock::primary_volume, keyword, line_number);
-            if (!required) {
-                return std::unexpected(required.error());
-            }
-            script.m_publisher_identifier = unquote(remainder);
-        } else if (keyword == "DataPreparerIdentifier") {
-            auto required = require_enclosing_block(block_stack, ScriptBlock::primary_volume, keyword, line_number);
-            if (!required) {
-                return std::unexpected(required.error());
-            }
-            script.m_data_preparer_identifier = unquote(remainder);
-        } else if (keyword == "ApplicationIdentifier") {
-            auto required = require_enclosing_block(block_stack, ScriptBlock::primary_volume, keyword, line_number);
-            if (!required) {
-                return std::unexpected(required.error());
-            }
-            script.m_application_identifier = unquote(remainder);
+            script.*(field->second) = unquote(remainder);
         } else if (keyword == "Directory") {
             auto required = require_enclosing_block(block_stack, ScriptBlock::zone, keyword, line_number);
             if (!required) {

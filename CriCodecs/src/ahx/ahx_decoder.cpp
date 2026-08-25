@@ -58,9 +58,6 @@ using util::divide_round_up;
 
 class AhxFrameDecoder {
 public:
-    explicit AhxFrameDecoder(bool invert_output_phase) noexcept
-        : m_invert_output_phase(invert_output_phase) {}
-
     [[nodiscard]] std::expected<std::array<int16_t, AHX_SAMPLES_PER_FRAME>, AhxError> decode_frame(
         std::span<const uint8_t, AHX_EXPECTED_FRAME_SIZE> frame_data
     ) {
@@ -113,8 +110,6 @@ public:
                     scalefactors[band][1] = reader.read(6);
                     scalefactors[band][2] = scalefactors[band][1];
                     break;
-                default:
-                    return std::unexpected(AhxError("Invalid AHX scalefactor selection"));
             }
         }
 
@@ -170,14 +165,7 @@ public:
                         }
 
                         sum >>= (AHX_FRAC_BITS - 15);
-                        if (m_invert_output_phase) {
-                            sum = -sum;
-                        }
-                        if (sum > 32767) {
-                            sum = 32767;
-                        } else if (sum < -32768) {
-                            sum = -32768;
-                        }
+                        sum = std::clamp<int64_t>(-sum, -32768, 32767);
 
                         pcm[static_cast<size_t>(part * 384 + granule * 96 + idx * 32 + band)] =
                             static_cast<int16_t>(sum);
@@ -208,13 +196,12 @@ private:
         const AhxDecodeQuantSpec& quant
     ) noexcept {
         std::array<int64_t, 3> samples{};
-        uint32_t num_bits = 0;
 
         if (quant.group != 0) {
             return grouped_samples(reader.read(static_cast<int>(quant.bits)), quant.bits);
         }
 
-        num_bits = quant.bits;
+        const uint32_t num_bits = quant.bits;
         for (int idx = 0; idx < 3; ++idx) {
             samples[idx] = reader.read(static_cast<int>(num_bits));
         }
@@ -231,7 +218,6 @@ private:
 
     size_t m_v_offset = 0;
     std::array<int64_t, 2048> m_v{};
-    bool m_invert_output_phase = false;
 };
 
 [[nodiscard]] size_t parse_ahx_frame_bits(
@@ -377,68 +363,77 @@ private:
     return 0;
 }
 
+[[nodiscard]] std::expected<const AhxKey*, AhxError> frame_key(
+    std::span<const uint8_t> file_data,
+    const AhxDecodeConfig& config
+) {
+    if (config.channels != 1 || config.start_offset >= file_data.size() ||
+        (config.encoding_mode != 0x10 && config.encoding_mode != 0x11)) {
+        return std::unexpected(AhxError("Invalid AHX header"));
+    }
+    if (config.encryption_type != 0 && config.encryption_type != 8 &&
+        config.encryption_type != 9) {
+        return std::unexpected(AhxError("Unsupported AHX encryption"));
+    }
+    if (config.encryption_type == 0) return nullptr;
+    if (config.key.empty()) {
+        return std::unexpected(AhxError("AHX decryption key required"));
+    }
+    return &config.key;
+}
+
+template <typename Visit>
+std::expected<void, AhxError> visit_frames(
+    std::span<const uint8_t> file_data,
+    size_t start_offset,
+    const AhxKey* key,
+    Visit visit
+) {
+    std::array<uint8_t, AHX_EXPECTED_FRAME_SIZE> frame{};
+    for (size_t offset = start_offset; offset + 4 <= file_data.size();) {
+        const uint32_t marker = io::read_be<uint32_t>(file_data.data() + offset);
+        if (marker == AHX_FOOTER_PREFIX || marker == AHX_FOOTER_TAG) break;
+        if (!is_ahx_frame_header(marker)) {
+            return std::unexpected(AhxError("Invalid AHX frame header"));
+        }
+
+        const size_t size = find_ahx_frame_size(file_data, offset, key, frame);
+        if (size == 0 || offset + size > file_data.size()) {
+            return std::unexpected(AhxError("Failed to determine AHX frame size"));
+        }
+        if (auto result = visit(frame, size, offset); !result) return result;
+        offset += size;
+    }
+    return {};
+}
+
 } // namespace
 
 std::expected<std::vector<int16_t>, AhxError> decode(
     std::span<const uint8_t> file_data,
     const AhxDecodeConfig& config
 ) {
-    if (config.channels != 1 || config.start_offset >= file_data.size()) {
-        return std::unexpected(AhxError("Invalid AHX header"));
-    }
-
-    if (config.encoding_mode != 0x10 && config.encoding_mode != 0x11) {
-        return std::unexpected(AhxError("Invalid AHX header"));
-    }
-
-    const bool encrypted = (config.encryption_type == 0x08 || config.encryption_type == 0x09);
-    if (encrypted && config.key.empty()) {
-        return std::unexpected(AhxError("AHX decryption key required"));
-    }
-    if (config.encryption_type != 0x00 && config.encryption_type != 0x08 && config.encryption_type != 0x09) {
-        return std::unexpected(AhxError("Unsupported AHX encryption"));
-    }
+    auto key = frame_key(file_data, config);
+    if (!key) return std::unexpected(key.error());
 
     // Both known AHX outer modes decode with the same final mono polarity convention.
     // Earlier we only flipped Dreamcast 0x10, but external 0x11 references from CRI/vgmstream
     // show the same inversion is needed there as well.
-    AhxFrameDecoder frame_decoder(true);
+    AhxFrameDecoder frame_decoder;
     std::vector<int16_t> decoded_pcm;
     // AHX inputs can end with variable (stripped) frame padding,
     // so reserve by rounded-up frame count to avoid realloc churn while decoding.
     decoded_pcm.reserve(
         divide_round_up(file_data.size() - config.start_offset, AHX_EXPECTED_FRAME_SIZE) * AHX_SAMPLES_PER_FRAME
     );
-    std::array<uint8_t, AHX_EXPECTED_FRAME_SIZE> frame_buffer{};
-    size_t offset = config.start_offset;
-    while (offset + 4 <= file_data.size()) {
-        const uint32_t marker = io::read_be<uint32_t>(file_data.data() + offset);
-        if (marker == AHX_FOOTER_PREFIX || marker == AHX_FOOTER_TAG) {
-            break;
-        }
-
-        if (!is_ahx_frame_header(marker)) {
-            return std::unexpected(AhxError("Invalid AHX frame header"));
-        }
-
-        const size_t actual_size = find_ahx_frame_size(
-            file_data,
-            offset,
-            encrypted ? &config.key : nullptr,
-            std::span<uint8_t, AHX_EXPECTED_FRAME_SIZE>(frame_buffer)
-        );
-        if (actual_size == 0 || offset + actual_size > file_data.size()) {
-            return std::unexpected(AhxError("Failed to determine AHX frame size"));
-        }
-
-        auto frame_pcm = frame_decoder.decode_frame(frame_buffer);
-        if (!frame_pcm) {
-            return std::unexpected(frame_pcm.error());
-        }
-
+    auto frames = visit_frames(file_data, config.start_offset, *key,
+        [&](std::span<const uint8_t, AHX_EXPECTED_FRAME_SIZE> frame, size_t, size_t) -> std::expected<void, AhxError> {
+        auto frame_pcm = frame_decoder.decode_frame(frame);
+        if (!frame_pcm) return std::unexpected(frame_pcm.error());
         decoded_pcm.insert(decoded_pcm.end(), frame_pcm->begin(), frame_pcm->end());
-        offset += actual_size;
-    }
+        return {};
+    });
+    if (!frames) return std::unexpected(frames.error());
     if (decoded_pcm.size() < config.sample_count) {
         return std::unexpected(AhxError("Decoded AHX sample count was smaller than the header sample count"));
     }
@@ -451,51 +446,17 @@ std::expected<std::vector<uint8_t>, AhxError> decrypt(
     std::span<const uint8_t> file_data,
     const AhxDecodeConfig& config
 ) {
-    if (config.channels != 1 || config.start_offset >= file_data.size()) {
-        return std::unexpected(AhxError("Invalid AHX header"));
-    }
-
-    if (config.encoding_mode != 0x10 && config.encoding_mode != 0x11) {
-        return std::unexpected(AhxError("Invalid AHX header"));
-    }
-
-    const bool encrypted = (config.encryption_type == 0x08 || config.encryption_type == 0x09);
-    if (!encrypted) {
-        return std::vector<uint8_t>(file_data.begin(), file_data.end());
-    }
-    if (config.key.empty()) {
-        return std::unexpected(AhxError("AHX decryption key required"));
-    }
-    if (config.encryption_type != 0x00 && config.encryption_type != 0x08 && config.encryption_type != 0x09) {
-        return std::unexpected(AhxError("Unsupported AHX encryption"));
-    }
+    auto key = frame_key(file_data, config);
+    if (!key) return std::unexpected(key.error());
+    if (*key == nullptr) return std::vector<uint8_t>(file_data.begin(), file_data.end());
 
     std::vector<uint8_t> output(file_data.begin(), file_data.end());
-    std::array<uint8_t, AHX_EXPECTED_FRAME_SIZE> frame_buffer{};
-    size_t offset = config.start_offset;
-    while (offset + 4 <= file_data.size()) {
-        const uint32_t marker = io::read_be<uint32_t>(file_data.data() + offset);
-        if (marker == AHX_FOOTER_PREFIX || marker == AHX_FOOTER_TAG) {
-            break;
-        }
-
-        if (!is_ahx_frame_header(marker)) {
-            return std::unexpected(AhxError("Invalid AHX frame header"));
-        }
-
-        const size_t actual_size = find_ahx_frame_size(
-            file_data,
-            offset,
-            &config.key,
-            std::span<uint8_t, AHX_EXPECTED_FRAME_SIZE>(frame_buffer)
-        );
-        if (actual_size == 0 || offset + actual_size > file_data.size()) {
-            return std::unexpected(AhxError("Failed to determine AHX frame size"));
-        }
-
-        std::copy_n(frame_buffer.begin(), actual_size, output.begin() + static_cast<std::ptrdiff_t>(offset));
-        offset += actual_size;
-    }
+    auto frames = visit_frames(file_data, config.start_offset, *key,
+        [&](std::span<const uint8_t, AHX_EXPECTED_FRAME_SIZE> frame, size_t size, size_t offset) -> std::expected<void, AhxError> {
+        std::ranges::copy(frame.first(size), output.begin() + static_cast<std::ptrdiff_t>(offset));
+        return {};
+    });
+    if (!frames) return std::unexpected(frames.error());
 
     return output;
 }

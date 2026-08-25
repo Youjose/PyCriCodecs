@@ -23,7 +23,6 @@ namespace {
 
 using util::align_up;
 
-constexpr uint64_t root_chunk_size = 0x800;
 constexpr uint32_t toc_crc_seed = 0xDEADBEEFu;
 constexpr uint32_t itoc_crc_seed = 0xBEEFCAEDu;
 constexpr uint32_t gtoc_crc_seed = 0x00BEEF80u;
@@ -34,10 +33,6 @@ struct PresetFlags {
     bool gtoc = false;
     bool etoc = false;
 };
-
-uint16_t revision_for_preset(CpkPreset) {
-    return 14;
-}
 
 PresetFlags flags_for_preset(CpkPreset preset) {
     switch (preset) {
@@ -59,6 +54,15 @@ PresetFlags flags_for_preset(CpkPreset preset) {
     }
 }
 
+PresetFlags enabled_chunks(const CpkOptions& options) {
+    auto flags = flags_for_preset(options.preset);
+    flags.toc = options.enable_toc.value_or(flags.toc);
+    flags.itoc = options.enable_itoc.value_or(flags.itoc);
+    flags.gtoc = options.enable_gtoc.value_or(flags.gtoc);
+    flags.etoc = options.enable_etoc.value_or(flags.etoc);
+    return flags;
+}
+
 uint32_t header_mode_value(CpkPreset preset) {
     if (preset == CpkPreset::Custom) {
         return 0xFFFFFFFFu;
@@ -75,11 +79,15 @@ std::vector<size_t> sorted_indices(size_t count, auto&& comparator) {
     return indices;
 }
 
-std::expected<std::string, std::string> encode_storage_string(
+std::expected<std::string, std::string> raw_or_encoded(
+    std::string_view raw,
     std::string_view text_value,
     const text::EncodingOptions& encoding,
     std::string_view context
 ) {
+    if (!raw.empty()) {
+        return std::string(raw);
+    }
     if (text_value.empty()) {
         return std::string{};
     }
@@ -90,29 +98,8 @@ std::expected<std::string, std::string> encode_storage_string(
     return std::string(reinterpret_cast<const char*>(encoded->data()), encoded->size());
 }
 
-std::expected<std::string, std::string> raw_or_encoded(
-    std::string_view raw,
-    std::string_view text_value,
-    const text::EncodingOptions& encoding,
-    std::string_view context
-) {
-    if (!raw.empty()) {
-        return std::string(raw);
-    }
-    return encode_storage_string(text_value, encoding, context);
-}
-
 uint32_t cpk_crc32(std::span<const uint8_t> data, uint32_t seed) noexcept {
     return util::CriCrc32::checksum(data, seed);
-}
-
-void crypt_utf_payload_in_place(std::span<uint8_t> payload) {
-    uint64_t m = 0x655F;
-    constexpr uint64_t t = 0x4115;
-    for (auto& byte : payload) {
-        byte ^= static_cast<uint8_t>(m & 0xFF);
-        m = (m * t) & 0xFFFFFFFFull;
-    }
 }
 
 } // namespace
@@ -178,17 +165,8 @@ std::expected<void, std::string> Cpk::save_to_file(const std::filesystem::path& 
         }
     }
 
-    io::writer writer;
-    if (auto result = writer.open(output_path); !result) {
-        return std::unexpected("CPK build failed: could not open output file: " + std::string(result.error()));
-    }
-
-    if (auto result = writer.write(m_reader.data()); !result) {
-        return std::unexpected("CPK build failed: could not write output file: " + std::string(result.error()));
-    }
-
-    if (auto result = writer.close(); !result) {
-        return std::unexpected("CPK build failed: could not finalize output file: " + std::string(result.error()));
+    if (auto result = io::write_file_bytes(output_path, m_reader.data(), "CPK build failed"); !result) {
+        return result;
     }
 
     m_source_path = output_path;
@@ -196,11 +174,9 @@ std::expected<void, std::string> Cpk::save_to_file(const std::filesystem::path& 
 }
 
 std::expected<std::vector<Cpk::PreparedEntry>, std::string> Cpk::prepare_entries_for_save() {
-    const PresetFlags preset_flags = flags_for_preset(m_options.preset);
-    const bool emit_toc = m_options.enable_toc.value_or(preset_flags.toc);
-    const bool emit_itoc = m_options.enable_itoc.value_or(preset_flags.itoc);
+    const auto chunks = enabled_chunks(m_options);
 
-    if (!emit_toc && !emit_itoc) {
+    if (!chunks.toc && !chunks.itoc) {
         return std::unexpected("CPK build failed: archive must emit at least a TOC or an ITOC");
     }
 
@@ -222,7 +198,7 @@ std::expected<std::vector<Cpk::PreparedEntry>, std::string> Cpk::prepare_entries
         auto& entry = m_files[index];
         const auto& source = m_sources[index];
 
-        if (emit_toc && entry.filename.empty()) {
+        if (chunks.toc && entry.filename.empty()) {
             return std::unexpected("CPK entries must have a filename when TOC output is enabled");
         }
 
@@ -239,16 +215,16 @@ std::expected<std::vector<Cpk::PreparedEntry>, std::string> Cpk::prepare_entries
             ++next_auto_id;
         }
 
-        if (!emit_toc && entry.filename.empty()) {
+        if (!chunks.toc && entry.filename.empty()) {
             entry.dirname.clear();
         }
 
-        if (emit_itoc && !emit_toc && prepared.effective_id > std::numeric_limits<uint16_t>::max()) {
+        if (chunks.itoc && !chunks.toc && prepared.effective_id > std::numeric_limits<uint16_t>::max()) {
             return std::unexpected("CPK build failed: mode-0 style ITOC archives require 16-bit file IDs");
         }
 
         const bool can_preserve_packed =
-            source.kind == EntrySourceKind::Archive &&
+            std::holds_alternative<ArchiveSource>(source.data) &&
             entry.request_compress == entry.is_compressed;
 
         if (can_preserve_packed) {
@@ -297,25 +273,17 @@ std::expected<std::vector<uint8_t>, std::string> Cpk::build_archive(
     std::vector<PreparedEntry>& prepared_entries,
     bool encrypt_utf_chunks
 ) {
-    const CpkPreset declared_preset = m_options.preset;
-    const PresetFlags preset_flags = flags_for_preset(m_options.preset);
-    const bool emit_toc = m_options.enable_toc.value_or(preset_flags.toc);
-    const bool emit_itoc = m_options.enable_itoc.value_or(preset_flags.itoc);
-    const bool emit_gtoc = m_options.enable_gtoc.value_or(preset_flags.gtoc);
-    const bool emit_etoc = m_options.enable_etoc.value_or(preset_flags.etoc);
-    const CpkPreset emitted_preset = preset_from_chunks(emit_toc, emit_itoc, emit_gtoc, emit_etoc);
+    const auto chunks = enabled_chunks(m_options);
 
-    if (!emit_toc && !emit_itoc) {
+    if (!chunks.toc && !chunks.itoc) {
         return std::unexpected("CPK build failed: archive must emit at least a TOC or an ITOC");
     }
-    if (emit_gtoc && !emit_toc) {
+    if (chunks.gtoc && !chunks.toc) {
         return std::unexpected("CPK build failed: GTOC requires TOC support in the current builder");
     }
 
     if (m_options.tver.empty()) {
-        m_options.tver = default_tver(
-            declared_preset == CpkPreset::Custom ? emitted_preset : declared_preset
-        );
+        m_options.tver = default_tool_version;
     }
 
     uint64_t enabled_packed_size = 0;
@@ -328,7 +296,7 @@ std::expected<std::vector<uint8_t>, std::string> Cpk::build_archive(
     }
 
     std::vector<size_t> toc_order;
-    if (emit_toc) {
+    if (chunks.toc) {
         std::vector<std::string> toc_sort_keys;
         toc_sort_keys.reserve(prepared_entries.size());
         for (size_t index = 0; index < prepared_entries.size(); ++index) {
@@ -340,7 +308,7 @@ std::expected<std::vector<uint8_t>, std::string> Cpk::build_archive(
     }
 
     std::vector<size_t> generated_data_order;
-    if (emit_itoc) {
+    if (chunks.itoc) {
         generated_data_order = sorted_indices(prepared_entries.size(), [&prepared_entries](size_t lhs, size_t rhs) {
             if (prepared_entries[lhs].effective_id != prepared_entries[rhs].effective_id) {
                 return prepared_entries[lhs].effective_id < prepared_entries[rhs].effective_id;
@@ -348,69 +316,73 @@ std::expected<std::vector<uint8_t>, std::string> Cpk::build_archive(
             return lhs < rhs;
         });
     }
-    const std::vector<size_t>& data_order = emit_itoc ? generated_data_order : toc_order;
+    const std::vector<size_t>& data_order = chunks.itoc ? generated_data_order : toc_order;
+
+    auto wrap_aligned = [&](std::string_view magic, std::span<const uint8_t> payload) {
+        auto chunk = wrap_chunk(magic, payload, encrypt_utf_chunks);
+        chunk.resize(static_cast<size_t>(align_up(chunk.size(), chunk_alignment)), 0);
+        return chunk;
+    };
 
     std::vector<uint8_t> toc_chunk;
     std::vector<uint8_t> toc_payload;
-    if (emit_toc) {
+    if (chunks.toc) {
         const std::vector<uint64_t> placeholder_offsets(prepared_entries.size(), 0);
         auto toc_data = generate_toc(prepared_entries, toc_order, placeholder_offsets);
         if (!toc_data) {
             return std::unexpected(toc_data.error());
         }
         toc_payload = std::move(*toc_data);
-        toc_chunk = wrap_chunk("TOC ", toc_payload, encrypt_utf_chunks);
-        toc_chunk.resize(static_cast<size_t>(align_up(toc_chunk.size(), chunk_alignment)), 0);
+        toc_chunk = wrap_aligned("TOC ", toc_payload);
     }
 
     std::vector<uint8_t> itoc_chunk;
     std::vector<uint8_t> itoc_payload;
-    if (emit_itoc) {
-        itoc_payload = emit_toc
+    if (chunks.itoc) {
+        itoc_payload = chunks.toc
             ? generate_itoc_mode2(prepared_entries, toc_order)
             : generate_itoc_mode0(prepared_entries, data_order);
-        itoc_chunk = wrap_chunk("ITOC", itoc_payload, encrypt_utf_chunks);
-        itoc_chunk.resize(static_cast<size_t>(align_up(itoc_chunk.size(), chunk_alignment)), 0);
+        itoc_chunk = wrap_aligned("ITOC", itoc_payload);
     }
 
     std::vector<uint8_t> gtoc_chunk;
     std::vector<uint8_t> gtoc_payload;
-    if (emit_gtoc) {
+    if (chunks.gtoc) {
         gtoc_payload = generate_gtoc(prepared_entries, enabled_packed_size);
-        gtoc_chunk = wrap_chunk("GTOC", gtoc_payload, encrypt_utf_chunks);
-        gtoc_chunk.resize(static_cast<size_t>(align_up(gtoc_chunk.size(), chunk_alignment)), 0);
+        gtoc_chunk = wrap_aligned("GTOC", gtoc_payload);
     }
 
     std::vector<uint8_t> etoc_chunk;
-    if (emit_etoc) {
+    if (chunks.etoc) {
         auto etoc_data = generate_etoc();
         if (!etoc_data) {
             return std::unexpected(etoc_data.error());
         }
-        etoc_chunk = wrap_chunk("ETOC", *etoc_data, encrypt_utf_chunks);
-        etoc_chunk.resize(static_cast<size_t>(align_up(etoc_chunk.size(), chunk_alignment)), 0);
+        etoc_chunk = wrap_aligned("ETOC", *etoc_data);
     }
 
     std::vector<uint64_t> entry_offsets(prepared_entries.size(), 0);
-    if (emit_toc) {
+    auto assign_entry_offsets = [&](uint64_t content_offset) {
+        uint64_t offset = content_offset - root_chunk_size;
+        for (const size_t index : data_order) {
+            entry_offsets[index] = offset;
+            offset += align_up(
+                static_cast<uint64_t>(prepared_entries[index].payload.size()),
+                m_options.align
+            );
+        }
+    };
+    if (chunks.toc) {
         for (size_t pass = 0; pass < 4; ++pass) {
             const uint64_t content_offset = root_chunk_size + toc_chunk.size() + itoc_chunk.size() + gtoc_chunk.size();
-            uint64_t running_offset = content_offset - root_chunk_size;
-            for (const size_t index : data_order) {
-                entry_offsets[index] = running_offset;
-                running_offset += align_up(
-                    static_cast<uint64_t>(prepared_entries[index].payload.size()),
-                    m_options.align
-                );
-            }
+            assign_entry_offsets(content_offset);
 
             auto toc_data = generate_toc(prepared_entries, toc_order, entry_offsets);
             if (!toc_data) {
                 return std::unexpected(toc_data.error());
             }
             auto updated_toc_payload = std::move(*toc_data);
-            auto updated_toc_chunk = wrap_chunk("TOC ", updated_toc_payload, encrypt_utf_chunks);
-            updated_toc_chunk.resize(static_cast<size_t>(align_up(updated_toc_chunk.size(), chunk_alignment)), 0);
+            auto updated_toc_chunk = wrap_aligned("TOC ", updated_toc_payload);
             if (updated_toc_chunk.size() == toc_chunk.size()) {
                 toc_payload = std::move(updated_toc_payload);
                 toc_chunk = std::move(updated_toc_chunk);
@@ -422,57 +394,34 @@ std::expected<std::vector<uint8_t>, std::string> Cpk::build_archive(
     }
 
     const uint64_t toc_chunk_offset = root_chunk_size;
-    const uint64_t itoc_chunk_offset = emit_toc
+    const uint64_t itoc_chunk_offset = chunks.toc
         ? toc_chunk_offset + toc_chunk.size()
         : root_chunk_size;
-    const uint64_t gtoc_chunk_offset = emit_toc
+    const uint64_t gtoc_chunk_offset = chunks.toc
         ? toc_chunk_offset + toc_chunk.size() + itoc_chunk.size()
         : root_chunk_size + itoc_chunk.size();
     const uint64_t content_offset = root_chunk_size + toc_chunk.size() + itoc_chunk.size() + gtoc_chunk.size();
 
-    if (emit_toc) {
-        uint64_t running_offset = content_offset - root_chunk_size;
-        for (const size_t index : data_order) {
-            entry_offsets[index] = running_offset;
-            running_offset += align_up(
-                static_cast<uint64_t>(prepared_entries[index].payload.size()),
-                m_options.align
-            );
-        }
+    if (chunks.toc) {
+        assign_entry_offsets(content_offset);
         auto toc_data = generate_toc(prepared_entries, toc_order, entry_offsets);
         if (!toc_data) {
             return std::unexpected(toc_data.error());
         }
         toc_payload = std::move(*toc_data);
-        toc_chunk = wrap_chunk("TOC ", toc_payload, encrypt_utf_chunks);
-        toc_chunk.resize(static_cast<size_t>(align_up(toc_chunk.size(), chunk_alignment)), 0);
+        toc_chunk = wrap_aligned("TOC ", toc_payload);
     }
 
-    const uint64_t etoc_chunk_offset = emit_etoc ? content_offset + content_size : 0;
+    const uint64_t etoc_chunk_offset = chunks.etoc ? content_offset + content_size : 0;
     const uint64_t file_size = content_offset + content_size + etoc_chunk.size();
 
-    std::vector<std::string> unique_directories;
-    if (emit_toc) {
-        unique_directories.reserve(m_files.size());
-        for (const auto& entry : m_files) {
-            if (!entry.dirname.empty()) {
-                unique_directories.push_back(entry.dirname);
-            }
-        }
-        std::sort(unique_directories.begin(), unique_directories.end());
-        unique_directories.erase(
-            std::unique(unique_directories.begin(), unique_directories.end()),
-            unique_directories.end()
-        );
-    }
-
-    const uint32_t toc_crc = m_options.enable_crc && emit_toc
+    const uint32_t toc_crc = m_options.enable_crc && chunks.toc
         ? cpk_crc32(toc_payload, toc_crc_seed)
         : 0u;
-    const uint32_t itoc_crc = m_options.enable_crc && emit_itoc
+    const uint32_t itoc_crc = m_options.enable_crc && chunks.itoc
         ? cpk_crc32(itoc_payload, itoc_crc_seed)
         : 0u;
-    const uint32_t gtoc_crc = m_options.enable_crc && emit_gtoc
+    const uint32_t gtoc_crc = m_options.enable_crc && chunks.gtoc
         ? cpk_crc32(gtoc_payload, gtoc_crc_seed)
         : 0u;
 
@@ -481,18 +430,14 @@ std::expected<std::vector<uint8_t>, std::string> Cpk::build_archive(
         enabled_data_size,
         content_size,
         toc_chunk.size(),
-        emit_itoc ? itoc_chunk_offset : 0,
+        chunks.itoc ? itoc_chunk_offset : 0,
         itoc_chunk.size(),
         etoc_chunk_offset,
         etoc_chunk.size(),
-        emit_gtoc ? gtoc_chunk_offset : 0,
+        chunks.gtoc ? gtoc_chunk_offset : 0,
         gtoc_chunk.size(),
         content_offset,
         file_size,
-        static_cast<uint32_t>(unique_directories.size()),
-        emit_toc,
-        emit_itoc,
-        emit_gtoc,
         toc_crc,
         itoc_crc,
         gtoc_crc
@@ -793,14 +738,20 @@ std::vector<uint8_t> Cpk::generate_cpk_header(
     uint64_t gtoc_chunk_size,
     uint64_t content_offset,
     uint64_t file_size,
-    uint32_t directory_count,
-    bool has_toc,
-    bool has_itoc,
-    bool has_gtoc,
     uint32_t toc_crc,
     uint32_t itoc_crc,
     uint32_t gtoc_crc
 ) const {
+    const bool has_toc = toc_chunk_size != 0;
+    const bool has_itoc = itoc_chunk_size != 0;
+    const bool has_gtoc = gtoc_chunk_size != 0;
+    std::unordered_set<std::string_view> directories;
+    for (const auto& entry : m_files) {
+        if (has_toc && !entry.dirname.empty()) {
+            directories.insert(entry.dirname);
+        }
+    }
+
     utf::UtfTable table = utf::UtfTable::create("CpkHeader");
     table.add_column("UpdateDateTime", utf::ColumnType::UInt64);
     table.add_column("FileSize", utf::ColumnType::UInt64);
@@ -875,10 +826,10 @@ std::vector<uint8_t> Cpk::generate_cpk_header(
     table.set(row, "Groups", has_gtoc ? 1u : 0u).value();
     table.set(row, "Attrs", has_gtoc ? 1u : 0u).value();
     table.set(row, "TotalFiles", static_cast<uint32_t>(m_files.size())).value();
-    table.set(row, "Directories", directory_count).value();
+    table.set(row, "Directories", static_cast<uint32_t>(directories.size())).value();
     table.set(row, "Updates", 0u).value();
     table.set(row, "Version", static_cast<uint16_t>(7)).value();
-    table.set(row, "Revision", revision_for_preset(m_options.preset)).value();
+    table.set(row, "Revision", static_cast<uint16_t>(14)).value();
     table.set(row, "Align", m_options.align).value();
     table.set(row, "Sorted", static_cast<uint16_t>(has_toc ? 1 : 0)).value();
     table.set(row, "EnableFileName", static_cast<uint16_t>(has_toc ? 1 : 0)).value();
@@ -908,13 +859,9 @@ std::vector<uint8_t> Cpk::wrap_chunk(
     io::write_le<uint32_t>(chunk.data() + 0x0C, 0u);
     std::copy(table_data.begin(), table_data.end(), chunk.begin() + header_size);
     if (encrypt_payload) {
-        crypt_utf_payload_in_place(std::span<uint8_t>(chunk.data() + header_size, table_data.size()));
+        crypt_utf_payload(std::span<uint8_t>(chunk.data() + header_size, table_data.size()));
     }
     return chunk;
-}
-
-std::string Cpk::default_tver(CpkPreset) {
-    return "CriCodecs CPK";
 }
 
 int Cpk::compare_archive_paths(std::string_view lhs, std::string_view rhs) {

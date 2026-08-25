@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <string_view>
 
 #include "../utilities/string.hpp"
 
@@ -21,31 +22,56 @@ using util::lowercase_ascii;
 
 } // namespace
 
+std::expected<void, std::string> detail::write_output_file(
+    const std::filesystem::path& path,
+    std::span<const uint8_t> bytes,
+    std::string_view operation
+) {
+    if (path.has_parent_path()) {
+        std::error_code error;
+        std::filesystem::create_directories(path.parent_path(), error);
+        if (error) {
+            return std::unexpected(
+                std::string(operation) + " failed: could not create output directory: " + error.message());
+        }
+    }
+
+    io::writer writer;
+    if (!writer.open(path)) {
+        return std::unexpected(std::string(operation) + " failed: could not open output: " + path.string());
+    }
+    if (!writer.write(bytes)) {
+        (void)writer.close();
+        return std::unexpected(std::string(operation) + " failed: could not write output: " + path.string());
+    }
+    if (!writer.close()) {
+        return std::unexpected(std::string(operation) + " failed: could not finalize output: " + path.string());
+    }
+    return {};
+}
+
 std::filesystem::path SfdStream::suggested_path(bool include_index_prefix) const {
-    const std::string stem = type == SfdStreamType::audio
-        ? (include_index_prefix ? "audio_" + std::to_string(type_index) : "audio")
-        : type == SfdStreamType::video
-            ? (include_index_prefix ? "video_" + std::to_string(type_index) : "video")
-            : (include_index_prefix ? "private_" + std::to_string(type_index) : "private");
+    const std::string_view kind = type == SfdStreamType::audio
+        ? "audio"
+        : type == SfdStreamType::video ? "video" : "private";
+    const std::string stem = std::string(kind) +
+        (include_index_prefix ? "_" + std::to_string(type_index) : "");
 
     if (type == SfdStreamType::audio) {
         return std::filesystem::path(stem + stream_extension(audio_type));
     }
 
     if (type == SfdStreamType::video) {
-        if (element_record.has_value()) {
-            switch (element_record->source_type) {
-                case 0: return std::filesystem::path(stem + ".sfv");
-                case 1: return std::filesystem::path(stem + ".m1v");
-                case 2: return std::filesystem::path(stem + ".mpv");
-                case 3: return std::filesystem::path(stem + ".m2v");
-                default: break;
-            }
+        constexpr std::array extensions = {
+            std::string_view(".sfv"), std::string_view(".m1v"),
+            std::string_view(".mpv"), std::string_view(".m2v")
+        };
+        if (element_record && element_record->source_type < extensions.size()) {
+            return std::filesystem::path(stem + std::string(extensions[element_record->source_type]));
         }
 
         const std::string source_extension = lowercase_ascii(std::filesystem::path(source_name).extension().string());
-        if (source_extension == ".sfv" || source_extension == ".m1v" ||
-            source_extension == ".mpv" || source_extension == ".m2v") {
+        if (std::ranges::contains(extensions, source_extension)) {
             return std::filesystem::path(stem + source_extension);
         }
 
@@ -57,7 +83,6 @@ std::filesystem::path SfdStream::suggested_path(bool include_index_prefix) const
 
 std::expected<SfdContainer, std::string> SfdContainer::load(const std::filesystem::path& path) {
     SfdContainer container;
-    container.m_owned_source.clear();
     if (auto result = container.m_reader.open(path); !result) {
         return std::unexpected("SFD load failed: could not open input: " + path.string());
     }
@@ -70,19 +95,7 @@ std::expected<SfdContainer, std::string> SfdContainer::load(const std::filesyste
 }
 
 std::expected<SfdContainer, std::string> SfdContainer::load(std::span<const uint8_t> data) {
-    SfdContainer container;
-    container.m_owned_source.assign(data.begin(), data.end());
-    if (auto result = container.m_reader.open(
-        std::span<const uint8_t>(container.m_owned_source.data(), container.m_owned_source.size())
-    ); !result) {
-        return std::unexpected("SFD load failed: could not open memory buffer");
-    }
-    container.m_source_path.clear();
-
-    if (auto result = container.parse(); !result) {
-        return std::unexpected(result.error());
-    }
-    return container;
+    return load(std::vector<uint8_t>(data.begin(), data.end()));
 }
 
 std::expected<SfdContainer, std::string> SfdContainer::load(std::vector<uint8_t>&& data) {
@@ -91,8 +104,6 @@ std::expected<SfdContainer, std::string> SfdContainer::load(std::vector<uint8_t>
     if (auto result = container.m_reader.open(std::span<const uint8_t>(container.m_owned_source)); !result) {
         return std::unexpected("SFD load failed: could not open memory buffer");
     }
-    container.m_source_path.clear();
-
     if (auto result = container.parse(); !result) {
         return std::unexpected(result.error());
     }
@@ -135,10 +146,6 @@ std::expected<std::vector<uint8_t>, std::string> SfdContainer::extract_stream(ui
 
     const auto source = m_reader.data();
     for (const auto& chunk : stream.chunks) {
-        if (chunk.source_offset > source.size() || chunk.size > source.size() - static_cast<size_t>(chunk.source_offset)) {
-            return std::unexpected("SFD stream chunk is out of bounds");
-        }
-
         const auto slice = source.subspan(static_cast<size_t>(chunk.source_offset), chunk.size);
         bytes.insert(bytes.end(), slice.begin(), slice.end());
     }
@@ -152,28 +159,7 @@ std::expected<std::vector<uint8_t>, std::string> SfdContainer::save() const {
 }
 
 std::expected<void, std::string> SfdContainer::save_to_file(const std::filesystem::path& output_path) const {
-    if (output_path.has_parent_path()) {
-        std::error_code filesystem_error;
-        std::filesystem::create_directories(output_path.parent_path(), filesystem_error);
-        if (filesystem_error) {
-            return std::unexpected("SFD save failed: could not create output directory: " + filesystem_error.message());
-        }
-    }
-
-    io::writer writer;
-    if (auto result = writer.open(output_path); !result) {
-        return std::unexpected("SFD save failed: could not open output: " + output_path.string());
-    }
-    const auto source = m_reader.data();
-    if (auto result = writer.write(source); !result) {
-        (void)writer.close();
-        return std::unexpected("SFD save failed: could not write output: " + output_path.string());
-    }
-    if (auto result = writer.close(); !result) {
-        return std::unexpected("SFD save failed: could not finalize output: " + output_path.string());
-    }
-
-    return {};
+    return detail::write_output_file(output_path, m_reader.data(), "SFD save");
 }
 
 std::expected<void, std::string> SfdContainer::export_stream(
@@ -200,11 +186,6 @@ std::expected<void, std::string> SfdContainer::export_stream(
     const auto source = m_reader.data();
     const auto& stream = m_streams[index];
     for (const auto& chunk : stream.chunks) {
-        if (chunk.source_offset > source.size() || chunk.size > source.size() - static_cast<size_t>(chunk.source_offset)) {
-            (void)writer.close();
-            return std::unexpected("SFD stream chunk is out of bounds");
-        }
-
         if (auto result = writer.write(source.subspan(static_cast<size_t>(chunk.source_offset), chunk.size)); !result) {
             (void)writer.close();
             return std::unexpected("SFD export failed: could not write output: " + output_path.string());

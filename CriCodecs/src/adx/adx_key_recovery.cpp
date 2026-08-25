@@ -29,13 +29,15 @@ constexpr size_t Type8ConfidenceFrames = 128;
 constexpr size_t Type9CycleFrames = 8192;
 constexpr size_t UnlimitedFrames = std::numeric_limits<size_t>::max();
 
-struct ParsedSource {
-    std::vector<uint16_t> scales;
-    std::vector<uint8_t> nonempty;
+struct ParsedFrame {
+    uint16_t scale;
+    bool nonempty;
 };
 
+using ParsedSource = std::vector<ParsedFrame>;
+
 [[nodiscard]] std::expected<ParsedSource, std::string> parse_source(
-    AdxRecoverySource source, uint8_t expected_type, size_t frame_limit) {
+    AdxRecoverySource source, uint8_t expected_type) {
     if (source.bytes.size() < 32u || io::read_be<uint16_t>(source.bytes.data()) != 0x8000u) {
         return std::unexpected("ADX recovery: invalid ADX header");
     }
@@ -50,47 +52,54 @@ struct ParsedSource {
     }
     const uint32_t sample_count = io::read_be<uint32_t>(source.bytes.data() + 12u);
     const uint32_t samples_per_block = static_cast<uint32_t>(frame_size - 2u) * 2u;
-    const size_t frame_count =
-        (static_cast<size_t>((sample_count + samples_per_block - 1u) / samples_per_block)) * channels;
+    const size_t frame_count = static_cast<size_t>(
+        util::divide_round_up(sample_count, samples_per_block)) * channels;
     const size_t audio_offset = static_cast<size_t>(io::read_be<uint16_t>(source.bytes.data() + 2u)) + 4u;
     if (audio_offset > source.bytes.size() || frame_count > (source.bytes.size() - audio_offset) / frame_size) {
         return std::unexpected("ADX recovery: audio frames exceed input");
     }
     ParsedSource result;
-    const size_t count = std::min(frame_count, frame_limit);
-    result.scales.reserve(count);
-    result.nonempty.reserve(count);
-    for (size_t frame = 0; frame < count; ++frame) {
+    result.reserve(frame_count);
+    for (size_t frame = 0; frame < frame_count; ++frame) {
         const size_t offset = audio_offset + frame * frame_size;
-        result.scales.push_back(io::read_be<uint16_t>(source.bytes.data() + offset));
-        result.nonempty.push_back(static_cast<uint8_t>(std::any_of(
-            source.bytes.begin() + static_cast<std::ptrdiff_t>(offset),
-            source.bytes.begin() + static_cast<std::ptrdiff_t>(offset + frame_size),
-            [](uint8_t value) { return value != 0u; })));
+        const auto bytes = source.bytes.subspan(offset, frame_size);
+        result.push_back({
+            .scale = io::read_be<uint16_t>(bytes.data()),
+            .nonempty = std::ranges::any_of(bytes, [](uint8_t value) { return value != 0u; }),
+        });
     }
     return result;
 }
 
+[[nodiscard]] std::expected<std::vector<ParsedSource>, std::string> parse_sources(
+    std::span<const AdxRecoverySource> sources, uint8_t expected_type) {
+    std::vector<ParsedSource> parsed;
+    parsed.reserve(sources.size());
+    for (const auto source : sources) {
+        auto parsed_source = parse_source(source, expected_type);
+        if (!parsed_source) return std::unexpected(parsed_source.error());
+        parsed.push_back(std::move(*parsed_source));
+    }
+    return parsed;
+}
+
 struct ValidationMetrics {
-    bool valid = true;
     uint64_t examined = 0;
     uint64_t evidence = 0;
 };
 
-[[nodiscard]] ValidationMetrics validate_candidate(
+[[nodiscard]] std::optional<ValidationMetrics> validate_candidate(
     const AdxKeyState key, std::span<const ParsedSource> sources,
     uint16_t mask, size_t evidence_limit) {
     ValidationMetrics result;
     for (const auto& source : sources) {
         AdxKeyState state = key;
-        for (size_t frame = 0; frame < source.scales.size(); ++frame) {
-            const uint16_t scale = source.scales[frame];
+        for (const auto frame : source) {
             ++result.examined;
-            if (source.nonempty[frame]) {
+            if (frame.nonempty) {
                 ++result.evidence;
-                if (((scale ^ state.xor_value) & mask) != 0u) {
-                    result.valid = false;
-                    return result;
+                if (((frame.scale ^ state.xor_value) & mask) != 0u) {
+                    return std::nullopt;
                 }
             }
             state.advance();
@@ -107,7 +116,7 @@ struct ValidationMetrics {
     std::vector<uint64_t> counts;
     counts.reserve(sources.size());
     for (const auto& source : sources) {
-        counts.push_back(source.scales.size());
+        counts.push_back(source.size());
     }
     return counts;
 }
@@ -115,22 +124,39 @@ struct ValidationMetrics {
 [[nodiscard]] uint64_t total_frame_count(std::span<const ParsedSource> sources) {
     uint64_t total = 0;
     for (const auto& source : sources) {
-        total += source.scales.size();
+        total += source.size();
     }
     return total;
+}
+
+[[nodiscard]] uint64_t evidence_frame_count(std::span<const ParsedSource> sources) {
+    uint64_t total = 0;
+    for (const auto& source : sources) {
+        total += std::ranges::count_if(source,
+            [](const ParsedFrame frame) { return frame.nonempty; });
+    }
+    return total;
+}
+
+void add_result_candidate(AdxRecoveryResult& result) {
+    result.candidates.push_back(AdxKeyCandidate{
+        .key = result.key,
+        .score = result.score,
+        .source_count = result.source_count,
+        .evidence_count = result.evidence_frames,
+        .evidence_frames = result.evidence_frames,
+        .canonical_type9_code = result.canonical_type9_code,
+    });
 }
 
 template <typename Worker>
 void run_recovery_workers(Worker worker) {
     const unsigned worker_count = std::max(
         1u, std::min(8u, std::thread::hardware_concurrency()));
-    std::vector<std::thread> workers;
+    std::vector<std::jthread> workers;
     workers.reserve(worker_count);
     for (unsigned index = 0; index < worker_count; ++index) {
         workers.emplace_back(worker);
-    }
-    for (auto& thread : workers) {
-        thread.join();
     }
 }
 
@@ -144,17 +170,11 @@ std::expected<AdxRecoveryResult, std::string> recover_key(
     if (sources.front().bytes.size() > 19u && sources.front().bytes[19] == 9u) {
         return recover_key_type9(sources);
     }
-    std::vector<ParsedSource> parsed;
-    parsed.reserve(sources.size());
-    for (const auto source : sources) {
-        auto parsed_source = parse_source(source, 8u, UnlimitedFrames);
-        if (!parsed_source) {
-            return std::unexpected(parsed_source.error());
-        }
-        parsed.push_back(std::move(*parsed_source));
-    }
+    auto parsed_result = parse_sources(sources, 8u);
+    if (!parsed_result) return std::unexpected(parsed_result.error());
+    auto& parsed = *parsed_result;
 
-    const auto& first = parsed.front().scales;
+    const auto& first = parsed.front();
     if (first.empty()) {
         return std::unexpected("ADX recovery: no audio frames");
     }
@@ -174,25 +194,25 @@ std::expected<AdxRecoveryResult, std::string> recover_key(
                 return;
             }
             const uint16_t seed = KEY8_PRIMES[seed_index];
-            if (first.front() != 0u && ((first.front() ^ seed) & Type8Mask) != 0u) {
+            if (first.front().scale != 0u &&
+                ((first.front().scale ^ seed) & Type8Mask) != 0u) {
                 continue;
             }
             for (const uint16_t mult : KEY8_PRIMES) {
                 for (const uint16_t add : KEY8_PRIMES) {
                     const AdxKeyState candidate{seed, mult, add};
-                    const auto validation = validate_candidate(
-                        candidate, parsed, Type8Mask, Type8ConfidenceFrames);
-                    if (!validation.valid) {
+                    if (!validate_candidate(
+                            candidate, parsed, Type8Mask, Type8ConfidenceFrames)) {
                         continue;
                     }
                     const auto full_validation = validate_candidate(
                         candidate, parsed, Type8Mask, UnlimitedFrames);
-                    if (!full_validation.valid) {
+                    if (!full_validation) {
                         continue;
                     }
                     if (!found.exchange(true, std::memory_order_relaxed)) {
                         std::lock_guard lock(recovered_mutex);
-                        recovered = RecoveredCandidate{candidate, full_validation};
+                        recovered = RecoveredCandidate{candidate, *full_validation};
                     }
                     return;
                 }
@@ -217,14 +237,7 @@ std::expected<AdxRecoveryResult, std::string> recover_key(
             .source_count = sources.size(),
             .evidence_count = recovered->validation.evidence,
         };
-        result.candidates.push_back(AdxKeyCandidate{
-            .key = result.key,
-            .score = result.score,
-            .source_count = sources.size(),
-            .evidence_count = result.evidence_frames,
-            .evidence_frames = result.evidence_frames,
-            .canonical_type9_code = result.canonical_type9_code,
-        });
+        add_result_candidate(result);
         return result;
     }
     return std::unexpected("ADX recovery: no structurally valid type-8 triplet");
@@ -285,9 +298,10 @@ struct Type9Candidate {
     const auto matches = [&](const ParsedSource& source, uint16_t phase,
                              size_t begin, size_t end) {
         for (size_t frame = begin; frame < end; ++frame) {
-            if (source.nonempty[frame] &&
+            const auto observed = source[frame];
+            if (observed.nonempty &&
                 cycle[(static_cast<size_t>(phase) + frame) & (Type9CycleFrames - 1u)] !=
-                    static_cast<uint8_t>((source.scales[frame] >> 12u) & 1u)) {
+                    static_cast<uint8_t>((observed.scale >> 12u) & 1u)) {
                 return false;
             }
         }
@@ -295,16 +309,16 @@ struct Type9Candidate {
     };
 
     const auto& primary = sources[primary_index];
-    const size_t prefix = std::min<size_t>(primary.scales.size(), 256u);
+    const size_t prefix = std::min<size_t>(primary.size(), 256u);
     for (uint16_t phase = 0; phase < Type9CycleFrames; ++phase) {
         if (!matches(primary, phase, 0, prefix) ||
-            !matches(primary, phase, prefix, primary.scales.size())) {
+            !matches(primary, phase, prefix, primary.size())) {
             continue;
         }
         bool all_match = true;
         for (size_t source_index = 0; source_index < sources.size(); ++source_index) {
             if (source_index != primary_index &&
-                !matches(sources[source_index], phase, 0, sources[source_index].scales.size())) {
+                !matches(sources[source_index], phase, 0, sources[source_index].size())) {
                 all_match = false;
                 break;
             }
@@ -330,10 +344,10 @@ struct Type9Candidate {
     double scale_quality = 0.0;
     for (size_t source_index = 0; source_index < sources.size(); ++source_index) {
         AdxKeyState state = key;
-        for (size_t frame = 0; frame < parsed[source_index].scales.size(); ++frame) {
-            if (parsed[source_index].nonempty[frame]) {
+        for (const auto frame : parsed[source_index]) {
+            if (frame.nonempty) {
                 const uint16_t scale = static_cast<uint16_t>(
-                    (parsed[source_index].scales[frame] ^ state.xor_value) & 0x0FFFu);
+                    (frame.scale ^ state.xor_value) & 0x0FFFu);
                 scale_quality += 512.0 / (512.0 + scale);
                 ++evidence;
             }
@@ -372,34 +386,28 @@ std::expected<AdxRecoveryResult, std::string> recover_key_type9(
     if (sources.empty()) {
         return std::unexpected("ADX recovery: no sources");
     }
-    std::vector<ParsedSource> parsed;
-    parsed.reserve(sources.size());
-    for (const auto source : sources) {
-        auto parsed_source = parse_source(source, 9u, UnlimitedFrames);
-        if (!parsed_source) {
-            return std::unexpected(parsed_source.error());
-        }
-        parsed.push_back(std::move(*parsed_source));
-    }
+    auto parsed_result = parse_sources(sources, 9u);
+    if (!parsed_result) return std::unexpected(parsed_result.error());
+    auto& parsed = *parsed_result;
     const auto primary = static_cast<size_t>(std::distance(
         parsed.begin(), std::ranges::max_element(
-            parsed, {}, [](const ParsedSource& source) { return source.scales.size(); })));
+            parsed, {}, [](const ParsedSource& source) { return source.size(); })));
     const auto& source = parsed[primary];
-    if (source.scales.size() < Type9CycleFrames) {
+    if (source.size() < Type9CycleFrames) {
         return std::unexpected("ADX recovery: type-9 blind recovery needs at least 8192 frames");
     }
 
     std::array<uint64_t, Type9SignatureLags> observed{};
     for (size_t lag = 1; lag <= Type9SignatureLags; ++lag) {
         for (size_t frame = 0; frame + lag < Type9CycleFrames; ++frame) {
-            if (source.nonempty[frame] && source.nonempty[frame + lag] &&
-                ((source.scales[frame] ^ source.scales[frame + lag]) & 0x1000u) == 0u) {
+            if (source[frame].nonempty && source[frame + lag].nonempty &&
+                ((source[frame].scale ^ source[frame + lag].scale) & 0x1000u) == 0u) {
                 ++observed[lag - 1u];
             }
         }
     }
-    const auto missing = static_cast<uint64_t>(
-        std::count(source.nonempty.begin(), source.nonempty.end(), uint8_t{0}));
+    const auto missing = static_cast<uint64_t>(std::ranges::count_if(
+        source, [](const ParsedFrame frame) { return !frame.nonempty; }));
     // The observed window is not necessarily phase-aligned to a full LCG
     // cycle, so exact full-cycle correlation counts can differ by a small
     // finite-window error even when the triplet is valid.
@@ -442,10 +450,14 @@ std::expected<AdxRecoveryResult, std::string> recover_key_type9(
         candidates.insert(candidates.end(), local.begin(), local.end());
     });
 
+    const uint64_t total_frames = total_frame_count(parsed);
     AdxRecoveryResult best{
         .encryption_type = 9u,
         .score = -std::numeric_limits<float>::infinity(),
-        .source_frames = {},
+        .examined_frames = total_frames,
+        .evidence_frames = evidence_frame_count(parsed),
+        .total_frames = total_frames,
+        .source_frames = source_frame_counts(parsed),
         .candidates = {},
         .source_count = sources.size(),
     };
@@ -459,28 +471,13 @@ std::expected<AdxRecoveryResult, std::string> recover_key_type9(
         if (score > best.score) {
             best.key = key;
             best.score = score;
-            best.examined_frames = total_frame_count(parsed);
-            best.evidence_frames = 0;
-            for (const auto& parsed_source : parsed) {
-                best.evidence_frames += static_cast<uint64_t>(std::count(
-                    parsed_source.nonempty.begin(), parsed_source.nonempty.end(), uint8_t{1}));
-            }
-            best.total_frames = total_frame_count(parsed);
-            best.source_frames = source_frame_counts(parsed);
             best.canonical_type9_code = key9_canonical_code(key);
         }
     }
     if (!std::isfinite(best.score)) {
         return std::unexpected("ADX recovery: no type-9 triplet matched the observed bit stream");
     }
-    best.candidates.push_back(AdxKeyCandidate{
-        .key = best.key,
-        .score = best.score,
-        .source_count = sources.size(),
-        .evidence_count = best.evidence_frames,
-        .evidence_frames = best.evidence_frames,
-        .canonical_type9_code = best.canonical_type9_code,
-    });
+    add_result_candidate(best);
     return best;
 }
 
@@ -490,23 +487,17 @@ std::expected<AdxRecoveryResult, std::string> recover_key_from_scales(
     if (encrypted_sources.empty() || encrypted_sources.size() != plaintext_scales.size()) {
         return std::unexpected("ADX recovery: encrypted/plaintext source count mismatch");
     }
-    std::vector<ParsedSource> encrypted;
-    encrypted.reserve(encrypted_sources.size());
-    for (const auto source : encrypted_sources) {
-        auto parsed = parse_source(source, 9u, UnlimitedFrames);
-        if (!parsed) {
-            return std::unexpected(parsed.error());
-        }
-        encrypted.push_back(std::move(*parsed));
-    }
-    if (encrypted.front().scales.size() < 2u || plaintext_scales.front().size() < 2u) {
+    auto encrypted_result = parse_sources(encrypted_sources, 9u);
+    if (!encrypted_result) return std::unexpected(encrypted_result.error());
+    auto& encrypted = *encrypted_result;
+    if (encrypted.front().size() < 2u || plaintext_scales.front().size() < 2u) {
         return std::unexpected("ADX recovery: at least two known type-9 scales are required");
     }
 
     const uint16_t start = static_cast<uint16_t>(
-        (encrypted.front().scales[0] ^ plaintext_scales.front()[0]) & 0x1FFFu);
+        (encrypted.front()[0].scale ^ plaintext_scales.front()[0]) & 0x1FFFu);
     const uint16_t second = static_cast<uint16_t>(
-        (encrypted.front().scales[1] ^ plaintext_scales.front()[1]) & 0x1FFFu);
+        (encrypted.front()[1].scale ^ plaintext_scales.front()[1]) & 0x1FFFu);
     AdxRecoveryResult result{
         .encryption_type = 9u,
         .total_frames = total_frame_count(encrypted),
@@ -522,7 +513,7 @@ std::expected<AdxRecoveryResult, std::string> recover_key_from_scales(
         const AdxKeyState candidate{start, mult, add};
         bool valid = true;
         for (size_t source_index = 0; source_index < encrypted.size() && valid; ++source_index) {
-            const auto& cipher = encrypted[source_index].scales;
+            const auto& cipher = encrypted[source_index];
             const auto plain = plaintext_scales[source_index];
             if (cipher.size() > plain.size()) {
                 valid = false;
@@ -531,7 +522,7 @@ std::expected<AdxRecoveryResult, std::string> recover_key_from_scales(
             AdxKeyState state = candidate;
             for (size_t frame = 0; frame < cipher.size(); ++frame) {
                 const uint16_t recovered = static_cast<uint16_t>(
-                    (cipher[frame] ^ state.xor_value) & 0x1FFFu);
+                    (cipher[frame].scale ^ state.xor_value) & 0x1FFFu);
                 if (recovered != (plain[frame] & 0x1FFFu)) {
                     valid = false;
                     break;
@@ -544,19 +535,9 @@ std::expected<AdxRecoveryResult, std::string> recover_key_from_scales(
             result.canonical_type9_code = key9_canonical_code(candidate);
             result.score = 1.0f;
             result.examined_frames = result.total_frames;
-            for (const auto& source : encrypted) {
-                result.evidence_frames += static_cast<uint64_t>(std::count(
-                    source.nonempty.begin(), source.nonempty.end(), uint8_t{1}));
-            }
+            result.evidence_frames = evidence_frame_count(encrypted);
             result.evidence_count = result.evidence_frames;
-            result.candidates.push_back(AdxKeyCandidate{
-                .key = result.key,
-                .score = result.score,
-                .source_count = encrypted_sources.size(),
-                .evidence_count = result.evidence_frames,
-                .evidence_frames = result.evidence_frames,
-                .canonical_type9_code = result.canonical_type9_code,
-            });
+            add_result_candidate(result);
             return result;
         }
     }
@@ -586,8 +567,7 @@ std::expected<AdxRecoveryResult, std::string> recover_key(
             combined.source_frames.end(), recovered->source_frames.begin(), recovered->source_frames.end());
         for (const auto& candidate : recovered->candidates) {
             auto existing = std::ranges::find_if(combined.candidates, [&](const auto& current) {
-                return current.key.xor_value == candidate.key.xor_value &&
-                    current.key.mult == candidate.key.mult && current.key.add == candidate.key.add;
+                return current.key == candidate.key;
             });
             if (existing == combined.candidates.end()) {
                 combined.candidates.push_back(candidate);

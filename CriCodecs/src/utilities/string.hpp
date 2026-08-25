@@ -4,7 +4,6 @@
  * @brief Small ASCII/string helpers shared by format modules.
  *
  * Project-local text normalization helpers for CriCodecs parsers and builders.
- * Implemented by Youjose.
  */
 
 #include <algorithm>
@@ -64,27 +63,12 @@ namespace detail {
 }
 
 [[nodiscard]] inline bool equals_ascii_case_insensitive(std::string_view lhs, std::string_view rhs) {
-    if (lhs.size() != rhs.size()) {
-        return false;
-    }
-    for (size_t index = 0; index < lhs.size(); ++index) {
-        if (!detail::ascii_eq_no_case(lhs[index], rhs[index])) {
-            return false;
-        }
-    }
-    return true;
+    return std::ranges::equal(lhs, rhs, detail::ascii_eq_no_case);
 }
 
 [[nodiscard]] inline bool starts_with_case_insensitive(std::string_view text, std::string_view prefix) {
-    if (text.size() < prefix.size()) {
-        return false;
-    }
-    for (size_t index = 0; index < prefix.size(); ++index) {
-        if (!detail::ascii_eq_no_case(text[index], prefix[index])) {
-            return false;
-        }
-    }
-    return true;
+    return text.size() >= prefix.size()
+        && std::ranges::equal(text.substr(0, prefix.size()), prefix, detail::ascii_eq_no_case);
 }
 
 } // namespace cricodecs::util

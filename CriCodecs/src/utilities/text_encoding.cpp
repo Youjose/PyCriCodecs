@@ -3,8 +3,7 @@
  * @brief Legacy CRI string encoding conversion.
  *
  * Project-local implementation for preserving raw UTF metadata bytes while
- * decoding known CRI-era text encodings at API boundaries. Implemented by
- * Youjose.
+ * decoding known CRI-era text encodings at API boundaries.
  */
 
 #include "text_encoding.hpp"
@@ -284,47 +283,35 @@ std::expected<std::wstring, std::string> windows_decode(
     return wide;
 }
 
-std::expected<std::string, std::string> windows_encode_utf8(std::wstring_view wide) {
-    if (wide.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
-        return std::unexpected("text conversion input exceeds the Windows API size limit");
-    }
-    const auto wide_size = static_cast<int>(wide.size());
-    const auto output_size = WideCharToMultiByte(
-        CP_UTF8, WC_ERR_INVALID_CHARS, wide.data(), wide_size, nullptr, 0, nullptr, nullptr);
-    if (output_size <= 0) {
-        return std::unexpected("Windows UTF-8 encode failed with error " + std::to_string(GetLastError()));
-    }
-    std::string output(static_cast<size_t>(output_size), '\0');
-    if (WideCharToMultiByte(
-            CP_UTF8, WC_ERR_INVALID_CHARS, wide.data(), wide_size,
-            output.data(), output_size, nullptr, nullptr
-        ) != output_size) {
-        return std::unexpected("Windows UTF-8 encode failed with error " + std::to_string(GetLastError()));
-    }
-    return output;
-}
-
-std::expected<std::string, std::string> windows_encode_code_page(
+std::expected<std::string, std::string> windows_encode(
     std::wstring_view wide,
     UINT code_page
 ) {
     if (wide.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
         return std::unexpected("text conversion input exceeds the Windows API size limit");
     }
+    const bool utf8 = code_page == CP_UTF8;
     const auto wide_size = static_cast<int>(wide.size());
+    const DWORD flags = utf8 ? WC_ERR_INVALID_CHARS : WC_NO_BEST_FIT_CHARS;
     BOOL used_default = FALSE;
+    BOOL* used_default_ptr = utf8 ? nullptr : &used_default;
     const auto output_size = WideCharToMultiByte(
-        code_page, WC_NO_BEST_FIT_CHARS, wide.data(), wide_size, nullptr, 0, nullptr, &used_default);
+        code_page, flags, wide.data(), wide_size, nullptr, 0, nullptr, used_default_ptr);
     if (output_size <= 0 || used_default) {
-        return std::unexpected("Windows text encode failed with error " + std::to_string(GetLastError()));
+        return std::unexpected(
+            std::string(utf8 ? "Windows UTF-8" : "Windows text")
+            + " encode failed with error " + std::to_string(GetLastError()));
     }
+
     std::string output(static_cast<size_t>(output_size), '\0');
     used_default = FALSE;
     if (WideCharToMultiByte(
-            code_page, WC_NO_BEST_FIT_CHARS, wide.data(), wide_size,
-            output.data(), output_size, nullptr, &used_default
+            code_page, flags, wide.data(), wide_size,
+            output.data(), output_size, nullptr, used_default_ptr
         ) != output_size || used_default) {
-        return std::unexpected("Windows text encode failed with error " + std::to_string(GetLastError()));
+        return std::unexpected(
+            std::string(utf8 ? "Windows UTF-8" : "Windows text")
+            + " encode failed with error " + std::to_string(GetLastError()));
     }
     return output;
 }
@@ -344,10 +331,7 @@ std::expected<std::string, std::string> platform_convert(
     if (!wide) {
         return std::unexpected(wide.error());
     }
-    if (*to_page == CP_UTF8) {
-        return windows_encode_utf8(*wide);
-    }
-    return windows_encode_code_page(*wide, *to_page);
+    return windows_encode(*wide, *to_page);
 }
 #else
 bool valid_utf8(std::span<const uint8_t> input) {

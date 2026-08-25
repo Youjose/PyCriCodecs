@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -64,13 +65,13 @@ namespace cricodecs::adx {
 
     struct AdxDecodeResult {
         std::vector<int16_t> pcm_data;
-        uint32_t sample_rate;
-        uint8_t channels;
-        uint32_t sample_count;
-        bool has_loops;
+        uint32_t sample_rate{};
+        uint8_t channels{};
+        uint32_t sample_count{};
+        bool has_loops{};
         std::vector<AdxLoop> loops;
-        uint32_t loop_start;
-        uint32_t loop_end;
+        uint32_t loop_start{};
+        uint32_t loop_end{};
     };
 
     struct AdxEncodeConfig;
@@ -103,17 +104,15 @@ namespace cricodecs::adx {
         std::vector<AdxLoop> m_loops;
         std::vector<AdpcmHistory> m_history;
         bool m_loaded = false;
-        
-        uint32_t m_data_block_size = 0;
-        uint32_t m_samples_per_block = 0;
         int32_t m_coefficients[2] = {0, 0};
-        
-        AdxKeyState m_key_state{};
-        bool m_key_set = false;
-        ahx::AhxKey m_ahx_key{};
-        bool m_ahx_key_set = false;
+
+        std::optional<AdxKeyState> m_key;
+        std::optional<ahx::AhxKey> m_ahx_key;
         
         std::expected<void, AdxError> parse_header();
+        [[nodiscard]] uint32_t samples_per_block() const noexcept;
+        [[nodiscard]] ahx::AhxDecodeConfig ahx_config() const;
+        void set_shared_key(AdxKeyState key);
         void calculate_coefficients();
         void decode_block(io::reader& reader, int16_t* output, 
                           size_t output_stride, AdpcmHistory& history,
@@ -154,6 +153,8 @@ namespace cricodecs::adx {
         std::filesystem::path m_source_path;
         AdxDecoder m_decoder;
 
+        [[nodiscard]] std::expected<std::vector<uint8_t>, AdxError> source_bytes(
+            std::string_view context) const;
         void copy_decode_settings_to(AdxDecoder& decoder) const;
     };
 

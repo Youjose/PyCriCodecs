@@ -50,19 +50,7 @@ reader::reader() noexcept = default;
 
 reader::~reader() noexcept { close(); }
 
-reader::reader(reader&& other) noexcept
-#if defined(_WIN32)
-    : m_handles(std::move(other.m_handles)),
-#elif !defined(USE_FALLBACK_READER) && (defined(__unix__) || defined(__APPLE__) || defined(__linux__))
-    : m_descriptor(std::move(other.m_descriptor)),
-#else
-    : m_fallback(std::move(other.m_fallback)),
-#endif
-      m_data_ptr(std::exchange(other.m_data_ptr, nullptr)),
-      m_data_size(std::exchange(other.m_data_size, 0)),
-      m_cursor(std::exchange(other.m_cursor, 0)),
-      m_pattern(std::exchange(other.m_pattern, access_pattern::normal)),
-      m_has_external_source(std::exchange(other.m_has_external_source, false)) {}
+reader::reader(reader&& other) noexcept : reader() { *this = std::move(other); }
 
 reader& reader::operator=(reader&& other) noexcept {
     if (this == &other) return *this;
@@ -78,7 +66,6 @@ reader& reader::operator=(reader&& other) noexcept {
     m_data_ptr = std::exchange(other.m_data_ptr, nullptr);
     m_data_size = std::exchange(other.m_data_size, 0);
     m_cursor = std::exchange(other.m_cursor, 0);
-    m_pattern = std::exchange(other.m_pattern, access_pattern::normal);
     m_has_external_source = std::exchange(other.m_has_external_source, false);
     return *this;
 }
@@ -104,7 +91,6 @@ std::expected<void, const char*> reader::open(const uint8_t* data, size_t size) 
     m_data_ptr = data;
     m_data_size = size;
     m_cursor = 0;
-    m_pattern = access_pattern::normal;
     m_has_external_source = true;
     return {};
 }
@@ -129,7 +115,6 @@ void reader::close() noexcept {
     m_data_ptr = nullptr;
     m_data_size = 0;
     m_cursor = 0;
-    m_pattern = access_pattern::normal;
     m_has_external_source = false;
 }
 
@@ -259,7 +244,6 @@ std::expected<void, const char*> reader::open_file_impl(
 #endif
 
     m_cursor = 0;
-    m_pattern = pattern;
     m_has_external_source = false;
     return {};
 }

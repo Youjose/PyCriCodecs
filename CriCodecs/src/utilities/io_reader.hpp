@@ -4,7 +4,7 @@
  * @brief Shared byte-span and file-backed reader utilities.
  *
  * Project-local IO abstraction for CriCodecs parsers, with platform-backed
- * file loading where available. Implemented by Youjose.
+ * file loading where available.
  */
 
 #include <filesystem>
@@ -69,8 +69,24 @@ public:
     constexpr explicit bit_reader(std::span<const uint8_t> data) noexcept
         : m_data(data.data()), m_size(data.size() * 8), m_pos(0) {}
 
+    // Apply a byte substitution table lazily inside the requested byte range.
+    // This keeps encrypted bit grammars on the same reader as clear data.
+    constexpr bit_reader(
+        std::span<const uint8_t> data,
+        std::span<const uint8_t, 256> byte_map,
+        size_t mapped_begin,
+        size_t mapped_end) noexcept
+        : m_data(data.data())
+        , m_size(data.size() * 8)
+        , m_map(byte_map.data())
+        , m_mapped_begin(std::min(mapped_begin, data.size()))
+        , m_mapped_end(std::min(mapped_end, data.size())) {}
+
     [[nodiscard]] constexpr uint32_t read(int bits) noexcept {
-        if (bits <= 0 || bits > 32 || m_pos + static_cast<size_t>(bits) > m_size) return 0;
+        if (bits <= 0 || bits > 32 || remaining() < static_cast<size_t>(bits)) {
+            m_valid = false;
+            return 0;
+        }
         uint32_t result = 0;
         // Optimized: process byte-aligned chunks where possible
         int remaining = bits;
@@ -80,7 +96,7 @@ public:
             int available = 8 - bit_offset;
             int take = remaining < available ? remaining : available;
             uint32_t mask = (1u << take) - 1u;
-            uint32_t val = (m_data[byte_pos] >> (available - take)) & mask;
+            uint32_t val = (byte(byte_pos) >> (available - take)) & mask;
             result = (result << take) | val;
             m_pos += take;
             remaining -= take;
@@ -102,29 +118,41 @@ public:
     }
 
     [[nodiscard]] constexpr uint32_t peek(int bits) noexcept {
-        size_t saved = m_pos;
-        uint32_t result = read(bits);
-        m_pos = saved;
+        const size_t saved_position = m_pos;
+        const bool saved_valid = m_valid;
+        const uint32_t result = read(bits);
+        m_pos = saved_position;
+        m_valid = saved_valid;
         return result;
     }
 
     constexpr void skip(int bits) noexcept {
         if (bits >= 0) {
-            const size_t delta = static_cast<size_t>(bits);
-            m_pos = delta > m_size - (m_pos > m_size ? m_size : m_pos) ? m_size : m_pos + delta;
-        } else {
-            const size_t delta = static_cast<size_t>(-bits);
-            m_pos = delta > m_pos ? 0 : m_pos - delta;
+            m_pos += std::min(static_cast<size_t>(bits), remaining());
+            return;
         }
+        const auto delta = static_cast<size_t>(-static_cast<int64_t>(bits));
+        m_pos -= std::min(delta, m_pos);
     }
     [[nodiscard]] constexpr size_t position() const noexcept { return m_pos; }
     [[nodiscard]] constexpr size_t remaining() const noexcept { return m_size > m_pos ? m_size - m_pos : 0; }
+    [[nodiscard]] constexpr bool valid() const noexcept { return m_valid; }
+    [[nodiscard]] constexpr uint8_t byte(size_t position) const noexcept {
+        const uint8_t value = m_data[position];
+        return m_map != nullptr && position >= m_mapped_begin && position < m_mapped_end
+            ? m_map[value]
+            : value;
+    }
     constexpr void set_position(size_t pos) noexcept { m_pos = pos; }
 
 private:
     const uint8_t* m_data = nullptr;
     size_t m_size = 0;   // in bits
     size_t m_pos = 0;    // in bits
+    const uint8_t* m_map = nullptr;
+    size_t m_mapped_begin = 0;
+    size_t m_mapped_end = 0;
+    bool m_valid = true;
 };
 
 class bit_writer {
@@ -148,7 +176,8 @@ public:
     }
 
     constexpr void write(uint32_t value, int bits) noexcept {
-        if (bits <= 0 || m_pos + static_cast<size_t>(bits) > m_size) return;
+        if (bits <= 0 || bits > 32 || m_pos > m_size
+            || static_cast<size_t>(bits) > m_size - m_pos) return;
         // Optimized: process byte-aligned chunks
         int remaining = bits;
         while (remaining > 0) {
@@ -199,8 +228,6 @@ public:
 
     [[nodiscard]] std::span<const uint8_t> data() const noexcept;
     [[nodiscard]] size_t size() const noexcept;
-    [[nodiscard]] access_pattern pattern() const noexcept { return m_pattern; }
-
     [[nodiscard]] size_t tell() const noexcept { return m_cursor; }
     [[nodiscard]] size_t remaining() const noexcept { return m_data_size > m_cursor ? m_data_size - m_cursor : 0; }
     
@@ -291,7 +318,6 @@ private:
     const uint8_t* m_data_ptr = nullptr;
     size_t m_data_size = 0;
     size_t m_cursor = 0;
-    access_pattern m_pattern = access_pattern::normal;
     bool m_has_external_source = false;  // true when bound to caller-owned memory, including empty spans
 };
 

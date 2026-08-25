@@ -4,7 +4,6 @@
  * @brief Shared byte/file writer utilities.
  *
  * Project-local output abstraction for CriCodecs builders and extractors.
- * Implemented by Youjose.
  */
 
 #include <cstdint>
@@ -43,8 +42,6 @@ public:
     std::expected<void, const char*> close() noexcept;
 
     [[nodiscard]] bool is_open() const noexcept;
-    [[nodiscard]] size_t bytes_written() const noexcept { return m_total_written + m_buffer_pos; }
-
     std::expected<void, const char*> write(const void* data, size_t size);
     std::expected<void, const char*> write(std::span<const uint8_t> data);
     std::expected<void, const char*> flush();
@@ -67,10 +64,6 @@ public:
         write_to_buffer(data.data(), data.size());
     }
 
-    void write_string(std::string_view str) noexcept {
-        write_to_buffer(reinterpret_cast<const uint8_t*>(str.data()), str.size());
-    }
-
     void write_zeros(size_t count) noexcept;
 
 private:
@@ -81,7 +74,6 @@ private:
 #endif
     std::vector<uint8_t> m_buffer;
     size_t m_buffer_pos = 0;
-    size_t m_total_written = 0;
     bool m_buffer_zeroed = false;
     bool m_write_failed = false;
 

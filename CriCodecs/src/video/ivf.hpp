@@ -5,7 +5,7 @@
  * @brief IVF/VP9 frame traversal used by the USM builder.
  *
  * This reader preserves the raw IVF file header and per-frame records so USM
- * muxing can round-trip VP9 streams as authored, while still exposing keyframe
+ * muxing can round-trip VP9 streams in their original order while exposing keyframe
  * markers needed for generated VIDEO_SEEKINFO metadata.
  */
 
@@ -48,7 +48,9 @@ public:
     std::expected<void, std::string> open(std::span<const uint8_t> bytes);
 
     [[nodiscard]] const IvfHeader& get_header() const noexcept { return m_header; }
-    [[nodiscard]] std::span<const uint8_t> get_raw_header() const noexcept { return m_raw_header; }
+    [[nodiscard]] std::span<const uint8_t> get_raw_header() const noexcept {
+        return m_reader.size() >= 32 ? m_reader.data().first(32) : std::span<const uint8_t>{};
+    }
     [[nodiscard]] bool has_frames() const;
     std::expected<IvfFrame, std::string> read_next_frame();
 
@@ -57,8 +59,6 @@ private:
 
     io::reader m_reader;
     IvfHeader m_header;
-    std::span<const uint8_t> m_raw_header;
-    uint32_t m_current_frame = 0;
 };
 
 /// Accumulates an IVF presentation timeline without assuming one PTS unit per frame.

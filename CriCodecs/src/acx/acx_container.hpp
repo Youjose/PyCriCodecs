@@ -123,6 +123,8 @@ private:
     std::vector<AcxEntry> m_entries;
 
     [[nodiscard]] std::expected<void, std::string> parse();
+    [[nodiscard]] std::expected<std::vector<std::vector<uint8_t>>, std::string>
+        copy_payloads() const;
     [[nodiscard]] std::expected<void, std::string> replace_payloads(std::vector<std::vector<uint8_t>> payloads);
 };
 

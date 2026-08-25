@@ -145,8 +145,6 @@ template <typename T>
         };
     }
 
-    const std::error_code size_error{};
-    (void) size_error;
     std::error_code file_size_error;
     const uintmax_t file_size = std::filesystem::file_size(path, file_size_error);
     const bool oversized_unknown = file_size_error || file_size > kUnknownPathProbeLimit;
@@ -159,8 +157,8 @@ template <typename T>
         candidates = fallback_probe_order(false);
     }
 
-    std::vector<Failure> failures;
-    failures.reserve(candidates.size());
+    std::optional<std::pair<Format, std::string>> best_failure;
+    int best_score = std::numeric_limits<int>::min();
 
     for (const auto format : candidates) {
         if (!format_supported_in_cli(format)) {
@@ -173,24 +171,23 @@ template <typename T>
                 .document = std::move(*loaded),
             };
         }
-        failures.push_back(Failure{
-            .format = format,
-            .message = loaded.error(),
-            .score = error_suspicion(loaded.error()),
-        });
+        const int score = error_suspicion(loaded.error());
+        if (score > best_score) {
+            best_failure = std::pair{format, loaded.error()};
+            best_score = score;
+        }
     }
 
-    if (failures.empty()) {
+    if (!best_failure) {
         return std::unexpected("could not detect supported format");
     }
 
-    const auto best = std::ranges::max_element(failures, {}, &Failure::score);
     std::string message = "could not detect supported format";
-    if (best != failures.end() && best->score >= 2) {
+    if (best_score >= 2) {
         message += "; most suspicious failure from ";
-        message += format_key(best->format);
+        message += format_key(best_failure->first);
         message += ": ";
-        message += best->message;
+        message += best_failure->second;
     }
     return std::unexpected(std::move(message));
 }

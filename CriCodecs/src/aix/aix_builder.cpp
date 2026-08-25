@@ -9,7 +9,6 @@
 #include "aix_container.hpp"
 
 #include <algorithm>
-#include <array>
 #include <limits>
 #include <numeric>
 #include <span>
@@ -47,28 +46,27 @@ constexpr uint16_t adx_signature = 0x8000;
 struct PreparedLayer {
     std::span<const uint8_t> bytes;
     adx::AdxHeader header{};
-    uint16_t first_payload_size = 0;
-    uint16_t tail_payload_size = 0;
-    uint32_t steady_payload_size = 0;
-    size_t middle_bytes = 0;
 };
+
+[[nodiscard]] constexpr size_t first_payload_size(const PreparedLayer& layer) noexcept {
+    return static_cast<size_t>(layer.header.data_offset) + 4;
+}
+
+[[nodiscard]] constexpr size_t middle_payload_size(const PreparedLayer& layer) noexcept {
+    return layer.bytes.size() - first_payload_size(layer) - layer.header.block_size;
+}
 
 [[nodiscard]] std::string build_error(std::string_view detail) {
     return "AIX build failed: " + std::string(detail);
 }
 
-[[nodiscard]] std::string indexed_build_error(
-    size_t segment_index,
-    std::optional<size_t> layer_index,
-    std::string_view detail
-) {
-    std::string error = "AIX build failed: segment " + std::to_string(segment_index);
-    if (layer_index.has_value()) {
-        error += " layer " + std::to_string(*layer_index);
-    }
-    error += ": ";
-    error += detail;
-    return error;
+[[nodiscard]] std::string segment_error(size_t segment, std::string_view detail) {
+    return "AIX build failed: segment " + std::to_string(segment) + ": " + std::string(detail);
+}
+
+[[nodiscard]] std::string layer_error(size_t segment, size_t layer, std::string_view detail) {
+    return "AIX build failed: segment " + std::to_string(segment) +
+        " layer " + std::to_string(layer) + ": " + std::string(detail);
 }
 
 [[nodiscard]] bool headers_match_for_same_layer(
@@ -89,17 +87,16 @@ struct PreparedLayer {
 }
 
 void append_aix_packet(
-    std::vector<uint8_t>& segment_bytes,
+    std::vector<uint8_t>& output,
     uint8_t layer_index,
     uint8_t layer_count,
     uint32_t sequence,
     std::span<const uint8_t> payload
 ) {
-    const size_t packet_offset = segment_bytes.size();
-    segment_bytes.resize(packet_offset + aixp_header_size + payload.size(), 0);
+    const size_t packet_offset = output.size();
+    output.resize(packet_offset + aixp_header_size + payload.size(), 0);
 
-    auto packet = std::span<uint8_t>(segment_bytes).subspan(packet_offset, aixp_header_size + payload.size());
-    std::copy(aixf_magic.begin(), aixf_magic.end(), packet.begin());
+    auto packet = std::span<uint8_t>(output).subspan(packet_offset, aixp_header_size + payload.size());
     write_be<uint32_t>(packet.data() + 0x00, aixp_magic);
     write_be<uint32_t>(packet.data() + 0x04, static_cast<uint32_t>(aixp_header_size + payload.size() - aixe_header_size));
     packet[0x08] = layer_index;
@@ -109,15 +106,15 @@ void append_aix_packet(
     std::copy(payload.begin(), payload.end(), packet.begin() + static_cast<std::ptrdiff_t>(aixp_header_size));
 }
 
-void append_aixe_block(std::vector<uint8_t>& segment_bytes) {
-    const size_t aligned_size = static_cast<size_t>(align_up(segment_bytes.size() + aixe_header_size, segment_alignment));
-    const size_t aixe_total_size = aligned_size - segment_bytes.size();
-    const size_t block_offset = segment_bytes.size();
+void append_aixe_block(std::vector<uint8_t>& output) {
+    const size_t aligned_size = static_cast<size_t>(align_up(output.size() + aixe_header_size, segment_alignment));
+    const size_t aixe_total_size = aligned_size - output.size();
+    const size_t block_offset = output.size();
 
-    segment_bytes.resize(aligned_size, 0);
-    write_be<uint32_t>(segment_bytes.data() + block_offset + 0x00, aixe_magic);
+    output.resize(aligned_size, 0);
+    write_be<uint32_t>(output.data() + block_offset + 0x00, aixe_magic);
     write_be<uint32_t>(
-        segment_bytes.data() + block_offset + 0x04,
+        output.data() + block_offset + 0x04,
         static_cast<uint32_t>(aixe_total_size - aixe_header_size));
 }
 
@@ -126,10 +123,10 @@ void append_aixe_block(std::vector<uint8_t>& segment_bytes) {
     size_t segment_index
 ) {
     if (segment.layer_adx_data.empty()) {
-        return std::unexpected(indexed_build_error(segment_index, std::nullopt, "must contain at least one layer"));
+        return std::unexpected(segment_error(segment_index, "must contain at least one layer"));
     }
     if (segment.layer_adx_data.size() > official_build_limit) {
-        return std::unexpected(indexed_build_error(segment_index, std::nullopt, "exceeds the official 32-layer builder limit"));
+        return std::unexpected(segment_error(segment_index, "exceeds the official 32-layer builder limit"));
     }
 
     std::vector<PreparedLayer> prepared;
@@ -138,64 +135,58 @@ void append_aixe_block(std::vector<uint8_t>& segment_bytes) {
     for (size_t layer_index = 0; layer_index < segment.layer_adx_data.size(); ++layer_index) {
         const auto& layer_bytes = segment.layer_adx_data[layer_index];
         if (layer_bytes.empty()) {
-            return std::unexpected(indexed_build_error(segment_index, layer_index, "ADX data is empty"));
+            return std::unexpected(layer_error(segment_index, layer_index, "ADX data is empty"));
         }
 
         auto adx_file = adx::Adx::load(std::span<const uint8_t>(layer_bytes.data(), layer_bytes.size()));
         if (!adx_file) {
-            return std::unexpected(indexed_build_error(segment_index, layer_index, adx_file.error()));
+            return std::unexpected(layer_error(segment_index, layer_index, adx_file.error()));
         }
 
         const auto& header = adx_file->header();
         if (header.signature != adx_signature) {
-            return std::unexpected(indexed_build_error(segment_index, layer_index, "does not start with an ADX stream"));
+            return std::unexpected(layer_error(segment_index, layer_index, "does not start with an ADX stream"));
         }
         if (adx_file->is_ahx()) {
-            return std::unexpected(indexed_build_error(segment_index, layer_index, "AHX-in-ADX streams are not supported"));
+            return std::unexpected(layer_error(segment_index, layer_index, "AHX-in-ADX streams are not supported"));
         }
         if (header.sample_rate == 0 || header.sample_count == 0) {
-            return std::unexpected(indexed_build_error(segment_index, layer_index, "uses an invalid ADX sample rate or sample count"));
+            return std::unexpected(layer_error(segment_index, layer_index, "uses an invalid ADX sample rate or sample count"));
         }
         if (header.block_size == 0) {
-            return std::unexpected(indexed_build_error(segment_index, layer_index, "uses an invalid ADX block size"));
+            return std::unexpected(layer_error(segment_index, layer_index, "uses an invalid ADX block size"));
         }
 
         const uint32_t first_payload_size = static_cast<uint32_t>(header.data_offset) + 4u;
         if (first_payload_size > std::numeric_limits<uint16_t>::max()) {
-            return std::unexpected(indexed_build_error(segment_index, layer_index, "uses an ADX header larger than the AIX packet field supports"));
+            return std::unexpected(layer_error(segment_index, layer_index, "uses an ADX header larger than the AIX packet field supports"));
         }
         if (layer_bytes.size() < first_payload_size + header.block_size) {
-            return std::unexpected(indexed_build_error(segment_index, layer_index, "is too small for the reviewed AIX packetization model"));
+            return std::unexpected(layer_error(segment_index, layer_index, "is too small for the reviewed AIX packetization model"));
         }
 
-        const size_t middle_bytes = layer_bytes.size() - first_payload_size - header.block_size;
         const uint32_t steady_payload_size = static_cast<uint32_t>(header.block_size) * 150u;
         if (steady_payload_size > std::numeric_limits<uint16_t>::max()) {
-            return std::unexpected(indexed_build_error(segment_index, layer_index, "uses an ADX block size too large for the reviewed steady-state packet size"));
+            return std::unexpected(layer_error(segment_index, layer_index, "uses an ADX block size too large for the reviewed steady-state packet size"));
         }
 
         PreparedLayer layer{
             .bytes = std::span<const uint8_t>(layer_bytes.data(), layer_bytes.size()),
             .header = header,
-            .first_payload_size = static_cast<uint16_t>(first_payload_size),
-            .tail_payload_size = header.block_size,
-            .steady_payload_size = steady_payload_size,
-            .middle_bytes = middle_bytes,
         };
 
         if (!prepared.empty()) {
             const auto& reference = prepared.front();
             if (header.sample_rate != reference.header.sample_rate) {
-                return std::unexpected(indexed_build_error(segment_index, layer_index, "sample rate does not match the other layers in the segment"));
+                return std::unexpected(layer_error(segment_index, layer_index, "sample rate does not match the other layers in the segment"));
             }
             if (header.sample_count != reference.header.sample_count) {
-                return std::unexpected(indexed_build_error(segment_index, layer_index, "sample count does not match the other layers in the segment"));
+                return std::unexpected(layer_error(segment_index, layer_index, "sample count does not match the other layers in the segment"));
             }
-            if (layer.first_payload_size != reference.first_payload_size ||
-                layer.tail_payload_size != reference.tail_payload_size ||
-                layer.steady_payload_size != reference.steady_payload_size ||
-                layer.middle_bytes != reference.middle_bytes) {
-                return std::unexpected(indexed_build_error(
+            if (header.data_offset != reference.header.data_offset ||
+                header.block_size != reference.header.block_size ||
+                layer.bytes.size() != reference.bytes.size()) {
+                return std::unexpected(layer_error(
                     segment_index,
                     layer_index,
                     "does not match the reviewed per-layer packet cadence of the other layers in the segment"));
@@ -208,67 +199,65 @@ void append_aixe_block(std::vector<uint8_t>& segment_bytes) {
     return prepared;
 }
 
-[[nodiscard]] std::expected<std::vector<uint8_t>, AixError> build_segment_bytes(
+[[nodiscard]] std::expected<uint32_t, AixError> append_segment(
+    std::vector<uint8_t>& output,
     std::span<const PreparedLayer> layers,
     size_t segment_index
 ) {
-    std::vector<uint8_t> segment_bytes;
+    const size_t segment_offset = output.size();
     const auto layer_count = static_cast<uint8_t>(layers.size());
+    const size_t first_size = first_payload_size(layers.front());
+    const size_t middle_size = middle_payload_size(layers.front());
+    const size_t steady_size = static_cast<size_t>(layers.front().header.block_size) * 150;
+    const size_t tail_size = layers.front().header.block_size;
 
     for (size_t layer_index = 0; layer_index < layers.size(); ++layer_index) {
-        const auto& layer = layers[layer_index];
         append_aix_packet(
-            segment_bytes,
+            output,
             static_cast<uint8_t>(layer_index),
             layer_count,
             first_sequence,
-            layer.bytes.first(layer.first_payload_size)
+            layers[layer_index].bytes.first(first_size)
         );
     }
 
-    const size_t middle_total = layers.front().middle_bytes;
-    std::vector<size_t> middle_offsets(layers.size(), layers.front().first_payload_size);
-    size_t remaining_middle = middle_total;
+    size_t middle_offset = first_size;
     uint32_t sequence = 0;
 
-    while (remaining_middle > 0) {
-        const size_t chunk_size = std::min(
-            remaining_middle,
-            static_cast<size_t>(layers.front().steady_payload_size));
+    while (middle_offset < first_size + middle_size) {
+        const size_t chunk_size = std::min(steady_size, first_size + middle_size - middle_offset);
         for (size_t layer_index = 0; layer_index < layers.size(); ++layer_index) {
-            const auto& layer = layers[layer_index];
             append_aix_packet(
-                segment_bytes,
+                output,
                 static_cast<uint8_t>(layer_index),
                 layer_count,
                 sequence,
-                layer.bytes.subspan(middle_offsets[layer_index], chunk_size)
+                layers[layer_index].bytes.subspan(middle_offset, chunk_size)
             );
-            middle_offsets[layer_index] += chunk_size;
         }
-        remaining_middle -= chunk_size;
-        if (sequence == std::numeric_limits<uint32_t>::max() - 1u && remaining_middle > 0) {
-            return std::unexpected(indexed_build_error(segment_index, std::nullopt, "would overflow the reviewed AIX sequence field"));
+        middle_offset += chunk_size;
+        if (sequence == std::numeric_limits<uint32_t>::max() - 1u && middle_offset < first_size + middle_size) {
+            return std::unexpected(segment_error(segment_index, "would overflow the reviewed AIX sequence field"));
         }
         ++sequence;
     }
 
     for (size_t layer_index = 0; layer_index < layers.size(); ++layer_index) {
-        const auto& layer = layers[layer_index];
         append_aix_packet(
-            segment_bytes,
+            output,
             static_cast<uint8_t>(layer_index),
             layer_count,
             final_sequence,
-            layer.bytes.last(layer.tail_payload_size)
+            layers[layer_index].bytes.last(tail_size)
         );
     }
 
-    append_aixe_block(segment_bytes);
-    if (segment_bytes.size() > std::numeric_limits<uint32_t>::max()) {
-        return std::unexpected(indexed_build_error(segment_index, std::nullopt, "segment grew past the supported size range"));
+    // Each segment starts aligned, so aligning the archive pads this AIXE tail.
+    append_aixe_block(output);
+    if (output.size() > std::numeric_limits<uint32_t>::max()) {
+        return std::unexpected(segment_error(segment_index, "segment offsets exceeded the supported archive size range"));
     }
-    return segment_bytes;
+    return static_cast<uint32_t>(output.size() - segment_offset);
 }
 
 void move_item(auto& items, size_t from, size_t to) {
@@ -309,36 +298,24 @@ std::expected<std::vector<uint8_t>, AixError> Aix::build(std::span<const AixBuil
     for (size_t segment_index = 1; segment_index < prepared_segments.size(); ++segment_index) {
         const auto& segment = prepared_segments[segment_index];
         if (segment.size() != layer_count) {
-            return std::unexpected(indexed_build_error(
+            return std::unexpected(segment_error(
                 segment_index,
-                std::nullopt,
                 "layer count does not match the first segment"));
         }
         if (segment.front().header.sample_rate != reference_layers.front().header.sample_rate) {
-            return std::unexpected(indexed_build_error(
+            return std::unexpected(segment_error(
                 segment_index,
-                std::nullopt,
                 "sample rate does not match the first segment"));
         }
 
         for (size_t layer_index = 0; layer_index < layer_count; ++layer_index) {
             if (!headers_match_for_same_layer(reference_layers[layer_index].header, segment[layer_index].header)) {
-                return std::unexpected(indexed_build_error(
+                return std::unexpected(layer_error(
                     segment_index,
                     layer_index,
                     "does not match the reviewed ADX framing of the same layer in the first segment"));
             }
         }
-    }
-
-    std::vector<std::vector<uint8_t>> segment_blobs;
-    segment_blobs.reserve(prepared_segments.size());
-    for (size_t segment_index = 0; segment_index < prepared_segments.size(); ++segment_index) {
-        auto blob = build_segment_bytes(prepared_segments[segment_index], segment_index);
-        if (!blob) {
-            return std::unexpected(blob.error());
-        }
-        segment_blobs.push_back(std::move(*blob));
     }
 
     std::vector<uint8_t> output(first_segment_offset, 0);
@@ -349,29 +326,10 @@ std::expected<std::vector<uint8_t>, AixError> Aix::build(std::span<const AixBuil
     write_be<uint16_t>(output.data() + 0x18, static_cast<uint16_t>(prepared_segments.size()));
 
     const auto& first_layer = prepared_segments.front().front();
-    if (first_layer.first_payload_size >= 6u) {
-        const auto cri_trailer = first_layer.bytes.subspan(first_layer.first_payload_size - 6u, 6u);
+    const size_t first_size = first_payload_size(first_layer);
+    if (first_size >= 6) {
+        const auto cri_trailer = first_layer.bytes.subspan(first_size - 6, 6);
         std::copy(cri_trailer.begin(), cri_trailer.end(), output.begin() + static_cast<std::ptrdiff_t>(first_segment_offset - 6u));
-    }
-
-    uint32_t segment_offset = first_segment_offset;
-    for (size_t segment_index = 0; segment_index < prepared_segments.size(); ++segment_index) {
-        const size_t entry_offset = fixed_header_size + segment_index * segment_entry_size;
-        const auto segment_size = segment_blobs[segment_index].size();
-        if (segment_size > std::numeric_limits<uint32_t>::max()) {
-            return std::unexpected(indexed_build_error(segment_index, std::nullopt, "segment exceeded the supported size range"));
-        }
-
-        write_be<uint32_t>(output.data() + entry_offset + 0x00, segment_offset);
-        write_be<uint32_t>(output.data() + entry_offset + 0x04, static_cast<uint32_t>(segment_size));
-        const auto& header = prepared_segments[segment_index].front().header;
-        write_be<uint32_t>(output.data() + entry_offset + 0x08, header.sample_count);
-        write_be<uint32_t>(output.data() + entry_offset + 0x0C, header.sample_rate);
-
-        if (segment_size > std::numeric_limits<uint32_t>::max() - segment_offset) {
-            return std::unexpected(indexed_build_error(segment_index, std::nullopt, "segment offsets exceeded the supported archive size range"));
-        }
-        segment_offset += static_cast<uint32_t>(segment_size);
     }
 
     const size_t subtable_offset = fixed_header_size + prepared_segments.size() * segment_entry_size;
@@ -396,8 +354,18 @@ std::expected<std::vector<uint8_t>, AixError> Aix::build(std::span<const AixBuil
         write_le<uint32_t>(output.data() + entry_offset + 0x04, reference_layers[layer_index].header.channels);
     }
 
-    for (const auto& segment_blob : segment_blobs) {
-        output.insert(output.end(), segment_blob.begin(), segment_blob.end());
+    for (size_t segment_index = 0; segment_index < prepared_segments.size(); ++segment_index) {
+        const uint32_t segment_offset = static_cast<uint32_t>(output.size());
+        auto segment_size = append_segment(output, prepared_segments[segment_index], segment_index);
+        if (!segment_size) {
+            return std::unexpected(segment_size.error());
+        }
+        const size_t entry_offset = fixed_header_size + segment_index * segment_entry_size;
+        const auto& header = prepared_segments[segment_index].front().header;
+        write_be<uint32_t>(output.data() + entry_offset + 0x00, segment_offset);
+        write_be<uint32_t>(output.data() + entry_offset + 0x04, *segment_size);
+        write_be<uint32_t>(output.data() + entry_offset + 0x08, header.sample_count);
+        write_be<uint32_t>(output.data() + entry_offset + 0x0C, header.sample_rate);
     }
 
     return output;
@@ -420,18 +388,7 @@ std::expected<void, AixError> Aix::build_to_file(
         }
     }
 
-    io::writer writer;
-    if (auto open_result = writer.open(output_path); !open_result) {
-        return std::unexpected("AIX build failed: failed to open output file: " + output_path.string() + ": " + open_result.error());
-    }
-    if (auto write_result = writer.write(std::span<const uint8_t>(bytes->data(), bytes->size())); !write_result) {
-        return std::unexpected("AIX build failed: failed to write output file: " + output_path.string() + ": " + write_result.error());
-    }
-    if (auto close_result = writer.close(); !close_result) {
-        return std::unexpected("AIX build failed: failed to finalize output file: " + output_path.string() + ": " + close_result.error());
-    }
-
-    return {};
+    return io::write_file_bytes(output_path, *bytes, "AIX build failed");
 }
 
 std::expected<std::vector<AixBuildSegment>, AixError> Aix::build_segments() const {
@@ -485,65 +442,55 @@ std::expected<void, AixError> Aix::save_to_file(const std::filesystem::path& out
 }
 
 std::expected<void, AixError> Aix::add_segment(AixBuildSegment segment) {
-    auto segments = build_segments();
-    if (!segments) {
-        return std::unexpected(segments.error());
-    }
-    segments->push_back(std::move(segment));
-    return replace_segments(std::move(*segments));
+    return edit_segments([&](auto& segments) -> std::expected<void, AixError> {
+        segments.push_back(std::move(segment));
+        return {};
+    });
 }
 
 std::expected<void, AixError> Aix::replace_segment(size_t segment_index, AixBuildSegment segment) {
-    auto segments = build_segments();
-    if (!segments) {
-        return std::unexpected(segments.error());
-    }
-    if (segment_index >= segments->size()) {
-        return std::unexpected("AIX replace failed: segment index is out of range");
-    }
-    (*segments)[segment_index] = std::move(segment);
-    return replace_segments(std::move(*segments));
+    return edit_segments([&](auto& segments) -> std::expected<void, AixError> {
+        if (segment_index >= segments.size()) {
+            return std::unexpected("AIX replace failed: segment index is out of range");
+        }
+        segments[segment_index] = std::move(segment);
+        return {};
+    });
 }
 
 std::expected<void, AixError> Aix::remove_segment(size_t segment_index) {
-    auto segments = build_segments();
-    if (!segments) {
-        return std::unexpected(segments.error());
-    }
-    if (segment_index >= segments->size()) {
-        return std::unexpected("AIX remove failed: segment index is out of range");
-    }
-    if (segments->size() == 1) {
-        return std::unexpected("AIX remove failed: an AIX must retain at least one segment");
-    }
-    segments->erase(segments->begin() + static_cast<std::ptrdiff_t>(segment_index));
-    return replace_segments(std::move(*segments));
+    return edit_segments([&](auto& segments) -> std::expected<void, AixError> {
+        if (segment_index >= segments.size()) {
+            return std::unexpected("AIX remove failed: segment index is out of range");
+        }
+        if (segments.size() == 1) {
+            return std::unexpected("AIX remove failed: an AIX must retain at least one segment");
+        }
+        segments.erase(segments.begin() + static_cast<std::ptrdiff_t>(segment_index));
+        return {};
+    });
 }
 
 std::expected<void, AixError> Aix::move_segment(size_t from_index, size_t to_index) {
-    auto segments = build_segments();
-    if (!segments) {
-        return std::unexpected(segments.error());
-    }
-    if (from_index >= segments->size() || to_index >= segments->size()) {
-        return std::unexpected("AIX move failed: segment index is out of range");
-    }
-    move_item(*segments, from_index, to_index);
-    return replace_segments(std::move(*segments));
+    return edit_segments([&](auto& segments) -> std::expected<void, AixError> {
+        if (std::max(from_index, to_index) >= segments.size()) {
+            return std::unexpected("AIX move failed: segment index is out of range");
+        }
+        move_item(segments, from_index, to_index);
+        return {};
+    });
 }
 
 std::expected<void, AixError> Aix::add_layer(std::vector<std::vector<uint8_t>> segment_adx_data) {
-    auto segments = build_segments();
-    if (!segments) {
-        return std::unexpected(segments.error());
-    }
-    if (segment_adx_data.size() != segments->size()) {
-        return std::unexpected("AIX add layer failed: provide one ADX payload for every segment");
-    }
-    for (size_t segment_index = 0; segment_index < segments->size(); ++segment_index) {
-        (*segments)[segment_index].layer_adx_data.push_back(std::move(segment_adx_data[segment_index]));
-    }
-    return replace_segments(std::move(*segments));
+    return edit_segments([&](auto& segments) -> std::expected<void, AixError> {
+        if (segment_adx_data.size() != segments.size()) {
+            return std::unexpected("AIX add layer failed: provide one ADX payload for every segment");
+        }
+        for (size_t index = 0; index < segments.size(); ++index) {
+            segments[index].layer_adx_data.push_back(std::move(segment_adx_data[index]));
+        }
+        return {};
+    });
 }
 
 std::expected<void, AixError> Aix::replace_layer(
@@ -551,48 +498,42 @@ std::expected<void, AixError> Aix::replace_layer(
     size_t layer_index,
     std::span<const uint8_t> adx_data
 ) {
-    auto segments = build_segments();
-    if (!segments) {
-        return std::unexpected(segments.error());
-    }
-    if (segment_index >= segments->size() ||
-        layer_index >= (*segments)[segment_index].layer_adx_data.size()) {
-        return std::unexpected("AIX replace failed: segment or layer index is out of range");
-    }
-    (*segments)[segment_index].layer_adx_data[layer_index].assign(adx_data.begin(), adx_data.end());
-    return replace_segments(std::move(*segments));
+    return edit_segments([&](auto& segments) -> std::expected<void, AixError> {
+        if (segment_index >= segments.size() ||
+            layer_index >= segments[segment_index].layer_adx_data.size()) {
+            return std::unexpected("AIX replace failed: segment or layer index is out of range");
+        }
+        segments[segment_index].layer_adx_data[layer_index].assign(adx_data.begin(), adx_data.end());
+        return {};
+    });
 }
 
 std::expected<void, AixError> Aix::remove_layer(size_t layer_index) {
-    auto segments = build_segments();
-    if (!segments) {
-        return std::unexpected(segments.error());
-    }
-    if (layer_index >= m_layers.size()) {
-        return std::unexpected("AIX remove failed: layer index is out of range");
-    }
-    if (m_layers.size() == 1) {
-        return std::unexpected("AIX remove failed: an AIX must retain at least one layer");
-    }
-    for (auto& segment : *segments) {
-        segment.layer_adx_data.erase(
-            segment.layer_adx_data.begin() + static_cast<std::ptrdiff_t>(layer_index));
-    }
-    return replace_segments(std::move(*segments));
+    return edit_segments([&](auto& segments) -> std::expected<void, AixError> {
+        if (layer_index >= m_layers.size()) {
+            return std::unexpected("AIX remove failed: layer index is out of range");
+        }
+        if (m_layers.size() == 1) {
+            return std::unexpected("AIX remove failed: an AIX must retain at least one layer");
+        }
+        for (auto& segment : segments) {
+            segment.layer_adx_data.erase(
+                segment.layer_adx_data.begin() + static_cast<std::ptrdiff_t>(layer_index));
+        }
+        return {};
+    });
 }
 
 std::expected<void, AixError> Aix::move_layer(size_t from_index, size_t to_index) {
-    auto segments = build_segments();
-    if (!segments) {
-        return std::unexpected(segments.error());
-    }
-    if (from_index >= m_layers.size() || to_index >= m_layers.size()) {
-        return std::unexpected("AIX move failed: layer index is out of range");
-    }
-    for (auto& segment : *segments) {
-        move_item(segment.layer_adx_data, from_index, to_index);
-    }
-    return replace_segments(std::move(*segments));
+    return edit_segments([&](auto& segments) -> std::expected<void, AixError> {
+        if (std::max(from_index, to_index) >= m_layers.size()) {
+            return std::unexpected("AIX move failed: layer index is out of range");
+        }
+        for (auto& segment : segments) {
+            move_item(segment.layer_adx_data, from_index, to_index);
+        }
+        return {};
+    });
 }
 
 } // namespace cricodecs::aix

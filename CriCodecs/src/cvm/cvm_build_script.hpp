@@ -3,9 +3,7 @@
  * @file cvm_build_script.hpp
  * @brief Parser for the `.cvs` / ROFSBLD build-script subset.
  *
- * This surface intentionally targets the observed `.cvs` / ROFSBLD subset.
- * It is an inspection helper for authoring metadata, not a full generic ROFS
- * script interpreter yet.
+ * Supports the `.cvs` directives used by the CVM builder.
  */
 
 #include <expected>
@@ -69,7 +67,6 @@ public:
 
 private:
     std::filesystem::path m_source_path;
-    std::filesystem::path m_script_directory;
     std::string m_disc_name;
     std::string m_recording_date;
     std::string m_media;

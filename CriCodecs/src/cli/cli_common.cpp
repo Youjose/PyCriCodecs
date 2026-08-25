@@ -209,27 +209,8 @@ void replace_all(std::string& text, std::string_view needle, std::string_view re
     return "\"" + escape_json(text) + "\"";
 }
 
-template <typename Range, typename Fn>
-void join_json_array(std::ostream& out, const Range& range, Fn&& fn) {
-    out << '[';
-    bool first = true;
-    for (const auto& item : range) {
-        if (!first) {
-            out << ',';
-        }
-        first = false;
-        fn(item);
-    }
-    out << ']';
-}
-
 [[nodiscard]] std::string bool_text(bool value) {
     return value ? "true" : "false";
-}
-
-template <typename T>
-[[nodiscard]] std::string decimal_text(T value) {
-    return std::to_string(value);
 }
 
 [[nodiscard]] std::string hex_text(uint64_t value) {

@@ -27,10 +27,8 @@ using detail::require_string;
 using detail::require_value;
 using detail::validate_wrapper_table_name;
 
-std::expected<void, std::string> write_exported_utf_payload(
-    std::span<const uint8_t> wrapper,
-    io::writer& writer,
-    const std::filesystem::path& output_path
+std::expected<std::vector<std::span<const uint8_t>>, std::string> wrapper_payloads(
+    std::span<const uint8_t> wrapper
 ) {
     auto table = parse_wrapper_table(wrapper);
     if (!table) {
@@ -46,24 +44,14 @@ std::expected<void, std::string> write_exported_utf_payload(
         }
 
         auto header = require_data(*table, 0, "header", "ADPCM_WII wrapper");
-        if (!header) {
-            return std::unexpected(header.error());
-        }
-
-        auto payload = require_data(*table, 0, "data", "ADPCM_WII wrapper");
-        if (!payload) {
-            return std::unexpected(payload.error());
-        }
-
-        if (auto result = writer.write(*header); !result) {
-            return std::unexpected("CSB export failed: could not write stream data: " + output_path.string());
-        }
-        if (auto result = writer.write(*payload); !result) {
-            return std::unexpected("CSB export failed: could not write stream data: " + output_path.string());
-        }
-        return {};
+        if (!header) return std::unexpected(header.error());
+        auto data = require_data(*table, 0, "data", "ADPCM_WII wrapper");
+        if (!data) return std::unexpected(data.error());
+        return std::vector<std::span<const uint8_t>>{*header, *data};
     }
 
+    std::vector<std::span<const uint8_t>> payloads;
+    payloads.reserve(table->row_count());
     const bool validate_loop_flags =
         (table->table_name() == "AAX" || table->table_name() == "HCA") &&
         table->find_column("lpflg") >= 0;
@@ -80,12 +68,10 @@ std::expected<void, std::string> write_exported_utf_payload(
         if (!payload) {
             return std::unexpected(payload.error());
         }
-        if (auto result = writer.write(*payload); !result) {
-            return std::unexpected("CSB export failed: could not write stream data: " + output_path.string());
-        }
+        payloads.push_back(*payload);
     }
 
-    return {};
+    return payloads;
 }
 
 } // namespace
@@ -140,28 +126,7 @@ std::expected<CsbContainer, std::string> CsbContainer::load(
     std::span<const uint8_t> data,
     const text::EncodingOptions& encoding
 ) {
-    CsbContainer csb;
-    csb.m_encoding = encoding;
-    csb.m_owned_source.assign(data.begin(), data.end());
-    csb.m_source = std::span<const uint8_t>(csb.m_owned_source.data(), csb.m_owned_source.size());
-    csb.m_source_path.clear();
-
-    auto header = utf::UtfTable::load(csb.m_source);
-    if (!header) {
-        return std::unexpected("CSB load failed: could not parse root table: " + header.error());
-    }
-    if (header->table_name() != "TBLCSB") {
-        return std::unexpected("CSB load failed: expected root table name TBLCSB");
-    }
-
-    csb.m_header = std::move(*header);
-
-    auto parse_result = csb.parse();
-    if (!parse_result) {
-        return std::unexpected(parse_result.error());
-    }
-
-    return csb;
+    return load(std::vector<uint8_t>(data.begin(), data.end()), encoding);
 }
 
 std::expected<void, std::string> CsbContainer::parse() {
@@ -220,9 +185,7 @@ std::expected<void, std::string> CsbContainer::parse_sections() {
         return std::unexpected("CSB parse failed: SOUND_ELEMENT section has no embedded UTF data");
     }
 
-    m_sound_element_source = *sound_data;
-
-    auto sound_table = utf::UtfTable::load(m_sound_element_source);
+    auto sound_table = utf::UtfTable::load(*sound_data);
     if (!sound_table) {
         return std::unexpected("CSB parse failed: could not parse SOUND_ELEMENT table: " + sound_table.error());
     }
@@ -348,88 +311,29 @@ std::expected<utf::UtfTable, std::string> CsbContainer::wrapper_table(uint32_t i
     return parse_wrapper_table(*wrapper);
 }
 
-std::expected<std::vector<uint8_t>, std::string> CsbContainer::export_utf_payload(
-    std::span<const uint8_t> wrapper
-) const {
-    io::reader reader;
-    auto open_result = reader.open(wrapper);
-    if (!open_result) {
-        return std::unexpected("CSB export failed: could not open wrapper payload: " + std::string(open_result.error()));
-    }
-
-    auto table = parse_wrapper_table(reader.data());
-    if (!table) {
-        return std::unexpected(table.error());
-    }
-    if (table->row_count() == 0) {
-        return std::unexpected("CSB export failed: wrapped UTF payload has no rows");
-    }
-
-    if (table->table_name() == "ADPCM_WII") {
-        if (table->row_count() != 1) {
-            return std::unexpected("CSB export failed: ADPCM_WII wrapper must contain exactly one row");
-        }
-
-        auto header = require_data(*table, 0, "header", "ADPCM_WII wrapper");
-        if (!header) {
-            return std::unexpected(header.error());
-        }
-
-        auto payload = require_data(*table, 0, "data", "ADPCM_WII wrapper");
-        if (!payload) {
-            return std::unexpected(payload.error());
-        }
-
-        std::vector<uint8_t> output;
-        output.reserve(header->size() + payload->size());
-        output.insert(output.end(), header->begin(), header->end());
-        output.insert(output.end(), payload->begin(), payload->end());
-        return output;
-    }
-
-    std::vector<std::span<const uint8_t>> payloads;
-    payloads.reserve(table->row_count());
-    size_t total_size = 0;
-    const bool validate_loop_flags =
-        (table->table_name() == "AAX" || table->table_name() == "HCA") &&
-        table->find_column("lpflg") >= 0;
-    for (uint32_t i = 0; i < table->row_count(); ++i) {
-        if (validate_loop_flags) {
-            auto loop_flag = read_segment_loop_flag(*table, i);
-            if (!loop_flag) {
-                return std::unexpected(loop_flag.error());
-            }
-        }
-        auto payload = require_data(*table, i, "data", "Wrapped UTF payload");
-        if (!payload) {
-            return std::unexpected(payload.error());
-        }
-        total_size += payload->size();
-        payloads.push_back(*payload);
-    }
-
-    std::vector<uint8_t> output;
-    output.reserve(total_size);
-    for (const auto payload : payloads) {
-        output.insert(output.end(), payload.begin(), payload.end());
-    }
-
-    return output;
-}
-
 std::expected<std::vector<uint8_t>, std::string> CsbContainer::stream_data(uint32_t index) const {
-    const auto& stream_info = stream(index);
-
     auto wrapper = wrapper_data(index);
     if (!wrapper) {
         return std::unexpected(wrapper.error());
     }
 
-    if (stream_info.format == 0) {
+    if (stream(index).format == 0) {
         return std::vector<uint8_t>(wrapper->begin(), wrapper->end());
     }
 
-    return export_utf_payload(*wrapper);
+    auto payloads = wrapper_payloads(*wrapper);
+    if (!payloads) return std::unexpected(payloads.error());
+
+    const auto total_size = std::ranges::fold_left(
+        *payloads, size_t{0}, [](size_t size, std::span<const uint8_t> payload) {
+            return size + payload.size();
+        });
+    std::vector<uint8_t> output;
+    output.reserve(total_size);
+    for (const auto payload : *payloads) {
+        output.insert(output.end(), payload.begin(), payload.end());
+    }
+    return output;
 }
 
 std::expected<void, std::string> CsbContainer::export_stream(
@@ -456,9 +360,18 @@ std::expected<void, std::string> CsbContainer::export_stream(
             (void)writer.close();
             return std::unexpected("CSB export failed: could not write stream data: " + output_path.string());
         }
-    } else if (auto result = write_exported_utf_payload(*wrapper, writer, output_path); !result) {
-        (void)writer.close();
-        return std::unexpected(result.error());
+    } else {
+        auto payloads = wrapper_payloads(*wrapper);
+        if (!payloads) {
+            (void)writer.close();
+            return std::unexpected(payloads.error());
+        }
+        for (const auto payload : *payloads) {
+            if (auto result = writer.write(payload); !result) {
+                (void)writer.close();
+                return std::unexpected("CSB export failed: could not write stream data: " + output_path.string());
+            }
+        }
     }
 
     if (auto result = writer.close(); !result) {

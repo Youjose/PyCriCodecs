@@ -1,9 +1,6 @@
 /**
  * @file cvm_volume_set.cpp
  * @brief CVM/ROFS mounted-volume helper surface.
- *
- * Runtime-style volume and sector-handle behavior is based on official ROFS
- * helper evidence and reviewed SDK samples. C++23 implementation by Youjose.
  */
 
 #include "cvm_volume_set.hpp"
@@ -146,6 +143,11 @@ struct ParsedIsoDirectoryRecord {
     uint32_t data_length = 0;
 };
 
+struct RofsDirectoryContext {
+    const CvmMountedVolume* volume;
+    CvmDirectoryRecord directory;
+};
+
 [[nodiscard]] std::expected<ParsedRofsDirectoryRecord, std::string> parse_rofs_directory_record_header(
     std::span<const uint8_t> buffer
 ) {
@@ -178,6 +180,27 @@ struct ParsedIsoDirectoryRecord {
     parsed.volume_name = normalize_volume_name(parsed.volume_name);
 
     return parsed;
+}
+
+[[nodiscard]] std::expected<RofsDirectoryContext, std::string> resolve_rofs_directory_context(
+    const CvmVolumeSet& volume_set,
+    std::span<const uint8_t> buffer
+) {
+    const auto parsed = parse_rofs_directory_record_header(buffer);
+    if (!parsed) {
+        return std::unexpected(parsed.error());
+    }
+
+    const auto* volume = volume_set.find_volume(parsed->volume_name);
+    if (!volume) {
+        return std::unexpected("CVM ROFS directory record volume is not mounted: " + parsed->volume_name);
+    }
+
+    auto directory = volume->image.directory_record_from_extent_sector(parsed->dir_fad);
+    if (!directory) {
+        return std::unexpected(directory.error());
+    }
+    return RofsDirectoryContext{volume, std::move(*directory)};
 }
 
 [[nodiscard]] std::expected<std::vector<CvmRofsFileInfo>, std::string> parse_rofs_directory_entries(
@@ -399,10 +422,6 @@ std::expected<void, std::string> CvmVolumeSet::set_default_volume(std::string_vi
     return {};
 }
 
-std::expected<void, std::string> CvmVolumeSet::change_directory(const std::filesystem::path& runtime_path) {
-    return set_current_directory(runtime_path);
-}
-
 std::expected<void, std::string> CvmVolumeSet::set_current_directory(const std::filesystem::path& runtime_path) {
     const auto resolved = resolve_volume_and_archive_path(*this, runtime_path);
     if (!resolved) {
@@ -422,23 +441,12 @@ std::expected<void, std::string> CvmVolumeSet::set_current_directory(const std::
 std::expected<void, std::string> CvmVolumeSet::set_current_directory(
     std::span<const uint8_t> rofs_directory_record
 ) {
-    const auto parsed = parse_rofs_directory_record_header(rofs_directory_record);
-    if (!parsed) {
-        return std::unexpected(parsed.error());
+    const auto context = resolve_rofs_directory_context(*this, rofs_directory_record);
+    if (!context) {
+        return std::unexpected(context.error());
     }
-
-    const auto* volume = find_volume(parsed->volume_name);
-    if (volume == nullptr) {
-        return std::unexpected("CVM ROFS directory record volume is not mounted: " + parsed->volume_name);
-    }
-
-    auto directory = volume->image.directory_record_from_extent_sector(parsed->dir_fad);
-    if (!directory) {
-        return std::unexpected(directory.error());
-    }
-
-    const auto volume_index = static_cast<size_t>(volume - m_volumes.data());
-    m_volumes[volume_index].current_directory = directory->directory_path;
+    const auto volume_index = static_cast<size_t>(context->volume - m_volumes.data());
+    m_volumes[volume_index].current_directory = context->directory.directory_path;
     return {};
 }
 
@@ -610,44 +618,34 @@ std::expected<CvmRofsRangeHandle, std::string> CvmVolumeSet::open_file(
     const std::filesystem::path& relative_path,
     std::span<const uint8_t> rofs_directory_record
 ) const {
-    const auto parsed = parse_rofs_directory_record_header(rofs_directory_record);
-    if (!parsed) {
-        return std::unexpected(parsed.error());
+    const auto context = resolve_rofs_directory_context(*this, rofs_directory_record);
+    if (!context) {
+        return std::unexpected(context.error());
     }
 
-    const auto* volume = find_volume(parsed->volume_name);
-    if (volume == nullptr) {
-        return std::unexpected("CVM ROFS directory record volume is not mounted: " + parsed->volume_name);
-    }
-
-    auto directory = volume->image.directory_record_from_extent_sector(parsed->dir_fad);
-    if (!directory) {
-        return std::unexpected(directory.error());
-    }
-
-    const auto* entry = volume->image.find_entry(relative_path, *directory);
+    const auto* entry = context->volume->image.find_entry(relative_path, context->directory);
     if (entry != nullptr) {
         return make_range_handle(
             *this,
-            volume->name,
+            context->volume->name,
             entry->extent_sector,
             sector_count_for_byte_size(entry->size),
             entry->size
         );
     }
 
-    const auto resolved_path = resolve_directory_relative_path(directory->directory_path, relative_path);
-    auto resolved_directory = volume->image.directory_record(resolved_path);
+    const auto resolved_path = resolve_directory_relative_path(context->directory.directory_path, relative_path);
+    auto resolved_directory = context->volume->image.directory_record(resolved_path);
     if (!resolved_directory) {
         return std::unexpected(
             "CVM file path was not found relative to ROFS directory record '" +
-            directory->directory_path.generic_string() + "': " + relative_path.generic_string()
+            context->directory.directory_path.generic_string() + "': " + relative_path.generic_string()
         );
     }
 
     return make_range_handle(
         *this,
-        volume->name,
+        context->volume->name,
         resolved_directory->extent_sector,
         sector_count_for_byte_size(resolved_directory->byte_size),
         resolved_directory->byte_size
@@ -719,18 +717,8 @@ std::expected<uint64_t, std::string> CvmVolumeSet::transferred_bytes(const CvmRo
     return static_cast<uint64_t>(handle.last_transfer_sector_count) * rofs_sector_length();
 }
 
-std::expected<uint64_t, std::string> CvmVolumeSet::transferred_bytes64(const CvmRofsRangeHandle& handle) const {
-    return transferred_bytes(handle);
-}
-
 std::expected<void, std::string> CvmVolumeSet::close(CvmRofsRangeHandle& handle) const {
-    handle.volume_name.clear();
-    handle.start_sector = 0;
-    handle.sector_count = 0;
-    handle.current_sector = 0;
-    handle.byte_size = 0;
-    handle.last_transfer_sector_count = 0;
-    handle.last_transfer_status = CvmRofsTransferStatus::idle;
+    handle = {};
     return {};
 }
 
@@ -908,22 +896,8 @@ bool CvmVolumeSet::file_exists(
     const std::filesystem::path& relative_path,
     std::span<const uint8_t> rofs_directory_record
 ) const noexcept {
-    const auto parsed = parse_rofs_directory_record_header(rofs_directory_record);
-    if (!parsed) {
-        return false;
-    }
-
-    const auto* volume = find_volume(parsed->volume_name);
-    if (volume == nullptr) {
-        return false;
-    }
-
-    auto directory = volume->image.directory_record_from_extent_sector(parsed->dir_fad);
-    if (!directory) {
-        return false;
-    }
-
-    return volume->image.find_entry(relative_path, *directory) != nullptr;
+    const auto context = resolve_rofs_directory_context(*this, rofs_directory_record);
+    return context && context->volume->image.find_entry(relative_path, context->directory);
 }
 
 std::expected<uint64_t, std::string> CvmVolumeSet::file_size(const std::filesystem::path& runtime_path) const {
@@ -934,44 +908,23 @@ std::expected<uint64_t, std::string> CvmVolumeSet::file_size(const std::filesyst
     return entry->size;
 }
 
-std::expected<uint64_t, std::string> CvmVolumeSet::file_size64(const std::filesystem::path& runtime_path) const {
-    return file_size(runtime_path);
-}
-
 std::expected<uint64_t, std::string> CvmVolumeSet::file_size(
     const std::filesystem::path& relative_path,
     std::span<const uint8_t> rofs_directory_record
 ) const {
-    const auto parsed = parse_rofs_directory_record_header(rofs_directory_record);
-    if (!parsed) {
-        return std::unexpected(parsed.error());
+    const auto context = resolve_rofs_directory_context(*this, rofs_directory_record);
+    if (!context) {
+        return std::unexpected(context.error());
     }
 
-    const auto* volume = find_volume(parsed->volume_name);
-    if (volume == nullptr) {
-        return std::unexpected("CVM ROFS directory record volume is not mounted: " + parsed->volume_name);
-    }
-
-    auto directory = volume->image.directory_record_from_extent_sector(parsed->dir_fad);
-    if (!directory) {
-        return std::unexpected(directory.error());
-    }
-
-    const auto* entry = volume->image.find_entry(relative_path, *directory);
+    const auto* entry = context->volume->image.find_entry(relative_path, context->directory);
     if (entry == nullptr) {
         return std::unexpected(
             "CVM file path was not found relative to ROFS directory record '" +
-            directory->directory_path.generic_string() + "': " + relative_path.generic_string()
+            context->directory.directory_path.generic_string() + "': " + relative_path.generic_string()
         );
     }
     return entry->size;
-}
-
-std::expected<uint64_t, std::string> CvmVolumeSet::file_size64(
-    const std::filesystem::path& relative_path,
-    std::span<const uint8_t> rofs_directory_record
-) const {
-    return file_size(relative_path, rofs_directory_record);
 }
 
 std::expected<uint32_t, std::string> CvmVolumeSet::rofs_num_files(
@@ -1133,22 +1086,11 @@ std::expected<std::span<const uint8_t>, std::string> CvmVolumeSet::file_data(
     const std::filesystem::path& relative_path,
     std::span<const uint8_t> rofs_directory_record
 ) const {
-    const auto parsed = parse_rofs_directory_record_header(rofs_directory_record);
-    if (!parsed) {
-        return std::unexpected(parsed.error());
+    const auto context = resolve_rofs_directory_context(*this, rofs_directory_record);
+    if (!context) {
+        return std::unexpected(context.error());
     }
-
-    const auto* volume = find_volume(parsed->volume_name);
-    if (volume == nullptr) {
-        return std::unexpected("CVM ROFS directory record volume is not mounted: " + parsed->volume_name);
-    }
-
-    auto directory = volume->image.directory_record_from_extent_sector(parsed->dir_fad);
-    if (!directory) {
-        return std::unexpected(directory.error());
-    }
-
-    return volume->image.file_data(relative_path, *directory);
+    return context->volume->image.file_data(relative_path, context->directory);
 }
 
 } // namespace cricodecs::cvm

@@ -25,23 +25,37 @@ constexpr size_t MaxContainerDepth = 6;
     size_t depth,
     std::vector<std::vector<uint8_t>>& sources);
 
-[[nodiscard]] std::expected<void, std::string> append_awb(
-    const awb::AwbContainer& archive,
+template <typename ReadEntry>
+[[nodiscard]] std::expected<void, std::string> append_entries(
+    size_t count,
+    std::string_view entry_name,
+    ReadEntry read_entry,
     RecoveryStreamKind kind,
     size_t depth,
     std::vector<std::vector<uint8_t>>& sources
 ) {
-    for (uint32_t index = 0; index < archive.file_count(); ++index) {
-        auto payload = archive.file_data(index);
+    for (size_t index = 0; index < count; ++index) {
+        auto payload = read_entry(index);
         if (!payload) {
-            return std::unexpected(
-                "AWB entry " + std::to_string(index) + " could not be read: " + payload.error());
+            return std::unexpected(std::string(entry_name) + " " + std::to_string(index) +
+                " could not be read: " + payload.error());
         }
         if (auto appended = append_payload(*payload, kind, depth + 1u, sources); !appended) {
             return appended;
         }
     }
     return {};
+}
+
+[[nodiscard]] std::expected<void, std::string> append_awb(
+    const awb::AwbContainer& archive,
+    RecoveryStreamKind kind,
+    size_t depth,
+    std::vector<std::vector<uint8_t>>& sources
+) {
+    return append_entries(archive.file_count(), "AWB entry",
+        [&](size_t index) { return archive.file_data(static_cast<uint32_t>(index)); },
+        kind, depth, sources);
 }
 
 [[nodiscard]] std::expected<void, std::string> append_csb(
@@ -50,17 +64,9 @@ constexpr size_t MaxContainerDepth = 6;
     size_t depth,
     std::vector<std::vector<uint8_t>>& sources
 ) {
-    for (uint32_t index = 0; index < archive.stream_count(); ++index) {
-        auto payload = archive.stream_data(index);
-        if (!payload) {
-            return std::unexpected(
-                "CSB stream " + std::to_string(index) + " could not be read: " + payload.error());
-        }
-        if (auto appended = append_payload(*payload, kind, depth + 1u, sources); !appended) {
-            return appended;
-        }
-    }
-    return {};
+    return append_entries(archive.stream_count(), "CSB stream",
+        [&](size_t index) { return archive.stream_data(static_cast<uint32_t>(index)); },
+        kind, depth, sources);
 }
 
 [[nodiscard]] std::expected<void, std::string> append_aax(
@@ -69,17 +75,9 @@ constexpr size_t MaxContainerDepth = 6;
     size_t depth,
     std::vector<std::vector<uint8_t>>& sources
 ) {
-    for (uint32_t index = 0; index < wrapper.segment_count(); ++index) {
-        auto payload = wrapper.segment_data(index);
-        if (!payload) {
-            return std::unexpected(
-                "AAX segment " + std::to_string(index) + " could not be read: " + payload.error());
-        }
-        if (auto appended = append_payload(*payload, kind, depth + 1u, sources); !appended) {
-            return appended;
-        }
-    }
-    return {};
+    return append_entries(wrapper.segment_count(), "AAX segment",
+        [&](size_t index) { return wrapper.segment_data(static_cast<uint32_t>(index)); },
+        kind, depth, sources);
 }
 
 [[nodiscard]] std::expected<void, std::string> append_cpk(
@@ -88,17 +86,8 @@ constexpr size_t MaxContainerDepth = 6;
     size_t depth,
     std::vector<std::vector<uint8_t>>& sources
 ) {
-    for (size_t index = 0; index < archive.file_count(); ++index) {
-        auto payload = archive.file_bytes(index);
-        if (!payload) {
-            return std::unexpected(
-                "CPK entry " + std::to_string(index) + " could not be read: " + payload.error());
-        }
-        if (auto appended = append_payload(*payload, kind, depth + 1u, sources); !appended) {
-            return appended;
-        }
-    }
-    return {};
+    return append_entries(archive.file_count(), "CPK entry",
+        [&](size_t index) { return archive.file_bytes(index); }, kind, depth, sources);
 }
 
 [[nodiscard]] std::expected<void, std::string> append_payload(

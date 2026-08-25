@@ -21,14 +21,15 @@ namespace cricodecs::utf {
 using io::read_be;
 
 std::string_view UtfTable::string_at(uint32_t offset) const {
-    if (offset >= m_string_table.size()) {
+    const size_t size = m_data_offset - m_strings_offset;
+    if (offset >= size) {
         return "";
     }
-    const char* begin = m_string_table.data() + offset;
-    const size_t remaining = m_string_table.size() - offset;
+    const char* begin = reinterpret_cast<const char*>(m_source.data() + m_strings_offset + offset);
+    const size_t remaining = size - offset;
     const auto* end = static_cast<const char*>(std::memchr(begin, '\0', remaining));
     const size_t len = end == nullptr ? remaining : static_cast<size_t>(end - begin);
-    return std::string_view(m_string_table.data() + offset, len);
+    return {begin, len};
 }
 
 int UtfTable::find_column(std::string_view name) const {
@@ -48,14 +49,20 @@ int UtfTable::find_column(std::string_view name) const {
 }
 
 void UtfTable::set_table_name(std::string_view name) {
+    make_editable();
     m_table_name = std::string(name);
+}
+
+void UtfTable::make_editable() {
+    if (is_loaded()) *this = editable_copy();
 }
 
 bool UtfTable::rename_column(uint32_t col, std::string_view name) {
     if (col >= m_columns.size()) {
         return false;
     }
-    m_columns[col].name = std::string(name);
+    make_editable();
+    m_columns[col].name = name;
     m_column_cache.clear();
     return true;
 }
@@ -64,20 +71,14 @@ bool UtfTable::set_column_type(uint32_t col, ColumnType type) {
     if (col >= m_columns.size() || get_type_size(type) == 0) {
         return false;
     }
-    if (m_values.empty() && m_num_rows > 0) {
-        *this = editable_copy();
-    }
+    make_editable();
     if (m_columns[col].type == type) {
         return true;
     }
     m_columns[col].type = type;
-    if (col < m_default_values.size()) {
-        m_default_values[col] = std::monostate{};
-    }
+    m_default_values[col] = std::monostate{};
     for (auto& row : m_values) {
-        if (col < row.size()) {
-            row[col] = std::monostate{};
-        }
+        row[col] = std::monostate{};
     }
     return true;
 }
@@ -86,34 +87,25 @@ bool UtfTable::set_column_flag(uint32_t col, ColumnFlag flag) {
     if (col >= m_columns.size() || !has_flag(flag, ColumnFlag::Name)) {
         return false;
     }
-    if (m_values.empty() && m_num_rows > 0) {
-        *this = editable_copy();
-    }
+    make_editable();
     m_columns[col].flag = flag;
     return true;
 }
 
 bool UtfTable::remove_row(uint32_t row) {
-    if (row >= m_num_rows) {
+    if (row >= row_count()) {
         return false;
     }
-    if (m_values.empty() && m_num_rows > 0) {
-        *this = editable_copy();
-    }
-    if (row < m_values.size()) {
-        m_values.erase(m_values.begin() + row);
-    }
-    --m_num_rows;
+    make_editable();
+    m_values.erase(m_values.begin() + row);
     return true;
 }
 
 bool UtfTable::move_row(uint32_t from_row, uint32_t to_row) {
-    if (from_row >= m_num_rows || to_row >= m_num_rows) {
+    if (from_row >= row_count() || to_row >= row_count()) {
         return false;
     }
-    if (m_values.empty() && m_num_rows > 0) {
-        *this = editable_copy();
-    }
+    make_editable();
     if (from_row < to_row) {
         std::rotate(
             m_values.begin() + from_row,
@@ -132,17 +124,11 @@ bool UtfTable::remove_column(uint32_t col) {
     if (col >= m_columns.size()) {
         return false;
     }
-    if (m_values.empty() && m_num_rows > 0) {
-        *this = editable_copy();
-    }
+    make_editable();
     m_columns.erase(m_columns.begin() + col);
-    if (col < m_default_values.size()) {
-        m_default_values.erase(m_default_values.begin() + col);
-    }
+    m_default_values.erase(m_default_values.begin() + col);
     for (auto& row : m_values) {
-        if (col < row.size()) {
-            row.erase(row.begin() + col);
-        }
+        row.erase(row.begin() + col);
     }
     m_column_cache.clear();
     return true;
@@ -158,24 +144,10 @@ Value UtfTable::read_value_at(const uint8_t* buf, ColumnType type) const {
         case ColumnType::SInt32: return read_be<int32_t>(buf);
         case ColumnType::UInt64: return read_be<uint64_t>(buf);
         case ColumnType::SInt64: return read_be<int64_t>(buf);
-        case ColumnType::Float: {
-            uint32_t bits = read_be<uint32_t>(buf);
-            return std::bit_cast<float>(bits);
-        }
-        case ColumnType::Double: {
-            uint64_t bits = read_be<uint64_t>(buf);
-            return std::bit_cast<double>(bits);
-        }
-        case ColumnType::String: {
-            uint32_t str_offset = read_be<uint32_t>(buf);
-            return std::string(string_at(str_offset));
-        }
-        case ColumnType::VLData: {
-            DataRef ref;
-            ref.offset = read_be<uint32_t>(buf + 0);
-            ref.size = read_be<uint32_t>(buf + 4);
-            return ref;
-        }
+        case ColumnType::Float:  return std::bit_cast<float>(read_be<uint32_t>(buf));
+        case ColumnType::Double: return std::bit_cast<double>(read_be<uint64_t>(buf));
+        case ColumnType::String: return std::string(string_at(read_be<uint32_t>(buf)));
+        case ColumnType::VLData: return DataRef{read_be<uint32_t>(buf), read_be<uint32_t>(buf + 4)};
         case ColumnType::GUID: {
             GUID guid;
             std::memcpy(guid.data, buf, 16);
@@ -190,7 +162,7 @@ std::expected<std::span<const uint8_t>, std::string> UtfTable::field_data(uint32
     if (col >= m_columns.size()) {
         return std::unexpected("UTF column index is out of range");
     }
-    if (row >= m_num_rows) {
+    if (row >= row_count()) {
         return std::unexpected("UTF row index is out of range");
     }
 
@@ -198,21 +170,22 @@ std::expected<std::span<const uint8_t>, std::string> UtfTable::field_data(uint32
     const uint32_t field_size = get_type_size(column.type);
 
     if (has_flag(column.flag, ColumnFlag::Row)) {
-        const uint32_t row_offset = m_rows_offset + row * m_row_width + column.row_offset;
-        if (row_offset + field_size > m_source.size()) {
+        const size_t row_offset = m_rows_offset + static_cast<size_t>(row) * m_row_width + column.row_offset;
+        if (row_offset > m_strings_offset || field_size > m_strings_offset - row_offset) {
             return std::unexpected("UTF row data is out of bounds");
         }
         return std::span<const uint8_t>(m_source.data() + row_offset, field_size);
     }
 
     if (has_flag(column.flag, ColumnFlag::Default)) {
-        if (m_schema_buf.empty()) {
+        if (!is_loaded()) {
             return std::unexpected("UTF schema data is unavailable");
         }
-        if (column.default_offset + field_size > m_schema_buf.size()) {
+        const size_t offset = HEADER_SIZE + column.default_offset;
+        if (offset > m_rows_offset || field_size > m_rows_offset - offset) {
             return std::unexpected("UTF default value is out of bounds");
         }
-        return std::span<const uint8_t>(m_schema_buf.data() + column.default_offset, field_size);
+        return std::span<const uint8_t>(m_source.data() + offset, field_size);
     }
 
     return std::unexpected("UTF column has no data");
@@ -222,7 +195,7 @@ std::expected<Value, std::string> UtfTable::get_value(uint32_t row, uint32_t col
     if (col >= m_columns.size()) {
         return std::unexpected("UTF column index is out of range");
     }
-    if (row >= m_num_rows) {
+    if (row >= row_count()) {
         return std::unexpected("UTF row index is out of range");
     }
     if (
@@ -258,11 +231,19 @@ std::expected<Value, std::string> UtfTable::get_default_value(uint32_t col) cons
         return m_default_values[col];
     }
 
-    if (!m_schema_buf.empty()) {
-        return read_value_at(m_schema_buf.data() + column.default_offset, column.type);
+    if (is_loaded()) {
+        return read_value_at(m_source.data() + HEADER_SIZE + column.default_offset, column.type);
     }
 
     return std::monostate{};
+}
+
+std::expected<std::span<const uint8_t>, std::string> UtfTable::data_at(DataRef ref) const {
+    const size_t offset = m_data_offset + static_cast<size_t>(ref.offset);
+    if (offset > m_table_size || ref.size > m_table_size - offset) {
+        return std::unexpected("UTF data reference is out of bounds");
+    }
+    return std::span<const uint8_t>(m_source.data() + offset, ref.size);
 }
 
 std::expected<std::span<const uint8_t>, std::string> UtfTable::get_data(uint32_t row, uint32_t col) const {
@@ -282,42 +263,30 @@ std::expected<std::span<const uint8_t>, std::string> UtfTable::get_data(uint32_t
         return std::unexpected("UTF column is not VLData type");
     }
 
-    DataRef ref = std::get<DataRef>(*val);
-    uint32_t abs_offset = m_data_offset + ref.offset;
-    if (abs_offset + ref.size > m_source.size()) {
-        return std::unexpected("UTF data reference is out of bounds");
-    }
-
-    return std::span<const uint8_t>(m_source.data() + abs_offset, ref.size);
+    return data_at(std::get<DataRef>(*val));
 }
 
 std::expected<std::span<const uint8_t>, std::string> UtfTable::get_default_data(uint32_t col) const {
+    if (col < m_default_values.size() &&
+        std::holds_alternative<std::vector<uint8_t>>(m_default_values[col])) {
+        const auto& bytes = std::get<std::vector<uint8_t>>(m_default_values[col]);
+        return std::span<const uint8_t>(bytes);
+    }
+
     auto val = get_default_value(col);
     if (!val) return std::unexpected(val.error());
-
-    if (std::holds_alternative<std::vector<uint8_t>>(*val)) {
-        const auto& bytes = std::get<std::vector<uint8_t>>(*val);
-        return std::span<const uint8_t>(bytes.data(), bytes.size());
-    }
 
     if (!std::holds_alternative<DataRef>(*val)) {
         return std::unexpected("UTF column is not VLData type");
     }
-
-    DataRef ref = std::get<DataRef>(*val);
-    uint32_t abs_offset = m_data_offset + ref.offset;
-    if (abs_offset + ref.size > m_source.size()) {
-        return std::unexpected("UTF data reference is out of bounds");
-    }
-
-    return std::span<const uint8_t>(m_source.data() + abs_offset, ref.size);
+    return data_at(std::get<DataRef>(*val));
 }
 
 std::expected<std::string_view, std::string> UtfTable::get_string(uint32_t row, uint32_t col) const {
     if (col >= m_columns.size()) {
         return std::unexpected("UTF column index is out of range");
     }
-    if (row >= m_num_rows) {
+    if (row >= row_count()) {
         return std::unexpected("UTF row index is out of range");
     }
     if (m_columns[col].type != ColumnType::String) {
@@ -339,57 +308,5 @@ std::expected<std::string_view, std::string> UtfTable::get_string(uint32_t row, 
     const uint32_t str_offset = read_be<uint32_t>(field->data());
     return string_at(str_offset);
 }
-
-#define DEFINE_GET_SPECIALIZATION(cpp_type, column_type, read_expression) \
-    template<> \
-    std::expected<cpp_type, std::string> UtfTable::get<cpp_type>(uint32_t row, uint32_t col) const { \
-        if (col >= m_columns.size()) { \
-            return std::unexpected("UTF column index is out of range"); \
-        } \
-        const Column& column = m_columns[col]; \
-        if (row >= m_num_rows) { \
-            return std::unexpected("UTF row index is out of range"); \
-        } \
-        if (column.type != column_type) { \
-            return std::unexpected("UTF value read failed: type mismatch"); \
-        } \
-        if (row < m_values.size() && col < m_values[row].size() && std::holds_alternative<cpp_type>(m_values[row][col])) { \
-            return std::get<cpp_type>(m_values[row][col]); \
-        } \
-        const auto field = field_data(row, col); \
-        if (has_flag(column.flag, ColumnFlag::Default) && !field) { \
-            if (col < m_default_values.size() && std::holds_alternative<cpp_type>(m_default_values[col])) { \
-                return std::get<cpp_type>(m_default_values[col]); \
-            } \
-            if (field.error() == "UTF column has no data") { \
-                return std::unexpected("UTF value read failed: type mismatch"); \
-            } \
-            if (field.error() == "UTF schema data is unavailable") { \
-                return std::unexpected("UTF value read failed: type mismatch"); \
-            } \
-            if (field.error() == "UTF default value is out of bounds") { \
-                return std::unexpected("UTF value read failed: type mismatch"); \
-            } \
-            return std::unexpected(field.error()); \
-        } \
-        if (!field) { \
-            return std::unexpected(field.error()); \
-        } \
-        const uint8_t* buf = field->data(); \
-        return read_expression; \
-    }
-
-DEFINE_GET_SPECIALIZATION(uint8_t, ColumnType::UInt8, static_cast<uint8_t>(buf[0]))
-DEFINE_GET_SPECIALIZATION(int8_t, ColumnType::SInt8, static_cast<int8_t>(buf[0]))
-DEFINE_GET_SPECIALIZATION(uint16_t, ColumnType::UInt16, read_be<uint16_t>(buf))
-DEFINE_GET_SPECIALIZATION(int16_t, ColumnType::SInt16, read_be<int16_t>(buf))
-DEFINE_GET_SPECIALIZATION(uint32_t, ColumnType::UInt32, read_be<uint32_t>(buf))
-DEFINE_GET_SPECIALIZATION(int32_t, ColumnType::SInt32, read_be<int32_t>(buf))
-DEFINE_GET_SPECIALIZATION(uint64_t, ColumnType::UInt64, read_be<uint64_t>(buf))
-DEFINE_GET_SPECIALIZATION(int64_t, ColumnType::SInt64, read_be<int64_t>(buf))
-DEFINE_GET_SPECIALIZATION(float, ColumnType::Float, std::bit_cast<float>(read_be<uint32_t>(buf)))
-DEFINE_GET_SPECIALIZATION(double, ColumnType::Double, std::bit_cast<double>(read_be<uint64_t>(buf)))
-
-#undef DEFINE_GET_SPECIALIZATION
 
 } // namespace cricodecs::utf

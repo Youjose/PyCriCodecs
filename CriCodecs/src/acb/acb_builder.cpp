@@ -2,9 +2,8 @@
  * @file acb_builder.cpp
  * @brief ACB save/build helpers.
  *
- * The current ACB surface started from vgmstream and PyCriCodecsEx behavior,
- * then was checked against Cri Atom Craft lib evidence.
- * Build-side shaping and verification follow-up by Youjose.
+ * The ACB builder follows vgmstream, PyCriCodecsEx, and Cri Atom Craft.
+ * I added the build-side structure and validation used here.
  */
 
 #include "acb_container.hpp"

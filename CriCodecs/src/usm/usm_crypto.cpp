@@ -78,62 +78,9 @@ void mask_video_common(
 } // namespace
 
 void UsmCrypto::init_key(uint64_t key) {
-    m_key = key;
     m_has_key = true;
-
-    const uint32_t lower = static_cast<uint32_t>(key & 0xFFFFFFFFu);
-    const uint32_t upper = static_cast<uint32_t>(key >> 32);
-
-    const std::array<uint8_t, 4> key1 = {
-        static_cast<uint8_t>((lower >> 24) & 0xFF),
-        static_cast<uint8_t>((lower >> 16) & 0xFF),
-        static_cast<uint8_t>((lower >> 8) & 0xFF),
-        static_cast<uint8_t>(lower & 0xFF),
-    };
-    const std::array<uint8_t, 4> key2 = {
-        static_cast<uint8_t>((upper >> 24) & 0xFF),
-        static_cast<uint8_t>((upper >> 16) & 0xFF),
-        static_cast<uint8_t>((upper >> 8) & 0xFF),
-        static_cast<uint8_t>(upper & 0xFF),
-    };
-
-    std::array<uint8_t, 0x20> table{};
-    table[0x00] = key1[3];
-    table[0x01] = key1[2];
-    table[0x02] = key1[1];
-    table[0x03] = static_cast<uint8_t>((key1[0] - 0x34) & 0xFF);
-    table[0x04] = static_cast<uint8_t>((key2[3] + 0xF9) & 0xFF);
-    table[0x05] = static_cast<uint8_t>((key2[2] ^ 0x13) & 0xFF);
-    table[0x06] = static_cast<uint8_t>((key2[1] + 0x61) & 0xFF);
-    table[0x07] = static_cast<uint8_t>((key1[3] ^ 0xFF) & 0xFF);
-    table[0x08] = static_cast<uint8_t>((key1[1] + key1[2]) & 0xFF);
-
-    table[0x09] = static_cast<uint8_t>((table[0x01] - table[0x07]) & 0xFF);
-    table[0x0A] = static_cast<uint8_t>((table[0x02] ^ 0xFF) & 0xFF);
-    table[0x0B] = static_cast<uint8_t>((table[0x01] ^ 0xFF) & 0xFF);
-    table[0x0C] = static_cast<uint8_t>((table[0x0B] + table[0x09]) & 0xFF);
-    table[0x0D] = static_cast<uint8_t>((table[0x08] - table[0x03]) & 0xFF);
-    table[0x0E] = static_cast<uint8_t>((table[0x0D] ^ 0xFF) & 0xFF);
-    table[0x0F] = static_cast<uint8_t>((table[0x0A] - table[0x0B]) & 0xFF);
-    table[0x10] = static_cast<uint8_t>((table[0x08] - table[0x0F]) & 0xFF);
-    table[0x11] = static_cast<uint8_t>((table[0x10] ^ table[0x07]) & 0xFF);
-    table[0x12] = static_cast<uint8_t>((table[0x0F] ^ 0xFF) & 0xFF);
-    table[0x13] = static_cast<uint8_t>((table[0x03] ^ 0x10) & 0xFF);
-    table[0x14] = static_cast<uint8_t>((table[0x04] - 0x32) & 0xFF);
-    table[0x15] = static_cast<uint8_t>((table[0x05] + 0xED) & 0xFF);
-    table[0x16] = static_cast<uint8_t>((table[0x06] ^ 0xF3) & 0xFF);
-    table[0x17] = static_cast<uint8_t>((table[0x13] - table[0x0F]) & 0xFF);
-    table[0x18] = static_cast<uint8_t>((table[0x15] + table[0x07]) & 0xFF);
-    table[0x19] = static_cast<uint8_t>((0x21 - table[0x13]) & 0xFF);
-    table[0x1A] = static_cast<uint8_t>((table[0x14] ^ table[0x17]) & 0xFF);
-    table[0x1B] = static_cast<uint8_t>((table[0x16] + table[0x16]) & 0xFF);
-    table[0x1C] = static_cast<uint8_t>((table[0x17] + 0x44) & 0xFF);
-    table[0x1D] = static_cast<uint8_t>((table[0x03] + table[0x04]) & 0xFF);
-    table[0x1E] = static_cast<uint8_t>((table[0x05] - table[0x16]) & 0xFF);
-    table[0x1F] = static_cast<uint8_t>((table[0x1D] ^ table[0x13]) & 0xFF);
-
-    m_video_mask1 = table;
-    std::ranges::transform(table, m_video_mask2.begin(), [](uint8_t value) {
+    m_video_mask1 = detail::expand_video_mask(detail::seed_from_key(key));
+    std::ranges::transform(m_video_mask1, m_video_mask2.begin(), [](uint8_t value) {
         return static_cast<uint8_t>(value ^ 0xFF);
     });
 
@@ -148,7 +95,6 @@ void UsmCrypto::init_key(uint64_t key) {
 }
 
 void UsmCrypto::clear_key() noexcept {
-    m_key = 0;
     m_has_key = false;
     m_video_mask1 = {};
     m_video_mask2 = {};

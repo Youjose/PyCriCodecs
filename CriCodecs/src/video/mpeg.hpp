@@ -53,6 +53,12 @@ struct MpegStructure {
     uint32_t violations = 0;
 };
 
+struct MpegFrameRange {
+    size_t offset = 0;
+    size_t size = 0;
+    bool is_keyframe = false;
+};
+
 [[nodiscard]] MpegStructure inspect_mpeg_structure(std::span<const uint8_t> bytes) noexcept;
 
 [[nodiscard]] constexpr std::pair<uint32_t, uint32_t> mpeg_frame_rate_ratio(uint8_t frame_rate_code) noexcept {
@@ -94,19 +100,12 @@ public:
     std::expected<MpegVideoFrame, std::string> read_next_frame();
 
 private:
-    struct FrameRange {
-        size_t offset = 0;
-        size_t size = 0;
-        bool is_keyframe = false;
-    };
-
     std::expected<void, std::string> parse_loaded_stream(std::string_view source_name);
-    [[nodiscard]] static std::vector<FrameRange> split_frames(std::span<const uint8_t> bytes);
 
     io::reader m_reader;
     MpegVideoSequenceHeader m_sequence_header{};
     MpegVideoType m_video_type = MpegVideoType::unknown;
-    std::vector<FrameRange> m_frames;
+    std::vector<MpegFrameRange> m_frames;
     uint32_t m_current_frame = 0;
 };
 

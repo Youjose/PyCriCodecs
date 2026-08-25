@@ -80,8 +80,8 @@ constexpr size_t sofdec_stream2_header_summary_relative_offset = 160;
         is_video_packet(stream_id);
 }
 
-[[nodiscard]] size_t find_pack_header(std::span<const uint8_t> data) noexcept {
-    const auto it = std::search(data.begin(), data.end(), pack_start_code.begin(), pack_start_code.end());
+[[nodiscard]] size_t find_bytes(std::span<const uint8_t> data, std::span<const uint8_t> bytes) noexcept {
+    const auto it = std::search(data.begin(), data.end(), bytes.begin(), bytes.end());
     if (it == data.end()) {
         return data.size();
     }
@@ -89,12 +89,7 @@ constexpr size_t sofdec_stream2_header_summary_relative_offset = 160;
 }
 
 [[nodiscard]] bool has_legacy_sofdec_preamble(std::span<const uint8_t> data) noexcept {
-    return data.size() >= legacy_sofdec_stream_preamble.size() &&
-        std::equal(
-            legacy_sofdec_stream_preamble.begin(),
-            legacy_sofdec_stream_preamble.end(),
-            data.begin()
-        );
+    return std::ranges::starts_with(data, legacy_sofdec_stream_preamble);
 }
 
 [[nodiscard]] std::string read_c_string(std::span<const uint8_t> bytes) {
@@ -105,24 +100,24 @@ constexpr size_t sofdec_stream2_header_summary_relative_offset = 160;
     return trim_ascii(bytes.first(end));
 }
 
-[[nodiscard]] size_t find_start_code(std::span<const uint8_t> data, std::span<const uint8_t> marker) noexcept {
-    const auto it = std::search(data.begin(), data.end(), marker.begin(), marker.end());
-    if (it == data.end()) {
-        return data.size();
-    }
-    return static_cast<size_t>(std::distance(data.begin(), it));
+[[nodiscard]] std::string read_c_string_at(
+    std::span<const uint8_t> bytes,
+    size_t offset,
+    size_t capacity
+) {
+    return offset < bytes.size()
+        ? read_c_string(bytes.subspan(offset, std::min(capacity, bytes.size() - offset)))
+        : std::string{};
 }
 
 [[nodiscard]] SfdAudioType detect_audio_type(std::span<const uint8_t> payload) noexcept {
-    if (payload.size() >= aix_signature.size() &&
-        std::equal(aix_signature.begin(), aix_signature.end(), payload.begin())) {
+    if (std::ranges::starts_with(payload, aix_signature)) {
         return SfdAudioType::aix;
     }
     if (!payload.empty() && payload.front() == 0x80) {
         return SfdAudioType::adx;
     }
-    if (payload.size() >= ac3_signature.size() &&
-        std::equal(ac3_signature.begin(), ac3_signature.end(), payload.begin())) {
+    if (std::ranges::starts_with(payload, ac3_signature)) {
         return SfdAudioType::ac3;
     }
     return SfdAudioType::unknown;
@@ -233,8 +228,8 @@ template<typename T>
 }
 
 [[nodiscard]] std::optional<SfdHeaderSummary> parse_sofdec_header_summary(std::span<const uint8_t> payload) {
-    const size_t stream2_label_offset = find_start_code(payload, sofdec_stream2_label);
-    const size_t stream_label_offset = find_start_code(payload, sofdec_stream_label);
+    const size_t stream2_label_offset = find_bytes(payload, sofdec_stream2_label);
+    const size_t stream_label_offset = find_bytes(payload, sofdec_stream_label);
 
     size_t label_offset = payload.size();
     SfdHeaderVariant variant = SfdHeaderVariant::unknown;
@@ -273,18 +268,10 @@ template<typename T>
     }
 
     if (variant == SfdHeaderVariant::sofdec_stream2) {
-        if (label_offset + sofdec_stream2_builder_version_relative_offset < payload.size()) {
-            summary.builder_version = read_c_string(payload.subspan(
-                label_offset + sofdec_stream2_builder_version_relative_offset,
-                std::min<size_t>(payload.size() - (label_offset + sofdec_stream2_builder_version_relative_offset), 64)
-            ));
-        }
-        if (label_offset + sofdec_stream2_output_name_relative_offset < payload.size()) {
-            summary.output_name = read_c_string(payload.subspan(
-                label_offset + sofdec_stream2_output_name_relative_offset,
-                std::min<size_t>(payload.size() - (label_offset + sofdec_stream2_output_name_relative_offset), 64)
-            ));
-        }
+        summary.builder_version = read_c_string_at(
+            payload, label_offset + sofdec_stream2_builder_version_relative_offset, 64);
+        summary.output_name = read_c_string_at(
+            payload, label_offset + sofdec_stream2_output_name_relative_offset, 64);
         if (label_offset + sofdec_stream2_header_summary_relative_offset + 4 <= payload.size()) {
             summary.element_count = payload[label_offset + sofdec_stream2_header_summary_relative_offset + 0];
             summary.audio_count = payload[label_offset + sofdec_stream2_header_summary_relative_offset + 1];
@@ -323,15 +310,10 @@ template<typename T>
         return std::nullopt;
     }
 
-    if (label_offset + sofdec_output_name_relative_offset < payload.size()) {
-        summary.output_name = read_c_string(payload.subspan(
-            label_offset + sofdec_output_name_relative_offset,
-            std::min(
-                payload.size() - (label_offset + sofdec_output_name_relative_offset),
-                sofdec_element_table_relative_offset - sofdec_output_name_relative_offset
-            )
-        ));
-    }
+    summary.output_name = read_c_string_at(
+        payload,
+        label_offset + sofdec_output_name_relative_offset,
+        sofdec_element_table_relative_offset - sofdec_output_name_relative_offset);
 
     const size_t record_count = std::min<size_t>(summary.element_count, sofdec_max_element_record_count);
     size_t record_offset = label_offset + sofdec_element_table_relative_offset;
@@ -360,14 +342,13 @@ std::expected<void, std::string> SfdContainer::parse() {
         return std::unexpected("SFD data is too small");
     }
 
-    const size_t start_offset = find_pack_header(data);
+    const size_t start_offset = find_bytes(data, pack_start_code);
     if (start_offset == data.size()) {
         return std::unexpected("SFD parse failed: could not find MPEG pack header");
     }
 
     std::array<int32_t, 256> stream_lookup{};
     stream_lookup.fill(-1);
-    std::array<std::string, 256> stream_names{};
     uint32_t next_audio_index = 0;
     uint32_t next_video_index = 0;
     uint32_t next_private_index = 0;
@@ -413,13 +394,6 @@ std::expected<void, std::string> SfdContainer::parse() {
         if (stream_id == packet_private_stream_2) {
             if (!m_header_summary.has_value()) {
                 m_header_summary = parse_sofdec_header_summary(packet_payload);
-                if (m_header_summary.has_value()) {
-                    for (const auto& record : m_header_summary->element_records) {
-                        if (!record.short_name.empty() && stream_names[record.stream_id].empty()) {
-                            stream_names[record.stream_id] = record.short_name;
-                        }
-                    }
-                }
             }
         } else if (stream_id == packet_private_stream_1 || is_audio_packet(stream_id) || is_video_packet(stream_id)) {
             const auto data_offset_result = parse_pes_payload_data_offset(packet_payload);
@@ -432,53 +406,30 @@ std::expected<void, std::string> SfdContainer::parse() {
                 const uint32_t emitted_size = static_cast<uint32_t>(packet_end - data_offset);
                 const auto payload = data.subspan(data_offset, emitted_size);
 
-                SfdStreamType stream_type = SfdStreamType::private_data;
-                SfdAudioType audio_type = SfdAudioType::unknown;
-                SfdVideoType video_type = SfdVideoType::unknown;
-                std::optional<SfdVideoSequenceHeader> video_header;
-
                 const int32_t existing_stream_index = stream_lookup[stream_id];
-                if (is_audio_packet(stream_id)) {
-                    stream_type = SfdStreamType::audio;
-                    audio_type = detect_audio_type(payload);
-                } else if (is_video_packet(stream_id)) {
-                    stream_type = SfdStreamType::video;
-                    bool needs_video_type = true;
-                    bool needs_video_header = true;
-                    if (existing_stream_index >= 0) {
-                        const auto& existing_stream = m_streams[static_cast<size_t>(existing_stream_index)];
-                        needs_video_type = existing_stream.video_type == SfdVideoType::unknown;
-                        needs_video_header = !existing_stream.video_header.has_value();
-                    }
-                    if (needs_video_type || needs_video_header) {
-                        const auto video_info = inspect_video_payload(payload);
-                        video_type = video_info.type;
-                        video_header = video_info.header;
-                    }
-                } else {
-                    audio_type = detect_private_stream_audio_type(payload);
-                    if (audio_type != SfdAudioType::unknown) {
-                        stream_type = SfdStreamType::audio;
-                    }
-                }
-
                 int32_t stream_index = existing_stream_index;
                 if (stream_index < 0) {
                     SfdStream stream;
                     stream.index = static_cast<uint32_t>(m_streams.size());
-                    stream.type = stream_type;
-                    if (stream_type == SfdStreamType::audio) {
+                    stream.stream_id = stream_id;
+                    if (is_audio_packet(stream_id)) {
+                        stream.type = SfdStreamType::audio;
+                    } else if (is_video_packet(stream_id)) {
+                        stream.type = SfdStreamType::video;
+                    } else if (stream.audio_type = detect_private_stream_audio_type(payload);
+                               stream.audio_type != SfdAudioType::unknown) {
+                        stream.type = SfdStreamType::audio;
+                    } else {
+                        stream.type = SfdStreamType::private_data;
+                    }
+
+                    if (stream.type == SfdStreamType::audio) {
                         stream.type_index = next_audio_index++;
-                    } else if (stream_type == SfdStreamType::video) {
+                    } else if (stream.type == SfdStreamType::video) {
                         stream.type_index = next_video_index++;
                     } else {
                         stream.type_index = next_private_index++;
                     }
-                    stream.stream_id = stream_id;
-                    stream.audio_type = audio_type;
-                    stream.video_type = video_type;
-                    stream.video_header = video_header;
-                    stream.source_name = stream_names[stream_id];
                     m_streams.push_back(std::move(stream));
                     stream_index = static_cast<int32_t>(m_streams.size() - 1);
                     stream_lookup[stream_id] = stream_index;
@@ -486,18 +437,19 @@ std::expected<void, std::string> SfdContainer::parse() {
 
                 auto& stream = m_streams[static_cast<size_t>(stream_index)];
                 if (stream.type == SfdStreamType::audio && stream.audio_type == SfdAudioType::unknown) {
-                    stream.audio_type = audio_type;
+                    stream.audio_type = stream_id == packet_private_stream_1
+                        ? detect_private_stream_audio_type(payload)
+                        : detect_audio_type(payload);
                 }
-                if (stream.type == SfdStreamType::video) {
+                if (stream.type == SfdStreamType::video &&
+                    (stream.video_type == SfdVideoType::unknown || !stream.video_header.has_value())) {
+                    const auto video = inspect_video_payload(payload);
                     if (stream.video_type == SfdVideoType::unknown) {
-                        stream.video_type = video_type;
+                        stream.video_type = video.type;
                     }
                     if (!stream.video_header.has_value()) {
-                        stream.video_header = video_header;
+                        stream.video_header = video.header;
                     }
-                }
-                if (stream.source_name.empty() && !stream_names[stream_id].empty()) {
-                    stream.source_name = stream_names[stream_id];
                 }
 
                 stream.packet_count += 1;
@@ -520,10 +472,15 @@ std::expected<void, std::string> SfdContainer::parse() {
     }
 
     for (auto& stream : m_streams) {
-        if (stream.source_name.empty()) {
-            stream.source_name = stream_names[stream.stream_id];
-        }
         if (m_header_summary.has_value()) {
+            const auto named = std::ranges::find_if(
+                m_header_summary->element_records,
+                [&stream](const SfdElementRecord& record) {
+                    return record.stream_id == stream.stream_id && !record.short_name.empty();
+                });
+            if (named != m_header_summary->element_records.end()) {
+                stream.source_name = named->short_name;
+            }
             const auto it = std::find_if(
                 m_header_summary->element_records.begin(),
                 m_header_summary->element_records.end(),

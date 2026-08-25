@@ -11,15 +11,15 @@ namespace {
 
 constexpr size_t sbt_record_header_size = 0x14;
 
-[[nodiscard]] std::expected<std::string, std::string> format_srt_cues(std::span<const UsmSubtitleCue> cues);
+[[nodiscard]] std::string format_srt_cues(std::span<const UsmSubtitleCue> cues);
 
-[[nodiscard]] std::string trim(std::string_view text) {
+[[nodiscard]] std::string_view trim(std::string_view text) {
     const auto first = text.find_first_not_of(" \t\r\n");
     if (first == std::string_view::npos) {
         return {};
     }
     const auto last = text.find_last_not_of(" \t\r\n");
-    return std::string(text.substr(first, last - first + 1));
+    return text.substr(first, last - first + 1);
 }
 
 [[nodiscard]] std::vector<std::string_view> split_lines(std::string_view text) {
@@ -42,8 +42,10 @@ constexpr size_t sbt_record_header_size = 0x14;
 
 template <class T>
 [[nodiscard]] std::expected<T, std::string> parse_integer(std::string_view text, std::string_view label) {
-    const std::string cleaned = trim(text);
-    text = cleaned;
+    text = trim(text);
+    if (text.empty()) {
+        return std::unexpected("USM subtitle parse failed: failed to parse " + std::string(label));
+    }
     T value{};
     const auto* first = text.data();
     const auto* last = text.data() + text.size();
@@ -54,15 +56,54 @@ template <class T>
     return value;
 }
 
-[[nodiscard]] std::expected<uint32_t, std::string> parse_time_component(
+[[nodiscard]] std::expected<uint32_t, std::string> parse_clock_time(
     std::string_view text,
-    std::string_view label
+    char fraction_separator,
+    uint32_t fraction_limit,
+    uint32_t fraction_milliseconds,
+    std::string_view format,
+    std::string_view fraction_name
 ) {
-    auto parsed = parse_integer<uint32_t>(text, label);
-    if (!parsed) {
-        return std::unexpected(parsed.error());
+    text = trim(text);
+    const auto first_colon = text.find(':');
+    const auto second_colon = first_colon == std::string_view::npos
+        ? std::string_view::npos
+        : text.find(':', first_colon + 1);
+    const auto fraction = second_colon == std::string_view::npos
+        ? std::string_view::npos
+        : text.find(fraction_separator, second_colon + 1);
+    if (first_colon == std::string_view::npos || second_colon == std::string_view::npos ||
+        fraction == std::string_view::npos) {
+        return std::unexpected("USM subtitle parse failed: invalid " + std::string(format) + " timestamp");
     }
-    return *parsed;
+
+    auto hours = parse_integer<uint32_t>(text.substr(0, first_colon), std::string(format) + " hours");
+    auto minutes = parse_integer<uint32_t>(
+        text.substr(first_colon + 1, second_colon - first_colon - 1),
+        std::string(format) + " minutes");
+    auto seconds = parse_integer<uint32_t>(
+        text.substr(second_colon + 1, fraction - second_colon - 1),
+        std::string(format) + " seconds");
+    auto fractions = parse_integer<uint32_t>(
+        text.substr(fraction + 1),
+        std::string(format) + " " + std::string(fraction_name));
+    if (!hours || !minutes || !seconds || !fractions) {
+        return std::unexpected(
+            !hours ? hours.error() : !minutes ? minutes.error() : !seconds ? seconds.error() : fractions.error()
+        );
+    }
+    if (*minutes >= 60 || *seconds >= 60 || *fractions >= fraction_limit) {
+        return std::unexpected(
+            "USM subtitle parse failed: " + std::string(format) + " timestamp component is out of range"
+        );
+    }
+
+    const uint64_t total = ((static_cast<uint64_t>(*hours) * 60 + *minutes) * 60 + *seconds) * 1000 +
+        static_cast<uint64_t>(*fractions) * fraction_milliseconds;
+    if (total > std::numeric_limits<uint32_t>::max()) {
+        return std::unexpected("USM subtitle parse failed: " + std::string(format) + " timestamp is too large");
+    }
+    return static_cast<uint32_t>(total);
 }
 
 [[nodiscard]] std::expected<uint32_t, std::string> milliseconds_to_ticks(
@@ -79,112 +120,52 @@ template <class T>
     return static_cast<uint32_t>(ticks);
 }
 
-[[nodiscard]] uint64_t ticks_to_milliseconds(uint32_t ticks, uint32_t time_unit) {
-    return (static_cast<uint64_t>(ticks) * 1000 + (time_unit / 2)) / time_unit;
-}
-
 [[nodiscard]] std::expected<uint32_t, std::string> parse_srt_time(std::string_view text) {
-    const std::string cleaned = trim(text);
-    text = cleaned;
-    const auto h1 = text.find(':');
-    const auto h2 = h1 == std::string_view::npos ? std::string_view::npos : text.find(':', h1 + 1);
-    const auto comma = h2 == std::string_view::npos ? std::string_view::npos : text.find(',', h2 + 1);
-    if (h1 == std::string_view::npos || h2 == std::string_view::npos || comma == std::string_view::npos) {
-        return std::unexpected("USM subtitle parse failed: invalid SRT timestamp");
-    }
-
-    auto hours = parse_time_component(text.substr(0, h1), "SRT hours");
-    auto minutes = parse_time_component(text.substr(h1 + 1, h2 - h1 - 1), "SRT minutes");
-    auto seconds = parse_time_component(text.substr(h2 + 1, comma - h2 - 1), "SRT seconds");
-    auto milliseconds = parse_time_component(text.substr(comma + 1), "SRT milliseconds");
-    if (!hours || !minutes || !seconds || !milliseconds) {
-        return std::unexpected(
-            !hours ? hours.error() : !minutes ? minutes.error() : !seconds ? seconds.error() : milliseconds.error()
-        );
-    }
-    if (*minutes >= 60 || *seconds >= 60 || *milliseconds >= 1000) {
-        return std::unexpected("USM subtitle parse failed: SRT timestamp component is out of range");
-    }
-
-    const uint64_t total = ((static_cast<uint64_t>(*hours) * 60 + *minutes) * 60 + *seconds) * 1000 + *milliseconds;
-    if (total > std::numeric_limits<uint32_t>::max()) {
-        return std::unexpected("USM subtitle parse failed: SRT timestamp is too large");
-    }
-    return static_cast<uint32_t>(total);
+    return parse_clock_time(text, ',', 1000, 1, "SRT", "milliseconds");
 }
 
 [[nodiscard]] std::expected<uint32_t, std::string> parse_ass_time(std::string_view text) {
-    const std::string cleaned = trim(text);
-    text = cleaned;
-    const auto h1 = text.find(':');
-    const auto h2 = h1 == std::string_view::npos ? std::string_view::npos : text.find(':', h1 + 1);
-    const auto dot = h2 == std::string_view::npos ? std::string_view::npos : text.find('.', h2 + 1);
-    if (h1 == std::string_view::npos || h2 == std::string_view::npos || dot == std::string_view::npos) {
-        return std::unexpected("USM subtitle parse failed: invalid ASS timestamp");
-    }
+    return parse_clock_time(text, '.', 100, 10, "ASS", "centiseconds");
+}
 
-    auto hours = parse_time_component(text.substr(0, h1), "ASS hours");
-    auto minutes = parse_time_component(text.substr(h1 + 1, h2 - h1 - 1), "ASS minutes");
-    auto seconds = parse_time_component(text.substr(h2 + 1, dot - h2 - 1), "ASS seconds");
-    auto centiseconds = parse_time_component(text.substr(dot + 1), "ASS centiseconds");
-    if (!hours || !minutes || !seconds || !centiseconds) {
-        return std::unexpected(
-            !hours ? hours.error() : !minutes ? minutes.error() : !seconds ? seconds.error() : centiseconds.error()
-        );
-    }
-    if (*minutes >= 60 || *seconds >= 60 || *centiseconds >= 100) {
-        return std::unexpected("USM subtitle parse failed: ASS timestamp component is out of range");
-    }
+[[nodiscard]] std::string format_clock_time(
+    uint32_t ticks,
+    uint32_t time_unit,
+    uint32_t fractions_per_second,
+    char separator,
+    int fraction_width,
+    bool pad_hours
+) {
+    const auto total_fractions =
+        (static_cast<uint64_t>(ticks) * fractions_per_second + time_unit / 2u) / time_unit;
+    const auto fraction = total_fractions % fractions_per_second;
+    const auto total_seconds = total_fractions / fractions_per_second;
+    const auto seconds = total_seconds % 60;
+    const auto total_minutes = total_seconds / 60;
+    const auto minutes = total_minutes % 60;
+    const auto hours = total_minutes / 60;
 
-    const uint64_t total = ((static_cast<uint64_t>(*hours) * 60 + *minutes) * 60 + *seconds) * 1000 +
-        static_cast<uint64_t>(*centiseconds) * 10;
-    if (total > std::numeric_limits<uint32_t>::max()) {
-        return std::unexpected("USM subtitle parse failed: ASS timestamp is too large");
+    std::ostringstream out;
+    out.fill('0');
+    if (pad_hours) {
+        out.width(2);
     }
-    return static_cast<uint32_t>(total);
+    out << hours << ':';
+    out.width(2);
+    out << minutes << ':';
+    out.width(2);
+    out << seconds << separator;
+    out.width(fraction_width);
+    out << fraction;
+    return out.str();
 }
 
 [[nodiscard]] std::string format_srt_time(uint32_t ticks, uint32_t time_unit) {
-    const auto total_ms = ticks_to_milliseconds(ticks, time_unit);
-    const auto milliseconds = total_ms % 1000;
-    const auto total_seconds = total_ms / 1000;
-    const auto seconds = total_seconds % 60;
-    const auto total_minutes = total_seconds / 60;
-    const auto minutes = total_minutes % 60;
-    const auto hours = total_minutes / 60;
-
-    std::ostringstream out;
-    out.width(2);
-    out.fill('0');
-    out << hours << ':';
-    out.width(2);
-    out << minutes << ':';
-    out.width(2);
-    out << seconds << ',';
-    out.width(3);
-    out << milliseconds;
-    return out.str();
+    return format_clock_time(ticks, time_unit, 1000, ',', 3, true);
 }
 
 [[nodiscard]] std::string format_ass_time(uint32_t ticks, uint32_t time_unit) {
-    const auto total_cs = (static_cast<uint64_t>(ticks) * 100 + (time_unit / 2)) / time_unit;
-    const auto centiseconds = total_cs % 100;
-    const auto total_seconds = total_cs / 100;
-    const auto seconds = total_seconds % 60;
-    const auto total_minutes = total_seconds / 60;
-    const auto minutes = total_minutes % 60;
-    const auto hours = total_minutes / 60;
-
-    std::ostringstream out;
-    out << hours << ':';
-    out.width(2);
-    out.fill('0');
-    out << minutes << ':';
-    out.width(2);
-    out << seconds << '.';
-    out.width(2);
-    out << centiseconds;
-    return out.str();
+    return format_clock_time(ticks, time_unit, 100, '.', 2, false);
 }
 
 [[nodiscard]] std::string escape_ass_text(std::string_view text) {
@@ -218,8 +199,7 @@ template <class T>
 }
 
 [[nodiscard]] uint32_t parse_ass_language_id(std::string_view name, uint32_t fallback) {
-    const std::string cleaned = trim(name);
-    name = cleaned;
+    name = trim(name);
     constexpr std::string_view prefix = "lang";
     if (!name.starts_with(prefix)) {
         return fallback;
@@ -317,15 +297,13 @@ template <class T>
 ) {
     std::vector<UsmSubtitleCue> cues;
     for (auto line : split_lines(text)) {
-        const std::string cleaned_line = trim(line);
-        line = cleaned_line;
+        line = trim(line);
         constexpr std::string_view prefix = "Dialogue:";
         if (!line.starts_with(prefix)) {
             continue;
         }
         line.remove_prefix(prefix.size());
-        const std::string cleaned_dialogue = trim(line);
-        line = cleaned_dialogue;
+        line = trim(line);
         auto fields = split_ass_dialogue(line);
         if (fields.size() < 10) {
             return std::unexpected("USM subtitle parse failed: malformed ASS Dialogue line");
@@ -359,7 +337,7 @@ template <class T>
     return cues;
 }
 
-std::expected<std::string, std::string> format_srt_cues(std::span<const UsmSubtitleCue> cues) {
+std::string format_srt_cues(std::span<const UsmSubtitleCue> cues) {
     std::ostringstream out;
     uint32_t index = 1;
     for (const auto& cue : cues) {
@@ -537,7 +515,7 @@ std::expected<std::vector<uint8_t>, std::string> subtitle_source_text_to_sbt(
             .time_unit = *time_unit,
             .start_time = *start,
             .duration = *end - *start,
-            .text = trim(cue_text),
+            .text = std::string(trim(cue_text)),
             .terminator_size = newline_terminated ? 1u : 0u,
         });
     }
@@ -567,11 +545,7 @@ std::expected<std::flat_map<uint32_t, std::string>, std::string> sbt_to_srt_trac
 
     std::flat_map<uint32_t, std::string> tracks;
     for (const auto& [language_id, language_cues] : grouped_cues) {
-        auto srt = format_srt_cues(language_cues);
-        if (!srt) {
-            return std::unexpected(srt.error());
-        }
-        tracks.emplace(language_id, std::move(*srt));
+        tracks.emplace(language_id, format_srt_cues(language_cues));
     }
     return tracks;
 }

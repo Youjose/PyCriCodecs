@@ -71,31 +71,15 @@ using util::trim_ascii;
 }
 
 [[nodiscard]] std::string join_tool_display_path(std::string_view base, std::string_view leaf) {
-    if (base.empty()) {
-        return std::string(leaf);
-    }
-    if (leaf.empty()) {
-        return std::string(base);
-    }
+    if (base.empty()) return std::string(leaf);
+    if (leaf.empty()) return std::string(base);
 
     std::string joined(base);
-    const bool base_has_separator =
-        joined.back() == '/' || joined.back() == '\\';
-    const bool leaf_has_separator =
-        leaf.front() == '/' || leaf.front() == '\\';
-
-    if (base_has_separator) {
-        joined += leaf_has_separator ? std::string_view(leaf).substr(1) : leaf;
-        return joined;
-    }
-    if (leaf_has_separator) {
-        joined += leaf;
-        return joined;
-    }
-
-    const char separator = base.find('\\') != std::string_view::npos ? '\\' : '/';
-    joined.push_back(separator);
-    joined += leaf;
+    const bool base_separator = joined.back() == '/' || joined.back() == '\\';
+    const bool leaf_separator = leaf.front() == '/' || leaf.front() == '\\';
+    if (!base_separator && !leaf_separator)
+        joined.push_back(base.contains('\\') ? '\\' : '/');
+    joined += base_separator && leaf_separator ? leaf.substr(1) : leaf;
     return joined;
 }
 
@@ -121,47 +105,27 @@ using util::trim_ascii;
     return normalized;
 }
 
-[[nodiscard]] std::string normalize_archive_header_banner_name(std::string_view archive_name) {
+[[nodiscard]] std::filesystem::path archive_filename(std::string_view archive_name) {
     std::filesystem::path normalized = normalize_generic_tool_path(archive_name);
-    std::filesystem::path filename = normalized.filename();
-    if (filename.empty()) {
-        filename = normalized;
-    }
+    auto filename = normalized.filename();
+    return filename.empty() ? normalized : filename;
+}
 
-    std::string text = filename.generic_string();
-    if (text.empty()) {
-        text = std::string(archive_name);
-    }
-    return text;
+[[nodiscard]] std::string normalize_archive_header_banner_name(std::string_view archive_name) {
+    auto text = archive_filename(archive_name).generic_string();
+    return text.empty() ? std::string(archive_name) : text;
 }
 
 [[nodiscard]] std::string normalize_archive_header_macro_name(std::string_view archive_name) {
-    std::filesystem::path normalized = normalize_generic_tool_path(archive_name);
-    std::filesystem::path filename = normalized.filename();
-    if (filename.empty()) {
-        filename = normalized;
-    }
-
+    const auto filename = archive_filename(archive_name);
     std::string text = filename.stem().generic_string();
-    if (text.empty()) {
-        text = filename.generic_string();
-    }
-    if (text.empty()) {
-        text = std::string(archive_name);
-    }
-    return text;
+    if (text.empty()) text = filename.generic_string();
+    return text.empty() ? std::string(archive_name) : text;
 }
 
 [[nodiscard]] size_t filename_offset(std::string_view name) {
-    const size_t slash_separator = name.find_last_of('/');
-    const size_t backslash_separator = name.find_last_of('\\');
-    const size_t separator =
-        slash_separator == std::string_view::npos ? backslash_separator :
-        backslash_separator == std::string_view::npos ? slash_separator :
-        std::max(slash_separator, backslash_separator);
-    if (separator == std::string_view::npos) {
-        return 0;
-    }
+    const auto separator = name.find_last_of("/\\");
+    if (separator == std::string_view::npos) return 0;
     return separator + 1;
 }
 
@@ -181,49 +145,25 @@ using util::trim_ascii;
     if (std::ranges::all_of(names, [](const std::string& name) { return has_windows_drive_prefix(name); })) {
         start_offset = 3;
     }
+    if (const auto short_name = std::ranges::find_if(
+            names, [=](const auto& name) { return name.size() <= start_offset; });
+        short_name != names.end())
+        return short_name->size();
 
-    std::vector<size_t> component_offsets(names.size(), start_offset);
-    for (const auto& name : names) {
-        if (name.size() <= start_offset) {
-            return name.size();
-        }
+    size_t offset = start_offset;
+    for (auto end = names.front().find('/', offset);
+         end != std::string::npos;
+         end = names.front().find('/', offset)) {
+        const auto component = std::string_view(names.front()).substr(offset, end - offset);
+        const bool matches = std::ranges::all_of(names, [&](const auto& name) {
+            const auto other_end = name.find('/', offset);
+            return other_end != std::string::npos &&
+                std::string_view(name).substr(offset, other_end - offset) == component;
+        });
+        if (!matches) break;
+        offset = end + 1;
     }
-
-    while (true) {
-        const size_t expected_end = names.front().find('/', component_offsets.front());
-        if (expected_end == std::string::npos) {
-            break;
-        }
-
-        const std::string_view expected_component(names.front().data() + component_offsets.front(),
-                                                  expected_end - component_offsets.front());
-
-        bool all_match = true;
-        for (size_t index = 1; index < names.size(); ++index) {
-            const size_t component_end = names[index].find('/', component_offsets[index]);
-            if (component_end == std::string::npos) {
-                all_match = false;
-                break;
-            }
-
-            const std::string_view component(names[index].data() + component_offsets[index],
-                                             component_end - component_offsets[index]);
-            if (component != expected_component) {
-                all_match = false;
-                break;
-            }
-        }
-
-        if (!all_match) {
-            break;
-        }
-
-        for (size_t index = 0; index < component_offsets.size(); ++index) {
-            component_offsets[index] = names[index].find('/', component_offsets[index]) + 1;
-        }
-    }
-
-    return component_offsets.front();
+    return offset;
 }
 
 [[nodiscard]] std::string convert_to_header_macro_name(std::string text) {
@@ -407,27 +347,29 @@ std::expected<std::vector<uint8_t>, std::string> AfsContainer::build() {
         payloads[index] = *payload;
     }
 
+    for (size_t index = 0; index < m_entries.size(); ++index) {
+        auto& entry = m_entries[index];
+        entry.index = static_cast<uint32_t>(index);
+        if (!entry.present) {
+            entry.offset = 0;
+            entry.size = 0;
+            entry.type = AfsEntryType::unknown;
+            continue;
+        }
+        entry.size = static_cast<uint32_t>(payloads[index].size());
+        entry.type = detail::detect_entry_type(payloads[index], 0, entry.size);
+    }
+
     const bool include_directory_table = m_emit_directory_table;
     bool preserve_layout = !m_source.empty();
     uint32_t original_first_present_offset = detail::first_present_source_offset(m_source);
     const auto requested_first_payload_offset = m_first_payload_offset;
     uint32_t payload_end = 0;
     if (preserve_layout) {
-        const uint32_t minimum_first_offset = align_up(static_cast<uint32_t>(header_size), 1);
+        const auto minimum_first_offset = static_cast<uint32_t>(header_size);
         std::optional<uint32_t> previous_present_end;
-        for (size_t index = 0; index < m_entries.size(); ++index) {
-            auto& entry = m_entries[index];
-            entry.index = static_cast<uint32_t>(index);
-            if (!entry.present) {
-                entry.offset = 0;
-                entry.size = 0;
-                entry.type = AfsEntryType::unknown;
-                continue;
-            }
-
-            const auto payload = payloads[index];
-            entry.size = static_cast<uint32_t>(payload.size());
-            entry.type = detail::detect_entry_type(payload, 0, entry.size);
+        for (const auto& entry : m_entries) {
+            if (!entry.present) continue;
             if (original_first_present_offset == 0) {
                 original_first_present_offset = entry.offset;
             }
@@ -474,17 +416,8 @@ std::expected<std::vector<uint8_t>, std::string> AfsContainer::build() {
         uint32_t last_payload_end = current_offset;
         for (size_t index = 0; index < m_entries.size(); ++index) {
             auto& entry = m_entries[index];
-            entry.index = static_cast<uint32_t>(index);
-            if (!entry.present) {
-                entry.offset = 0;
-                entry.size = 0;
-                entry.type = AfsEntryType::unknown;
-                continue;
-            }
-            const auto payload = payloads[index];
+            if (!entry.present) continue;
             entry.offset = current_offset;
-            entry.size = static_cast<uint32_t>(payload.size());
-            entry.type = detail::detect_entry_type(payload, 0, entry.size);
             last_payload_end = current_offset + entry.size;
             current_offset = align_up(last_payload_end, m_alignment);
         }

@@ -16,6 +16,7 @@
 
 #include "hca_crypto.hpp"
 #include "hca_frame.hpp"
+#include "hca_packing.hpp"
 #include "hca_reader.hpp"
 #include "hca_tables.hpp"
 #include "hca_transform.hpp"
@@ -32,6 +33,29 @@ namespace {
 
 using BitReader = io::bit_reader;
 using io::read_be;
+
+struct DecodeChannel {
+    ChannelType type = ChannelType::Discrete;
+    uint8_t coded_count = 0;
+    std::array<uint8_t, HCA_SAMPLES_PER_SUBFRAME> scalefactors{};
+    std::array<uint8_t, HCA_SAMPLES_PER_SUBFRAME> resolution{};
+    std::array<float, HCA_SAMPLES_PER_SUBFRAME> gain{};
+    std::array<uint8_t, 8> hfr_scales{};
+    std::array<uint8_t, HCA_SUBFRAMES> intensity{};
+    std::array<std::array<float, HCA_SAMPLES_PER_SUBFRAME>, HCA_SUBFRAMES> spectra{};
+    std::array<float, HCA_SAMPLES_PER_SUBFRAME> imdct_previous{};
+    std::array<std::array<float, HCA_SAMPLES_PER_SUBFRAME>, HCA_SUBFRAMES> wave{};
+    std::array<uint8_t, HCA_SAMPLES_PER_SUBFRAME> noises{};
+    uint8_t noise_count = 0;
+    uint8_t valid_count = 0;
+};
+
+struct DecodeFrame {
+    const HcaHeader& info;
+    std::array<DecodeChannel, 8> channels;
+    std::array<uint8_t, HCA_SAMPLES_PER_SUBFRAME> ath_curve{};
+    uint32_t random = 1;
+};
 
 [[nodiscard]] float dequantizer_scale(uint8_t scalefactor) noexcept {
     return tables::DEQUANTIZER_SCALING_TABLE[scalefactor];
@@ -52,11 +76,10 @@ using io::read_be;
     return tables::SCALE_CONVERSION_TABLE[static_cast<size_t>(index)];
 }
 
-void assign_channel_types(HcaFrame& frame) {
+void assign_channel_types(DecodeFrame& frame) {
     const auto& info = frame.info;
     const auto types = detail::channel_types(info);
     for (uint32_t i = 0; i < info.fmt.channel_count; ++i) {
-        frame.channels[i] = {};
         frame.channels[i].type = types[i];
         frame.channels[i].coded_count = frame.channels[i].type == ChannelType::StereoSecondary
             ? info.codec.base_band_count
@@ -64,13 +87,9 @@ void assign_channel_types(HcaFrame& frame) {
     }
 }
 
-} // anonymous namespace
-
-bool unpack_scalefactors(HcaChannel& ch, BitReader& br, int hfr_group_count, uint16_t version) {
+bool unpack_scalefactors(DecodeChannel& ch, BitReader& br, int hfr_group_count, uint16_t version) {
     uint32_t coded_count = ch.coded_count;
     uint32_t extra_count = 0;
-    const uint8_t delta_bits = static_cast<uint8_t>(br.read(3));
-
     if (ch.type != ChannelType::StereoSecondary && hfr_group_count > 0 && version > HCA_VERSION_V200) {
         extra_count = static_cast<uint32_t>(hfr_group_count);
         coded_count += extra_count;
@@ -79,28 +98,12 @@ bool unpack_scalefactors(HcaChannel& ch, BitReader& br, int hfr_group_count, uin
         }
     }
 
-    if (delta_bits >= 6) {
-        for (uint32_t i = 0; i < coded_count; ++i) {
-            ch.scalefactors[i] = static_cast<uint8_t>(br.read(6));
-        }
-    } else if (delta_bits > 0) {
-        const uint8_t expected_delta = static_cast<uint8_t>((1u << delta_bits) - 1u);
-        uint8_t value = static_cast<uint8_t>(br.read(6));
-        ch.scalefactors[0] = value;
-
-        for (uint32_t i = 1; i < coded_count; ++i) {
-            const uint8_t delta = static_cast<uint8_t>(br.read(delta_bits));
-            if (delta == expected_delta) {
-                value = static_cast<uint8_t>(br.read(6));
-            } else {
-                const int next = static_cast<int>(value) + static_cast<int>(delta) - static_cast<int>(expected_delta >> 1);
-                value = static_cast<uint8_t>(next & 0x3F);
-            }
-            ch.scalefactors[i] = value;
-        }
-    } else {
-        ch.scalefactors.fill(0);
+    const auto values = std::span(ch.scalefactors).first(coded_count);
+    static_cast<void>(packing::read_scalefactors(br, values));
+    if (!br.valid()) {
+        return false;
     }
+    std::fill(ch.scalefactors.begin() + coded_count, ch.scalefactors.end(), uint8_t{0});
 
     for (uint32_t i = 0; i < extra_count; ++i) {
         ch.hfr_scales[i] = ch.scalefactors[ch.coded_count + i];
@@ -108,57 +111,9 @@ bool unpack_scalefactors(HcaChannel& ch, BitReader& br, int hfr_group_count, uin
     return true;
 }
 
-bool unpack_intensity(HcaChannel& ch, BitReader& br, int hfr_group_count, uint16_t version) {
+bool unpack_intensity(DecodeChannel& ch, BitReader& br, int hfr_group_count, uint16_t version) {
     if (ch.type == ChannelType::StereoSecondary) {
-        if (version <= HCA_VERSION_V200) {
-            const uint8_t value = static_cast<uint8_t>(br.peek(4));
-            ch.intensity[0] = value;
-            if (value < 15) {
-                br.skip(4);
-                for (int i = 1; i < HCA_SUBFRAMES; ++i) {
-                    ch.intensity[i] = static_cast<uint8_t>(br.read(4));
-                }
-            }
-            return true;
-        }
-
-        const uint8_t value = static_cast<uint8_t>(br.peek(4));
-        if (value >= 15) {
-            br.skip(4);
-            for (int i = 0; i < HCA_SUBFRAMES; ++i) {
-                ch.intensity[i] = 7;
-            }
-            return true;
-        }
-
-        br.skip(4);
-        const uint8_t delta_bits = static_cast<uint8_t>(br.read(2));
-        ch.intensity[0] = value;
-        uint8_t current = value;
-
-        if (delta_bits == 3) {
-            for (int i = 1; i < HCA_SUBFRAMES; ++i) {
-                ch.intensity[i] = static_cast<uint8_t>(br.read(4));
-            }
-            return true;
-        }
-
-        const uint8_t max_value = static_cast<uint8_t>((2u << delta_bits) - 1u);
-        const uint8_t bits = static_cast<uint8_t>(delta_bits + 1);
-        for (int i = 1; i < HCA_SUBFRAMES; ++i) {
-            const uint8_t delta = static_cast<uint8_t>(br.read(bits));
-            if (delta == max_value) {
-                current = static_cast<uint8_t>(br.read(4));
-            } else {
-                const int next = static_cast<int>(current) + static_cast<int>(delta) - static_cast<int>(max_value >> 1);
-                if (next > 15) {
-                    return false;
-                }
-                current = static_cast<uint8_t>(next);
-            }
-            ch.intensity[i] = current;
-        }
-        return true;
+        return packing::read_intensity(br, version, ch.intensity);
     }
 
     if (version <= HCA_VERSION_V200) {
@@ -166,10 +121,10 @@ bool unpack_intensity(HcaChannel& ch, BitReader& br, int hfr_group_count, uint16
             ch.hfr_scales[i] = static_cast<uint8_t>(br.read(6));
         }
     }
-    return true;
+    return br.valid();
 }
 
-void calculate_resolution(HcaChannel& ch, int packed_noise_level, const uint8_t* ath_curve,
+void calculate_resolution(DecodeChannel& ch, int packed_noise_level, const uint8_t* ath_curve,
                           int min_res, int max_res) {
     unsigned int noise_count = 0;
     unsigned int valid_count = 0;
@@ -210,13 +165,13 @@ void calculate_resolution(HcaChannel& ch, int packed_noise_level, const uint8_t*
     std::fill(ch.resolution.begin() + ch.coded_count, ch.resolution.end(), uint8_t{0});
 }
 
-void calculate_gain(HcaChannel& ch) {
+void calculate_gain(DecodeChannel& ch) {
     for (uint32_t i = 0; i < ch.coded_count; ++i) {
         ch.gain[i] = dequantizer_scale(ch.scalefactors[i]) * quantizer_step_size(ch.resolution[i]);
     }
 }
 
-void dequantize_coefficients(HcaChannel& ch, BitReader& br, int subframe) {
+void dequantize_coefficients(DecodeChannel& ch, BitReader& br, int subframe) {
     for (uint32_t i = 0; i < ch.coded_count; ++i) {
         const uint8_t resolution = ch.resolution[i];
         const uint8_t bits = tables::QUANTIZED_SPECTRUM_MAX_BITS[resolution];
@@ -242,7 +197,7 @@ void dequantize_coefficients(HcaChannel& ch, BitReader& br, int subframe) {
     std::fill(ch.spectra[subframe].begin() + ch.coded_count, ch.spectra[subframe].end(), 0.0f);
 }
 
-void reconstruct_noise(HcaChannel& ch, int min_res, bool ms_stereo, uint32_t& random, int subframe) {
+void reconstruct_noise(DecodeChannel& ch, int min_res, bool ms_stereo, uint32_t& random, int subframe) {
     if (min_res > 0 || ch.valid_count == 0 || ch.noise_count == 0) {
         return;
     }
@@ -263,7 +218,7 @@ void reconstruct_noise(HcaChannel& ch, int min_res, bool ms_stereo, uint32_t& ra
     }
 }
 
-void reconstruct_hfr(HcaChannel& ch, const HcaHeader& info, int subframe) {
+void reconstruct_hfr(DecodeChannel& ch, const HcaHeader& info, int subframe) {
     if (info.codec.bands_per_hfr_group == 0 || ch.type == ChannelType::StereoSecondary) {
         return;
     }
@@ -295,7 +250,7 @@ void reconstruct_hfr(HcaChannel& ch, const HcaHeader& info, int subframe) {
     }
 }
 
-void apply_intensity_stereo(HcaChannel* ch_pair, int subframe, int base_band, int total_band) {
+void apply_intensity_stereo(DecodeChannel* ch_pair, int subframe, int base_band, int total_band) {
     if (ch_pair[0].type != ChannelType::StereoPrimary) {
         return;
     }
@@ -309,7 +264,7 @@ void apply_intensity_stereo(HcaChannel* ch_pair, int subframe, int base_band, in
     }
 }
 
-void apply_ms_stereo(HcaChannel* ch_pair, bool ms_stereo, int base_band, int total_band, int subframe) {
+void apply_ms_stereo(DecodeChannel* ch_pair, bool ms_stereo, int base_band, int total_band, int subframe) {
     if (!ms_stereo || ch_pair[0].type != ChannelType::StereoPrimary) {
         return;
     }
@@ -323,7 +278,7 @@ void apply_ms_stereo(HcaChannel* ch_pair, bool ms_stereo, int base_band, int tot
     }
 }
 
-void imdct_transform(HcaChannel& ch, int subframe) {
+void imdct_transform(DecodeChannel& ch, int subframe) {
     const auto& window = tables::IMDCT_WINDOW;
     const auto dct_out = transform::dct4(ch.spectra[subframe], transform::HCA_DCT4_IMDCT_SCALE);
 
@@ -340,7 +295,7 @@ void imdct_transform(HcaChannel& ch, int subframe) {
     }
 }
 
-std::expected<void, std::string> decode_frame(HcaFrame& frame, const uint8_t* data) {
+std::expected<void, std::string> decode_frame(DecodeFrame& frame, const uint8_t* data) {
     const auto& info = frame.info;
     if (data[0] != 0xFF || data[1] != 0xFF) {
         return std::unexpected(std::string("HCA decode failed: invalid frame sync"));
@@ -349,9 +304,9 @@ std::expected<void, std::string> decode_frame(HcaFrame& frame, const uint8_t* da
     BitReader br(data, info.codec.frame_size);
     br.skip(16);
 
-    frame.acceptable_noise_level = static_cast<int>(br.read(9));
-    frame.evaluation_boundary = static_cast<int>(br.read(7));
-    const int packed_noise_level = (frame.acceptable_noise_level << 8) - frame.evaluation_boundary;
+    const int acceptable_noise_level = static_cast<int>(br.read(9));
+    const int evaluation_boundary = static_cast<int>(br.read(7));
+    const int packed_noise_level = (acceptable_noise_level << 8) - evaluation_boundary;
 
     for (uint32_t ch = 0; ch < info.fmt.channel_count; ++ch) {
         if (!unpack_scalefactors(frame.channels[ch], br,
@@ -392,7 +347,7 @@ std::expected<void, std::string> decode_frame(HcaFrame& frame, const uint8_t* da
     return {};
 }
 
-void write_samples(const HcaFrame& frame, uint32_t frame_offset, uint32_t sample_count, int16_t* output) {
+void write_samples(const DecodeFrame& frame, uint32_t frame_offset, uint32_t sample_count, int16_t* output) {
     const auto& info = frame.info;
     uint32_t sample_index = frame_offset;
     uint32_t remaining = sample_count;
@@ -416,6 +371,8 @@ void write_samples(const HcaFrame& frame, uint32_t frame_offset, uint32_t sample
     }
 }
 
+} // namespace
+
 std::expected<std::vector<int16_t>, std::string> decode(
     std::span<const uint8_t> hca_data, uint64_t keycode, uint16_t subkey) {
     auto info_result = detail::parse_header(hca_data);
@@ -423,9 +380,8 @@ std::expected<std::vector<int16_t>, std::string> decode(
         return std::unexpected(info_result.error());
     }
 
-    HcaHeader info = *info_result;
-    HcaFrame frame;
-    frame.info = info;
+    DecodeFrame frame{.info = *info_result};
+    const HcaHeader& info = frame.info;
     assign_channel_types(frame);
 
     if (info.ath.uses_curve()) {
@@ -464,7 +420,7 @@ std::expected<std::vector<int16_t>, std::string> decode(
             return std::unexpected(std::string("HCA decode failed: frame checksum mismatch"));
         }
 
-        cipher::decrypt_frame(cipher_table, frame_buffer.data(), info.codec.frame_size);
+        cipher::transform_frame(cipher_table, frame_buffer);
         const auto decode_result = decode_frame(frame, frame_buffer.data());
         if (!decode_result) {
             return std::unexpected(decode_result.error());

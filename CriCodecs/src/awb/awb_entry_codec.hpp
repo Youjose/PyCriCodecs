@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <span>
 #include <string_view>
+#include <utility>
 
 #include "../utilities/io_endian.hpp"
 
@@ -175,68 +176,56 @@ enum class EntryCodec : uint8_t {
     return EntryCodec::Unknown;
 }
 
+namespace detail {
+
+struct EntryCodecInfo {
+    std::string_view name;
+    std::string_view extension;
+};
+
+inline constexpr std::array entry_codec_infos{
+    EntryCodecInfo{"audio", ".bin"},
+    EntryCodecInfo{"HCA audio", ".hca"},
+    EntryCodecInfo{"HCA-MX audio", ".hcamx"},
+    EntryCodecInfo{"ADX audio", ".adx"},
+    EntryCodecInfo{"AHX audio", ".ahx"},
+    EntryCodecInfo{"software LPCM audio", ".swlpcm"},
+    EntryCodecInfo{"Nintendo DS ADPCM audio", ".dsadpcm"},
+    EntryCodecInfo{"Nintendo DSP audio", ".dsp"},
+    EntryCodecInfo{"Wii ADPCM audio", ".wiiadpcm"},
+    EntryCodecInfo{"Wii U ADPCM audio", ".wiiuadpcm"},
+    EntryCodecInfo{"VAG audio", ".vag"},
+    EntryCodecInfo{"HEVAG audio", ".vag"},
+    EntryCodecInfo{"ATRAC3 audio", ".at3"},
+    EntryCodecInfo{"Nintendo 3DS ADPCM audio", ".3dsadpcm"},
+    EntryCodecInfo{"ATRAC9 audio", ".at9"},
+    EntryCodecInfo{"XMA2 audio", ".xma2"},
+    EntryCodecInfo{"Switch Opus audio", ".switchopus"},
+    EntryCodecInfo{"AAC/M4A audio", ".m4a"},
+    EntryCodecInfo{"AAC/ADTS audio", ".aac"},
+    EntryCodecInfo{"Ogg/Vorbis audio", ".ogg"},
+    EntryCodecInfo{"Ogg/Opus audio", ".opus"},
+    EntryCodecInfo{"Ogg/Speex audio", ".spx"},
+    EntryCodecInfo{"Ogg audio", ".ogg"},
+    EntryCodecInfo{"WAV audio", ".wav"},
+    EntryCodecInfo{"FLAC audio", ".flac"},
+    EntryCodecInfo{"MP3 audio", ".mp3"},
+};
+static_assert(entry_codec_infos.size() == std::to_underlying(EntryCodec::Mp3) + 1u);
+
+[[nodiscard]] constexpr const EntryCodecInfo& entry_codec_info(EntryCodec codec) noexcept {
+    const auto index = std::to_underlying(codec);
+    return index < entry_codec_infos.size() ? entry_codec_infos[index] : entry_codec_infos.front();
+}
+
+} // namespace detail
+
 [[nodiscard]] constexpr std::string_view entry_codec_name(EntryCodec codec) noexcept {
-    switch (codec) {
-    case EntryCodec::Hca: return "HCA audio";
-    case EntryCodec::HcaMx: return "HCA-MX audio";
-    case EntryCodec::Adx: return "ADX audio";
-    case EntryCodec::Ahx: return "AHX audio";
-    case EntryCodec::SwLpcm: return "software LPCM audio";
-    case EntryCodec::DsAdpcm: return "Nintendo DS ADPCM audio";
-    case EntryCodec::NintendoDsp: return "Nintendo DSP audio";
-    case EntryCodec::WiiAdpcm: return "Wii ADPCM audio";
-    case EntryCodec::WiiUAdpcm: return "Wii U ADPCM audio";
-    case EntryCodec::Vag: return "VAG audio";
-    case EntryCodec::Hevag: return "HEVAG audio";
-    case EntryCodec::Atrac3: return "ATRAC3 audio";
-    case EntryCodec::ThreeDsAdpcm: return "Nintendo 3DS ADPCM audio";
-    case EntryCodec::Atrac9: return "ATRAC9 audio";
-    case EntryCodec::Xma2: return "XMA2 audio";
-    case EntryCodec::SwitchOpus: return "Switch Opus audio";
-    case EntryCodec::AacM4a: return "AAC/M4A audio";
-    case EntryCodec::AacAdts: return "AAC/ADTS audio";
-    case EntryCodec::OggVorbis: return "Ogg/Vorbis audio";
-    case EntryCodec::OggOpus: return "Ogg/Opus audio";
-    case EntryCodec::OggSpeex: return "Ogg/Speex audio";
-    case EntryCodec::Ogg: return "Ogg audio";
-    case EntryCodec::Wave: return "WAV audio";
-    case EntryCodec::Flac: return "FLAC audio";
-    case EntryCodec::Mp3: return "MP3 audio";
-    case EntryCodec::Unknown: return "audio";
-    }
-    return "audio";
+    return detail::entry_codec_info(codec).name;
 }
 
 [[nodiscard]] constexpr std::string_view entry_codec_extension(EntryCodec codec) noexcept {
-    switch (codec) {
-    case EntryCodec::Hca: return ".hca";
-    case EntryCodec::HcaMx: return ".hcamx";
-    case EntryCodec::Adx: return ".adx";
-    case EntryCodec::Ahx: return ".ahx";
-    case EntryCodec::SwLpcm: return ".swlpcm";
-    case EntryCodec::DsAdpcm: return ".dsadpcm";
-    case EntryCodec::NintendoDsp: return ".dsp";
-    case EntryCodec::WiiAdpcm: return ".wiiadpcm";
-    case EntryCodec::WiiUAdpcm: return ".wiiuadpcm";
-    case EntryCodec::Vag:
-    case EntryCodec::Hevag: return ".vag";
-    case EntryCodec::Atrac3: return ".at3";
-    case EntryCodec::ThreeDsAdpcm: return ".3dsadpcm";
-    case EntryCodec::Atrac9: return ".at9";
-    case EntryCodec::Xma2: return ".xma2";
-    case EntryCodec::SwitchOpus: return ".switchopus";
-    case EntryCodec::AacM4a: return ".m4a";
-    case EntryCodec::AacAdts: return ".aac";
-    case EntryCodec::OggVorbis:
-    case EntryCodec::Ogg: return ".ogg";
-    case EntryCodec::OggOpus: return ".opus";
-    case EntryCodec::OggSpeex: return ".spx";
-    case EntryCodec::Wave: return ".wav";
-    case EntryCodec::Flac: return ".flac";
-    case EntryCodec::Mp3: return ".mp3";
-    case EntryCodec::Unknown: return ".bin";
-    }
-    return ".bin";
+    return detail::entry_codec_info(codec).extension;
 }
 
 } // namespace cricodecs::awb

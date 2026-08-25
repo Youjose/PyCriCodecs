@@ -3,11 +3,8 @@
  * @file cvm_container.hpp
  * @brief CVM / ROFS volume reader for classic CRI disc images.
  *
- * This pass is cross-checked against official CRI ROFS samples and tool
- * evidence. It supports unscrambled images and transparently recovers the
- * effective key for scrambled TOC images in the reviewed ROFS/CVM shape,
- * where the payload is a standard ISO9660 tree embedded after the `CVMH` /
- * `ZONE` headers.
+ * The payload is an ISO9660 tree after the `CVMH` and `ZONE` headers.
+ * Scrambled TOCs can use a supplied key or recover the effective key.
  */
 
 #include <array>
@@ -121,10 +118,12 @@ public:
     [[nodiscard]] const CvmPrimaryVolume& primary_volume() const noexcept { return m_primary_volume; }
     [[nodiscard]] bool is_scrambled() const noexcept { return (m_header.flags & 0x10u) != 0; }
     [[nodiscard]] bool has_accessible_contents() const noexcept { return m_contents_accessible; }
-    [[nodiscard]] size_t embedded_iso_offset() const noexcept { return m_iso_offset; }
-    [[nodiscard]] size_t embedded_iso_size() const noexcept { return m_iso_size; }
+    [[nodiscard]] size_t embedded_iso_offset() const noexcept {
+        return static_cast<size_t>(m_header.iso_start_sector) * sector_length();
+    }
+    [[nodiscard]] size_t embedded_iso_size() const noexcept { return static_cast<size_t>(m_zone.iso_length); }
     [[nodiscard]] uint32_t embedded_iso_sector_count() const noexcept {
-        return static_cast<uint32_t>((m_iso_size + sector_length() - 1u) / sector_length());
+        return static_cast<uint32_t>((embedded_iso_size() + sector_length() - 1u) / sector_length());
     }
 
     [[nodiscard]] uint32_t entry_count() const noexcept { return static_cast<uint32_t>(m_entries.size()); }
@@ -226,16 +225,10 @@ public:
     );
 
 private:
-    enum class EntryPayloadKind {
-        original_source,
-        owned_bytes,
-    };
-
     struct EntryPayload {
-        EntryPayloadKind kind = EntryPayloadKind::original_source;
         std::filesystem::path source_path;
         size_t source_offset = 0;
-        std::vector<uint8_t> owned_bytes;
+        std::optional<std::vector<uint8_t>> owned_bytes;
     };
 
     std::span<const uint8_t> m_source;
@@ -250,10 +243,7 @@ private:
     std::vector<CvmEntry> m_entries;
     std::vector<EntryPayload> m_entry_payloads;
     std::vector<CvmDirectoryRecord> m_directories;
-    size_t m_iso_offset = 0;
-    size_t m_iso_size = 0;
     bool m_contents_accessible = true;
-    bool m_layout_is_current = true;
 
     [[nodiscard]] static std::expected<CvmContainer, std::string> load_owned(
         std::vector<uint8_t>&& data,
@@ -267,6 +257,9 @@ private:
     [[nodiscard]] std::expected<void, std::string> parse(std::optional<CvmKey> key);
     [[nodiscard]] std::expected<uint32_t, std::string> index_of(const std::filesystem::path& archive_path) const;
     [[nodiscard]] std::expected<void, std::string> ensure_contents_accessible() const;
+    [[nodiscard]] bool has_current_layout() const noexcept {
+        return !m_contents_accessible || !m_directories.empty();
+    }
     [[nodiscard]] std::expected<std::span<const uint8_t>, std::string> file_data_from_index(uint32_t index) const;
     void invalidate_layout();
     void reindex_entries();

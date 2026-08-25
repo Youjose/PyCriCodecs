@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <numbers>
 
 namespace cricodecs::adx {
 
@@ -33,12 +34,7 @@ using io::append_be;
     static constexpr uint8_t ADX_BIT_DEPTH = 4;
     static constexpr uint8_t ADX_SAMPLES_PER_BLOCK = ADX_NIBBLE_BYTES * 2;
     static constexpr uint32_t ADX_LOOP_BOUNDARY = 0x800;
-    static constexpr double PI = 3.141592653589793;
-    static constexpr double SQRT2 = 1.414213562373095;
-
-    [[nodiscard]] constexpr bool is_adx_encoding_mode(uint8_t mode) noexcept {
-        return mode == 2 || mode == 3 || mode == 4;
-    }
+    static constexpr std::string_view CRI_SIGNATURE = "(c)CRI";
 
     struct AdxLoopLayout final {
         uint32_t alignment_samples = 0;
@@ -65,29 +61,23 @@ using io::append_be;
 
     [[nodiscard]] static std::expected<AdxLoopLayout, AdxError> calculate_loop_layout(
         uint32_t header_struct_size,
-        uint32_t samples_per_block,
-        uint32_t frame_bytes,
         uint8_t channels,
         uint32_t original_sample_count,
         std::span<const AdxLoop> loops)
     {
-        if (loops.empty()) {
-            return AdxLoopLayout{};
-        }
-
         const auto& first_loop = loops.front();
-        if (first_loop.start_sample > first_loop.end_sample) {
-            return std::unexpected(AdxError("ADX loop start sample must not exceed end sample"));
-        }
         if (first_loop.end_sample > original_sample_count) {
             return std::unexpected(AdxError("ADX loop end sample exceeds source PCM length"));
         }
 
-        const uint32_t alignment_unit = channels == 1 ? samples_per_block * 2 : samples_per_block;
+        const uint32_t alignment_unit = channels == 1
+            ? ADX_SAMPLES_PER_BLOCK * 2
+            : ADX_SAMPLES_PER_BLOCK;
         const uint32_t alignment_samples =
-            alignment_unit == 0 ? 0 : (alignment_unit - (first_loop.start_sample % alignment_unit)) % alignment_unit;
-        const uint32_t pre_loop_frames = (alignment_samples + first_loop.start_sample) / samples_per_block;
-        const uint32_t pre_loop_bytes = pre_loop_frames * frame_bytes;
+            (alignment_unit - first_loop.start_sample % alignment_unit) % alignment_unit;
+        const uint32_t pre_loop_frames =
+            (alignment_samples + first_loop.start_sample) / ADX_SAMPLES_PER_BLOCK;
+        const uint32_t pre_loop_bytes = pre_loop_frames * ADX_FRAME_BYTES * channels;
         // `adx_porting_notes.md` captures this writer formula as
         // align_up(header_base + pre_loop_bytes + 4, 0x800).
         const uint32_t loop_start_target = cricodecs::util::align_up(
@@ -100,6 +90,74 @@ using io::append_be;
         };
     }
 
+    [[nodiscard]] static std::expected<std::vector<uint8_t>, AdxError> encode_ahx(
+        std::span<const int16_t> pcm_data, const AdxEncodeConfig& config) {
+        ahx::AhxKey key = config.ahx_key;
+        if (key.empty()) {
+            const AdxKeyState derived = config.encryption_type == 0x09
+                ? key9_derive(config.key64, config.subkey)
+                : key8_derive(config.key_string);
+            key = {.start = derived.xor_value, .mult = derived.mult, .add = derived.add};
+        }
+        return ahx::encode(pcm_data, ahx::AhxEncodeConfig{
+            .encoding_mode = config.encoding_mode,
+            .sample_rate = config.sample_rate,
+            .channels = config.channels,
+            .encryption_type = config.encryption_type,
+            .key = key,
+            .bit_allocation_pattern = config.ahx_bit_allocation_pattern,
+        });
+    }
+
+    static void write_header(
+        std::vector<uint8_t>& buffer,
+        const AdxEncodeConfig& config,
+        uint32_t samples_per_channel,
+        uint32_t stored_data_offset,
+        uint32_t audio_offset,
+        std::span<const AdxLoop> loops,
+        const AdxLoopLayout& layout
+    ) {
+        append_be<uint16_t>(buffer, 0x8000u);
+        append_be<uint16_t>(buffer, static_cast<uint16_t>(stored_data_offset));
+        buffer.insert(buffer.end(), {
+            config.encoding_mode, config.block_size, config.bit_depth, config.channels});
+        append_be<uint32_t>(buffer, config.sample_rate);
+        append_be<uint32_t>(buffer, samples_per_channel);
+        append_be<uint16_t>(buffer, config.highpass_freq);
+        buffer.push_back(config.version);
+        buffer.push_back(config.encryption_type);
+
+        if (config.version == 4) {
+            const size_t history_count = config.channels > 1 ? config.channels : 2;
+            buffer.resize(buffer.size() + 4u + history_count * 4u, 0);
+        }
+
+        if (!loops.empty()) {
+            // TODO(adx): Later-tool `-nodelterm` defaults still need direct
+            // official coverage before the loop surface can be widened.
+            append_be<uint16_t>(buffer, static_cast<uint16_t>(layout.alignment_samples));
+            append_be<uint16_t>(buffer, static_cast<uint16_t>(loops.size()));
+            for (const auto& loop : loops) {
+                const uint32_t start_sample = loop.start_sample + layout.alignment_samples;
+                const uint32_t end_sample = loop.end_sample + layout.alignment_samples;
+                const uint32_t frame_bytes = ADX_FRAME_BYTES * config.channels;
+                append_be<uint16_t>(buffer, loop.index);
+                append_be<uint16_t>(buffer, loop.type == 0 ? 1 : loop.type);
+                append_be<uint32_t>(buffer, start_sample);
+                append_be<uint32_t>(buffer, audio_offset +
+                    divide_round_up(start_sample, ADX_SAMPLES_PER_BLOCK) * frame_bytes);
+                append_be<uint32_t>(buffer, end_sample);
+                append_be<uint32_t>(buffer, audio_offset +
+                    divide_round_up(end_sample, ADX_SAMPLES_PER_BLOCK) * frame_bytes);
+            }
+        }
+
+        buffer.resize(std::max(buffer.size(), audio_offset - CRI_SIGNATURE.size()), 0);
+        buffer.insert(buffer.end(), CRI_SIGNATURE.begin(), CRI_SIGNATURE.end());
+        buffer.resize(std::max(buffer.size(), static_cast<size_t>(audio_offset)), 0);
+    }
+
     void AdxEncoder::calculate_coefficients(int32_t* coeffs, uint16_t highpass_freq, uint32_t sample_rate) {
         if (highpass_freq == 0 || sample_rate == 0) {
             coeffs[0] = 0;
@@ -107,16 +165,13 @@ using io::append_be;
             return;
         }
         
-        double a = SQRT2 - std::cos(2.0 * PI * highpass_freq / sample_rate);
-        double b = SQRT2 - 1.0;
-        double c = (a - std::sqrt((a + b) * (a - b))) / b;
+        const double a = std::numbers::sqrt2 - std::cos(
+            2.0 * std::numbers::pi * highpass_freq / sample_rate);
+        constexpr double b = std::numbers::sqrt2 - 1.0;
+        const double c = (a - std::sqrt((a + b) * (a - b))) / b;
         
         coeffs[0] = static_cast<int32_t>(c * 8192.0);
         coeffs[1] = static_cast<int32_t>(c * c * -4096.0);
-    }
-
-    static uint8_t combine_nibbles(int32_t high, int32_t low) {
-        return static_cast<uint8_t>(((high & 0x0F) << 4) | (low & 0x0F));
     }
 
     void AdxEncoder::encode_block(
@@ -143,6 +198,13 @@ using io::append_be;
         const auto read_padded_sample = [&](uint32_t index) -> int16_t {
             return index < available_samples ? read_full_sample(index) : 0;
         };
+        const auto predict = [&](int16_t hist1, int16_t hist2) {
+            return config.version == 4
+                ? (coeffs[0] * static_cast<int32_t>(hist1) +
+                   coeffs[1] * static_cast<int32_t>(hist2)) >> 12
+                : (coeffs[0] * static_cast<int32_t>(hist1) >> 12) +
+                  (coeffs[1] * static_cast<int32_t>(hist2) >> 12);
+        };
 
         int32_t minimum = 0, maximum = 0;
         const auto find_residual_bounds = [&](auto read_sample) {
@@ -163,38 +225,20 @@ using io::append_be;
             find_residual_bounds(read_padded_sample);
         }
 
-        uint16_t scale;
         if (minimum == 0 && maximum == 0) {
-            scale = 0;
-            uint16_t scale_val = scale;
             const size_t frame_offset = buffer.size();
             buffer.resize(frame_offset + ADX_FRAME_BYTES, 0);
-            io::write_be<uint16_t>(buffer.data() + frame_offset, scale_val);
-            {
-                int16_t h1 = history.prev1;
-                int16_t h2 = history.prev2;
-                for (uint32_t i = 0; i < samples_per_block; ++i) {
-                    int32_t predicted;
-                    if (config.version == 4) {
-                        predicted = (coeffs[0] * (int32_t)h1 + coeffs[1] * (int32_t)h2) >> 12;
-                    } else {
-                        predicted = (coeffs[0] * (int32_t)h1 >> 12) + (coeffs[1] * (int32_t)h2 >> 12);
-                    }
-                    const int32_t decoded = predicted;
-                    int16_t clamped = static_cast<int16_t>(util::clamp(decoded, -32768, 32767));
-                    h2 = h1;
-                    h1 = clamped;
-                }
-                history.prev1 = h1;
-                history.prev2 = h2;
+            for (uint32_t i = 0; i < samples_per_block; ++i) {
+                const auto decoded = static_cast<int16_t>(
+                    util::clamp(predict(history.prev1, history.prev2), -32768, 32767));
+                history.prev2 = history.prev1;
+                history.prev1 = decoded;
             }
             return;
         }
 
-        scale = static_cast<uint16_t>(
-            maximum / limit > minimum / ~limit ? maximum / limit : minimum / ~limit
-        );
-        if (scale > 0x1000) scale = 0x1000;
+        uint16_t scale = static_cast<uint16_t>(
+            std::min(0x1000, std::max(maximum / limit, minimum / ~limit)));
 
         uint16_t scale_written;
         switch (config.encoding_mode) {
@@ -225,18 +269,9 @@ using io::append_be;
             output_scale = static_cast<uint16_t>((output_scale ^ key_state->xor_value) & mask);
         }
 
-        int32_t decode_scale;
-        switch (config.encoding_mode) {
-            case 4:
-                decode_scale = 1 << (12 - scale_written);
-                break;
-            case 2:
-                decode_scale = (scale_written & 0x1FFF) + 1;
-                break;
-            default:
-                decode_scale = (scale_written & 0x1FFF) + 1;
-                break;
-        }
+        const int32_t decode_scale = config.encoding_mode == 4
+            ? 1 << (12 - scale_written)
+            : (scale_written & 0x1FFF) + 1;
 
         int16_t hist1 = history.prev1;
         int16_t hist2 = history.prev2;
@@ -256,14 +291,9 @@ using io::append_be;
                 delta /= enc_scale;
                 delta = util::clamp(delta, -8, 7);
 
-                int32_t predicted;
-                if (config.version == 4) {
-                    predicted = (coeffs[0] * (int32_t)hist1 + coeffs[1] * (int32_t)hist2) >> 12;
-                } else {
-                    predicted = (coeffs[0] * (int32_t)hist1 >> 12) + (coeffs[1] * (int32_t)hist2 >> 12);
-                }
-                int32_t sim_sample = delta * decode_scale + predicted;
-                int16_t decoded = static_cast<int16_t>(util::clamp(sim_sample, -32768, 32767));
+                const int32_t simulated = delta * decode_scale + predict(hist1, hist2);
+                const auto decoded = static_cast<int16_t>(
+                    util::clamp(simulated, -32768, 32767));
 
                 hist2 = hist1;
                 hist1 = decoded;
@@ -274,7 +304,7 @@ using io::append_be;
             for (uint32_t i = 0; i < ADX_NIBBLE_BYTES; ++i) {
                 const int32_t high = encode_sample(i * 2);
                 const int32_t low = encode_sample(i * 2 + 1);
-                payload[i] = combine_nibbles(high, low);
+                payload[i] = static_cast<uint8_t>(((high & 0x0F) << 4) | (low & 0x0F));
             }
         };
         if (full_block) {
@@ -296,39 +326,13 @@ using io::append_be;
             if (!loops.empty()) {
                 return std::unexpected(AdxError("AHX encoding does not support loop metadata"));
             }
-
-            ahx::AhxKey ahx_key = config.ahx_key;
-            if (ahx_key.empty() && config.encryption_type == 0x09) {
-                const AdxKeyState derived_key = key9_derive(config.key64, config.subkey);
-                ahx_key = {
-                    .start = derived_key.xor_value,
-                    .mult = derived_key.mult,
-                    .add = derived_key.add,
-                };
-            } else if (ahx_key.empty() && !config.key_string.empty()) {
-                const AdxKeyState derived_key = key8_derive(config.key_string);
-                ahx_key = {
-                    .start = derived_key.xor_value,
-                    .mult = derived_key.mult,
-                    .add = derived_key.add,
-                };
-            }
-
-            ahx::AhxEncodeConfig ahx_config{
-                .encoding_mode = config.encoding_mode,
-                .sample_rate = config.sample_rate,
-                .channels = config.channels,
-                .encryption_type = config.encryption_type,
-                .key = ahx_key,
-                .bit_allocation_pattern = config.ahx_bit_allocation_pattern,
-            };
-            return ahx::encode(pcm_data, ahx_config);
+            return encode_ahx(pcm_data, config);
         }
 
         if (config.channels == 0 || config.sample_rate == 0) {
             return std::unexpected(AdxError("Invalid ADX encode configuration: sample rate and channels are required"));
         }
-        if (!is_adx_encoding_mode(config.encoding_mode)) {
+        if (config.encoding_mode < 2 || config.encoding_mode > 4) {
             return std::unexpected(AdxError("Unsupported ADX encoding mode"));
         }
         if (config.block_size != ADX_FRAME_BYTES) {
@@ -342,14 +346,12 @@ using io::append_be;
         }
 
         const auto normalized_loops_result = normalize_official_loops(loops);
-        if (!normalized_loops_result.has_value()) {
+        if (!normalized_loops_result) {
             return std::unexpected(normalized_loops_result.error());
         }
-        const auto& normalized_loops = normalized_loops_result.value();
+        const auto& normalized_loops = *normalized_loops_result;
 
         std::vector<uint8_t> buffer;
-        
-        constexpr uint32_t samples_per_block = ADX_SAMPLES_PER_BLOCK;
         
         const uint32_t source_samples_per_channel = static_cast<uint32_t>(pcm_data.size()) / config.channels;
         
@@ -360,7 +362,7 @@ using io::append_be;
             header_struct_size += 4 + static_cast<uint32_t>(hist_count * 4);
         }
 
-        bool has_loops = !normalized_loops.empty();
+        const bool has_loops = !normalized_loops.empty();
         if (has_loops) {
             header_struct_size += 4 + static_cast<uint32_t>(normalized_loops.size() * 20);
         }
@@ -369,8 +371,6 @@ using io::append_be;
         const auto loop_layout_result = has_loops
             ? calculate_loop_layout(
                   header_struct_size,
-                  samples_per_block,
-                  frame_bytes,
                   config.channels,
                   source_samples_per_channel,
                   normalized_loops)
@@ -391,19 +391,17 @@ using io::append_be;
         if (has_loops && loop_layout.alignment_samples != 0) {
             samples_per_channel += loop_layout.alignment_samples;
             padded_pcm.assign(static_cast<size_t>(samples_per_channel) * config.channels, 0);
-            for (uint32_t sample = 0; sample < truncated_source_samples_per_channel; ++sample) {
-                for (uint32_t ch = 0; ch < config.channels; ++ch) {
-                    padded_pcm[static_cast<size_t>(sample + loop_layout.alignment_samples) * config.channels + ch] =
-                        pcm_data[static_cast<size_t>(sample) * config.channels + ch];
-                }
-            }
+            const auto source = pcm_data.first(
+                static_cast<size_t>(truncated_source_samples_per_channel) * config.channels);
+            std::ranges::copy(source, padded_pcm.begin() +
+                static_cast<size_t>(loop_layout.alignment_samples) * config.channels);
             encoded_pcm = padded_pcm;
         } else if (truncated_source_samples_per_channel != source_samples_per_channel) {
             encoded_pcm = pcm_data.first(static_cast<size_t>(truncated_source_samples_per_channel) * config.channels);
         }
 
-        uint32_t blocks_per_channel = divide_round_up(samples_per_channel, samples_per_block);
-        uint32_t frames = blocks_per_channel;
+        const uint32_t blocks_per_channel = divide_round_up(
+            samples_per_channel, ADX_SAMPLES_PER_BLOCK);
 
         const uint32_t audio_offset = has_loops
             ? loop_layout.audio_offset
@@ -412,74 +410,17 @@ using io::append_be;
             ? loop_layout.stored_data_offset
             : audio_offset - 4;
 
-        const size_t encoded_audio_bytes = static_cast<size_t>(frames) * frame_bytes;
+        const size_t encoded_audio_bytes = static_cast<size_t>(blocks_per_channel) * frame_bytes;
         const size_t maximum_end_code_size = has_loops
             ? static_cast<size_t>(ADX_LOOP_BOUNDARY) + config.block_size - 1
             : config.block_size;
         buffer.reserve(static_cast<size_t>(audio_offset) + encoded_audio_bytes + maximum_end_code_size);
 
-        append_be<uint16_t>(buffer, static_cast<uint16_t>(0x8000));
-        append_be<uint16_t>(buffer, static_cast<uint16_t>(stored_data_offset));
-        buffer.push_back(config.encoding_mode);
-        buffer.push_back(config.block_size);
-        buffer.push_back(config.bit_depth);
-        buffer.push_back(config.channels);
-        append_be<uint32_t>(buffer, config.sample_rate);
-        append_be<uint32_t>(buffer, samples_per_channel);
-        append_be<uint16_t>(buffer, config.highpass_freq);
-        buffer.push_back(config.version);
-        buffer.push_back(config.encryption_type);
-        
-        if (config.version == 4) {
-            append_be<uint32_t>(buffer, 0);
-            size_t hist_count = (config.channels > 1) ? config.channels : 2;
-            for (size_t i = 0; i < hist_count; ++i) {
-                append_be<uint16_t>(buffer, 0);
-                append_be<uint16_t>(buffer, 0);
-            }
-        }
+        write_header(buffer, config, samples_per_channel, stored_data_offset,
+                     audio_offset, normalized_loops, loop_layout);
 
-        if (has_loops) {
-            append_be<uint16_t>(buffer, static_cast<uint16_t>(loop_layout.alignment_samples));
-            append_be<uint16_t>(buffer, static_cast<uint16_t>(normalized_loops.size()));
-
-            // TODO(adx): Partial-loop tail trimming and `-nodelterm` parity still
-            // need direct official-tool coverage before widening the loop claim.
-            for (size_t i = 0; i < normalized_loops.size(); ++i) {
-                const auto& loop = normalized_loops[i];
-                const uint32_t adjusted_start_sample = loop.start_sample + loop_layout.alignment_samples;
-                const uint32_t adjusted_end_sample = loop.end_sample + loop_layout.alignment_samples;
-                const uint32_t start_block = divide_round_up(adjusted_start_sample, samples_per_block);
-                const uint32_t end_block = divide_round_up(adjusted_end_sample, samples_per_block);
-                const uint32_t start_byte = audio_offset + start_block * frame_bytes;
-                const uint32_t end_byte = audio_offset + end_block * frame_bytes;
-                
-                append_be<uint16_t>(buffer, loop.index);
-                append_be<uint16_t>(buffer, loop.type == 0 ? 1 : loop.type);
-                append_be<uint32_t>(buffer, adjusted_start_sample);
-                append_be<uint32_t>(buffer, start_byte);
-                append_be<uint32_t>(buffer, adjusted_end_sample);
-                append_be<uint32_t>(buffer, end_byte);
-            }
-        }
-        
-        while (buffer.size() < audio_offset - 6) {
-            buffer.push_back(0);
-        }
-
-        buffer.push_back('(');
-        buffer.push_back('c');
-        buffer.push_back(')');
-        buffer.push_back('C');
-        buffer.push_back('R');
-        buffer.push_back('I');
-        
-        while (buffer.size() < audio_offset) {
-            buffer.push_back(0);
-        }
-
+        const bool encrypted = config.encryption_type == 8 || config.encryption_type == 9;
         AdxKeyState current_key_state;
-        bool encrypted = (config.encryption_type == 8 || config.encryption_type == 9);
         if (encrypted) {
             if (config.encryption_type == 9) {
                 current_key_state = key9_derive(config.key64, config.subkey);
@@ -501,29 +442,16 @@ using io::append_be;
             }
         }
         
-        for (uint32_t b = 0; b < frames; ++b) {
-            for (uint32_t ch = 0; ch < config.channels; ++ch) {
-                size_t start_sample_idx = b * samples_per_block;
-                size_t offset = start_sample_idx * config.channels + ch;
-                
-                std::span<const int16_t> block_span;
-                if (offset < encoded_pcm.size()) {
-                    block_span = encoded_pcm.subspan(offset);
-                } else {
-                    block_span = {};
-                }
-                
-                encode_block(
-                    buffer,
-                    block_span,
-                    coeffs,
-                    histories[ch],
-                    config,
-                    encrypted ? &current_key_state : nullptr);
-                
-                if (encrypted) {
-                    current_key_state.advance();
-                }
+        for (uint32_t block = 0; block < blocks_per_channel; ++block) {
+            const size_t block_offset =
+                static_cast<size_t>(block) * ADX_SAMPLES_PER_BLOCK * config.channels;
+            for (uint8_t channel = 0; channel < config.channels; ++channel) {
+                const size_t offset = block_offset + channel;
+                const auto samples = offset < encoded_pcm.size() ? encoded_pcm.subspan(offset)
+                                                                  : std::span<const int16_t>{};
+                encode_block(buffer, samples, coeffs, histories[channel], config,
+                             encrypted ? &current_key_state : nullptr);
+                if (encrypted) current_key_state.advance();
             }
         }
         

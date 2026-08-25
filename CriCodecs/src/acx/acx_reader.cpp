@@ -60,7 +60,6 @@ std::expected<AcxContainer, std::string> AcxContainer::load(const std::filesyste
         return std::unexpected("ACX load failed: failed to open " + path.string() + " (" + result.error() + ")");
     }
     container.m_source_path = path;
-    container.m_owned_source.clear();
     container.m_source = io::SourceView(container.m_reader.data());
     if (auto result = container.parse(); !result) {
         return std::unexpected(result.error());
@@ -112,12 +111,7 @@ std::expected<std::span<const uint8_t>, std::string> AcxContainer::file_data(uin
     if (index >= m_entries.size()) {
         return std::unexpected("ACX entry index is out of range");
     }
-
     const auto& entry = m_entries[index];
-    if (entry.offset > m_source.size() || entry.size > m_source.size() - entry.offset) {
-        return std::unexpected("ACX entry data is out of bounds");
-    }
-
     return m_source.subspan(entry.offset, entry.size);
 }
 

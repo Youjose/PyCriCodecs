@@ -6,6 +6,7 @@
 
 #include "hca_format.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -135,7 +136,7 @@ struct HcaHeader {
     HcaCommentChunk comment;
 
     [[nodiscard]] uint32_t sample_count() const noexcept {
-        return fmt.frame_count * HCA_SAMPLES_PER_FRAME - fmt.encoder_delay - fmt.encoder_padding;
+        return sample_count_for_frames(fmt.frame_count);
     }
 
     [[nodiscard]] uint32_t available_frame_count(size_t byte_size) const noexcept {
@@ -144,9 +145,7 @@ struct HcaHeader {
         }
         const auto payload_bytes = static_cast<uint64_t>(byte_size - file.header_size);
         const auto complete_frames = payload_bytes / codec.frame_size;
-        return complete_frames > fmt.frame_count
-            ? fmt.frame_count
-            : static_cast<uint32_t>(complete_frames);
+        return static_cast<uint32_t>(std::min<uint64_t>(complete_frames, fmt.frame_count));
     }
 
     [[nodiscard]] uint32_t sample_count_for_frames(uint32_t frame_count) const noexcept {

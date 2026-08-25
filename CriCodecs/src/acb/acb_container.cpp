@@ -2,9 +2,8 @@
  * @file acb_container.cpp
  * @brief ACB container object helpers.
  *
- * ACB/AWB traversal behavior was initially guided by vgmstream and
- * PyCriCodecsEx, then narrowed against Cri Atom Craft evidence.
- * The inspectable C++23 object surface is CriCodecs work by Youjose.
+ * ACB/AWB traversal follows vgmstream, PyCriCodecsEx, and Cri Atom Craft.
+ * I added the inspectable C++23 object model used here.
  */
 
 #include "acb_container.hpp"

@@ -2,9 +2,6 @@
 /**
  * @file cvm_path.hpp
  * @brief CVM/ROFS archive-path normalization helpers.
- *
- * Path rules are project-local support code for the reviewed CVM/ROFS reader,
- * builder, and mounted-volume helpers. Implementation by Youjose.
  */
 
 #include <filesystem>
@@ -19,9 +16,7 @@ namespace cricodecs::cvm {
 [[nodiscard]] inline std::string normalize_archive_path(const std::filesystem::path& path) {
     std::filesystem::path normalized_path = path.lexically_normal();
     std::string normalized = normalized_path.generic_string();
-    while (!normalized.empty() && normalized.front() == '/') {
-        normalized.erase(normalized.begin());
-    }
+    normalized.erase(0, normalized.find_first_not_of('/'));
     if (normalized == ".") {
         return {};
     }

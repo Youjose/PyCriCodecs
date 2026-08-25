@@ -752,6 +752,33 @@ struct AixMutationTarget {
     return std::unexpected("unsupported ACX mutation");
 }
 
+template <class Archive, class Apply>
+[[nodiscard]] std::expected<void, std::string> apply_mutations(
+    Archive& archive,
+    std::span<const MutationSpec> mutations,
+    Apply apply
+) {
+    for (const auto& mutation : mutations) {
+        if (auto result = apply(archive, mutation); !result) {
+            return result;
+        }
+    }
+    return {};
+}
+
+template <class Archive, class Apply, class Save>
+[[nodiscard]] std::expected<void, std::string> mutate_and_save(
+    Archive& archive,
+    std::span<const MutationSpec> mutations,
+    Apply apply,
+    Save save
+) {
+    if (auto result = apply_mutations(archive, mutations, apply); !result) {
+        return result;
+    }
+    return save(archive);
+}
+
 [[nodiscard]] std::expected<void, std::string> save_mutated_document(
     LoadedResult& loaded,
     const std::filesystem::path& output_path,
@@ -759,46 +786,27 @@ struct AixMutationTarget {
 ) {
     return std::visit([&](auto& current) -> std::expected<void, std::string> {
         using T = std::decay_t<decltype(current)>;
+        const auto save = [&](auto& archive) { return archive.save_to_file(output_path); };
         if constexpr (std::is_same_v<T, afs::AfsContainer>) {
-            for (const auto& mutation : options.mutations) {
-                if (auto result = apply_afs_mutation(current, mutation); !result) return result;
-            }
-            return current.build_to_file(output_path);
+            return mutate_and_save(current, options.mutations, apply_afs_mutation,
+                [&](auto& archive) { return archive.build_to_file(output_path); });
         } else if constexpr (std::is_same_v<T, aax::AaxContainer>) {
-            for (const auto& mutation : options.mutations) {
-                if (auto result = apply_aax_mutation(current, mutation); !result) return result;
-            }
-            return current.save_to_file(output_path);
+            return mutate_and_save(current, options.mutations, apply_aax_mutation, save);
         } else if constexpr (std::is_same_v<T, aix::Aix>) {
-            for (const auto& mutation : options.mutations) {
-                if (auto result = apply_aix_mutation(current, mutation); !result) return result;
-            }
-            return current.save_to_file(output_path);
+            return mutate_and_save(current, options.mutations, apply_aix_mutation, save);
         } else if constexpr (std::is_same_v<T, awb::AwbContainer>) {
-            for (const auto& mutation : options.mutations) {
-                if (auto result = apply_awb_mutation(current, mutation); !result) return result;
-            }
-            return current.save_to_file(output_path);
+            return mutate_and_save(current, options.mutations, apply_awb_mutation, save);
         } else if constexpr (std::is_same_v<T, cpk::Cpk>) {
-            for (const auto& mutation : options.mutations) {
-                if (auto result = apply_cpk_mutation(current, mutation, options); !result) return result;
-            }
-            return current.save_to_file(output_path);
+            return mutate_and_save(current, options.mutations,
+                [&](auto& archive, const auto& mutation) { return apply_cpk_mutation(archive, mutation, options); },
+                save);
         } else if constexpr (std::is_same_v<T, csb::CsbContainer>) {
-            for (const auto& mutation : options.mutations) {
-                if (auto result = apply_csb_mutation(current, mutation); !result) return result;
-            }
-            return current.save_to_file(output_path);
+            return mutate_and_save(current, options.mutations, apply_csb_mutation, save);
         } else if constexpr (std::is_same_v<T, cvm::CvmContainer>) {
-            for (const auto& mutation : options.mutations) {
-                if (auto result = apply_cvm_mutation(current, mutation); !result) return result;
-            }
-            return current.save_to_file(output_path, options.key.value_or(""));
+            return mutate_and_save(current, options.mutations, apply_cvm_mutation,
+                [&](auto& archive) { return archive.save_to_file(output_path, options.key.value_or("")); });
         } else if constexpr (std::is_same_v<T, acx::AcxContainer>) {
-            for (const auto& mutation : options.mutations) {
-                if (auto result = apply_acx_mutation(current, mutation); !result) return result;
-            }
-            return current.save_to_file(output_path);
+            return mutate_and_save(current, options.mutations, apply_acx_mutation, save);
         } else {
             return std::unexpected(std::string(format_label(loaded.format)) + " does not support CLI mutation yet");
         }

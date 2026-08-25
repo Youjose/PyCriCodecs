@@ -59,6 +59,7 @@ constexpr size_t BalancedFrameLimit = 4096;
 constexpr size_t HybridFrameLimit = 256;
 constexpr size_t ValidationFrameLimit = 64;
 constexpr double NegativeInfinity = -std::numeric_limits<double>::infinity();
+using BitReader = io::bit_reader;
 
 template <typename Worker>
 void run_workers(size_t count, Worker& worker) {
@@ -114,11 +115,6 @@ struct Payload {
     const HcaHeader* header{};
 };
 
-struct Frame {
-    std::span<const uint8_t> bytes;
-    const HcaHeader* header{};
-};
-
 struct Profile {
     uint8_t version_family{};
     uint16_t frame_size{};
@@ -132,8 +128,6 @@ struct Profile {
     uint8_t hfr_group_count{};
     std::array<ChannelType, 8> channel_types{};
     bool ath{};
-    uint32_t ath_sample_rate{};
-    bool ms_stereo{};
 
     friend bool operator==(const Profile&, const Profile&) = default;
 };
@@ -195,8 +189,6 @@ inline constexpr auto Rows = make_rows();
         .hfr_group_count = header.codec.hfr_group_count,
         .channel_types = detail::channel_types(header),
         .ath = header.ath.uses_curve(),
-        .ath_sample_rate = header.ath.uses_curve() ? header.fmt.sample_rate : 0u,
-        .ms_stereo = header.codec.stereo_band_count > 0 && header.codec.uses_ms_stereo(),
     };
     return result;
 }
@@ -288,9 +280,9 @@ inline constexpr auto Rows = make_rows();
     return result;
 }
 
-[[nodiscard]] std::vector<Frame> sample_frames(
+[[nodiscard]] std::vector<Payload> sample_frames(
     std::span<const Payload> payloads, size_t maximum) {
-    std::vector<Frame> result;
+    std::vector<Payload> result;
     if (payloads.empty() || maximum == 0) {
         return result;
     }
@@ -322,7 +314,7 @@ inline constexpr auto Rows = make_rows();
 }
 
 [[nodiscard]] Scores score_model(
-    const PreparedModel& model, std::span<const Frame> frames) {
+    const PreparedModel& model, std::span<const Payload> frames) {
     Scores scores;
     for (const auto& feature : model) {
         std::array<uint32_t, 256> counts{};
@@ -363,7 +355,7 @@ inline constexpr auto Rows = make_rows();
     return result;
 }
 
-[[nodiscard]] std::vector<Layout> prefix_layouts(std::span<const Frame> frames) {
+[[nodiscard]] std::vector<Layout> prefix_layouts(std::span<const Payload> frames) {
     std::array<bool, 256> byte2{};
     std::array<bool, 256> byte4{};
     for (const auto& frame : frames) {
@@ -712,96 +704,8 @@ struct CycleProblem {
     return result;
 }
 
-class MappedBitReader {
-public:
-    MappedBitReader(std::span<const uint8_t> bytes, const std::array<uint8_t, 256>& table)
-        : m_bytes(bytes), m_table(table) {}
-
-    [[nodiscard]] uint32_t read(int bits) noexcept {
-        if (bits <= 0 || bits > 32 || m_position + static_cast<size_t>(bits) > m_bytes.size() * 8) {
-            m_valid = false;
-            return 0;
-        }
-        uint32_t result = 0;
-        int remaining = bits;
-        while (remaining > 0) {
-            const size_t byte_position = m_position >> 3;
-            const int bit_offset = static_cast<int>(m_position & 7);
-            const int available = 8 - bit_offset;
-            const int take = std::min(remaining, available);
-            const uint32_t mask = (uint32_t{1} << take) - 1;
-            result = (result << take)
-                | ((mapped_byte(byte_position) >> (available - take)) & mask);
-            m_position += static_cast<size_t>(take);
-            remaining -= take;
-        }
-        return result;
-    }
-
-    [[nodiscard]] uint32_t peek(int bits) noexcept {
-        const size_t saved = m_position;
-        const bool valid = m_valid;
-        const uint32_t result = read(bits);
-        m_position = saved;
-        m_valid = valid && m_valid;
-        return result;
-    }
-
-    [[nodiscard]] uint8_t mapped_byte(size_t position) const noexcept {
-        return position >= 2 && position < m_bytes.size() - 2
-            ? m_table[m_bytes[position]]
-            : m_bytes[position];
-    }
-
-    [[nodiscard]] size_t position() const noexcept { return m_position; }
-    [[nodiscard]] bool valid() const noexcept { return m_valid; }
-
-private:
-    std::span<const uint8_t> m_bytes;
-    const std::array<uint8_t, 256>& m_table;
-    size_t m_position{};
-    bool m_valid{true};
-};
-
-struct ScaleResult {
-    std::array<uint8_t, HCA_SAMPLES_PER_SUBFRAME> values{};
-    uint32_t wraps{};
-    uint8_t delta_bits{};
-};
-
-[[nodiscard]] ScaleResult read_scalefactors(MappedBitReader& reader, size_t count) noexcept {
-    ScaleResult result;
-    result.delta_bits = static_cast<uint8_t>(reader.read(3));
-    if (result.delta_bits == 0) {
-        return result;
-    }
-    if (result.delta_bits >= 6) {
-        for (size_t index = 0; index < count; ++index) {
-            result.values[index] = static_cast<uint8_t>(reader.read(6));
-        }
-        return result;
-    }
-    if (count == 0) {
-        return result;
-    }
-    result.values[0] = static_cast<uint8_t>(reader.read(6));
-    const uint8_t escape = static_cast<uint8_t>((1u << result.delta_bits) - 1u);
-    const int bias = escape >> 1;
-    for (size_t index = 1; index < count; ++index) {
-        const uint8_t delta = static_cast<uint8_t>(reader.read(result.delta_bits));
-        if (delta == escape) {
-            result.values[index] = static_cast<uint8_t>(reader.read(6));
-            continue;
-        }
-        const int value = static_cast<int>(result.values[index - 1]) + delta - bias;
-        result.wraps += value < 0 || value > 63;
-        result.values[index] = static_cast<uint8_t>(value & 0x3F);
-    }
-    return result;
-}
-
 [[nodiscard]] bool skip_intensity(
-    MappedBitReader& reader, ChannelType type, uint8_t hfr_groups, uint16_t version) noexcept {
+    BitReader& reader, ChannelType type, uint8_t hfr_groups, uint16_t version) noexcept {
     if (type != ChannelType::StereoSecondary) {
         if (version <= HCA_VERSION_V200) {
             for (size_t index = 0; index < hfr_groups; ++index) {
@@ -810,40 +714,8 @@ struct ScaleResult {
         }
         return reader.valid();
     }
-    const uint8_t first = static_cast<uint8_t>(reader.peek(4));
-    if (version <= HCA_VERSION_V200) {
-        if (first < 15) {
-            for (size_t index = 0; index < 8; ++index) {
-                static_cast<void>(reader.read(4));
-            }
-        }
-        return reader.valid();
-    }
-    static_cast<void>(reader.read(4));
-    if (first >= 15) {
-        return reader.valid();
-    }
-    const uint8_t bits = static_cast<uint8_t>(reader.read(2));
-    if (bits == 3) {
-        for (size_t index = 1; index < 8; ++index) {
-            static_cast<void>(reader.read(4));
-        }
-        return reader.valid();
-    }
-    const uint8_t escape = static_cast<uint8_t>((2u << bits) - 1u);
-    int current = first;
-    for (size_t index = 1; index < 8; ++index) {
-        const uint8_t delta = static_cast<uint8_t>(reader.read(bits + 1));
-        if (delta == escape) {
-            current = static_cast<int>(reader.read(4));
-        } else {
-            current += delta - (escape >> 1);
-            if (current < 0 || current > 15) {
-                return false;
-            }
-        }
-    }
-    return reader.valid();
+    std::array<uint8_t, HCA_SUBFRAMES> intensity{};
+    return packing::read_intensity(reader, version, intensity);
 }
 
 struct FrameMetrics {
@@ -857,8 +729,8 @@ struct FrameMetrics {
 };
 
 [[nodiscard]] FrameMetrics parse_frame(
-    const Frame& frame, const std::array<uint8_t, 256>& table) noexcept {
-    MappedBitReader reader(frame.bytes, table);
+    const Payload& frame, const std::array<uint8_t, 256>& table) noexcept {
+    BitReader reader(frame.bytes, table, 2, frame.bytes.size() - 2);
     if (reader.read(16) != 0xFFFF) {
         return {};
     }
@@ -880,18 +752,20 @@ struct FrameMetrics {
                 && header.file.version > HCA_VERSION_V200
             ? header.codec.hfr_group_count
             : 0;
-        const auto scales = read_scalefactors(reader, coded_count + extra_count);
-        wraps += scales.wraps;
-        canonical_headers += scales.wraps == 0
-            && scales.delta_bits == packing::scalefactor_encoding(
-                std::span(scales.values).first(coded_count + extra_count)).delta_bits;
+        std::array<uint8_t, HCA_SAMPLES_PER_SUBFRAME> scales{};
+        const auto decoding = packing::read_scalefactors(
+            reader, std::span(scales).first(coded_count + extra_count));
+        wraps += decoding.wraps;
+        canonical_headers += decoding.wraps == 0
+            && decoding.delta_bits == packing::scalefactor_encoding(
+                std::span(scales).first(coded_count + extra_count)).delta_bits;
         if (!skip_intensity(
                 reader, types[channel], header.codec.hfr_group_count, header.file.version)) {
             return {};
         }
         coded_counts[channel] = static_cast<uint8_t>(coded_count);
         for (size_t index = 0; index < coded_count; ++index) {
-            const uint8_t scale = scales.values[index];
+            const uint8_t scale = scales[index];
             uint8_t resolution = 0;
             if (scale > 0) {
                 const int curve_position = ((packed_noise + static_cast<int>(index)) >> 8)
@@ -932,7 +806,7 @@ struct FrameMetrics {
     }
     uint32_t tail_ones = 0;
     for (size_t bit = reader.position(); bit < payload_end; ++bit) {
-        tail_ones += (reader.mapped_byte(bit >> 3) >> (7 - (bit & 7))) & 1u;
+        tail_ones += (reader.byte(bit >> 3) >> (7 - (bit & 7))) & 1u;
     }
     return {
         .valid = true,
@@ -945,7 +819,7 @@ struct FrameMetrics {
     };
 }
 
-[[nodiscard]] Metrics score_q(uint64_t q, std::span<const Frame> frames) noexcept {
+[[nodiscard]] Metrics score_q(uint64_t q, std::span<const Payload> frames) noexcept {
     Metrics result{.tested = static_cast<uint32_t>(frames.size())};
     const auto table = table_for_q(q);
     for (const auto& frame : frames) {
@@ -992,7 +866,7 @@ struct FrameMetrics {
 
 [[nodiscard]] std::vector<Candidate> refine_byte(
     Candidate candidate,
-    std::span<const Frame> frames,
+    std::span<const Payload> frames,
     size_t byte_index) noexcept {
     const size_t shift = 8 * byte_index;
     const uint64_t base = candidate.q & ~(uint64_t{0xFF} << shift);
@@ -1035,9 +909,9 @@ struct FrameMetrics {
 
 [[nodiscard]] std::expected<std::vector<Candidate>, std::string> recover_with_model(
     const PreparedModel& model,
-    std::span<const Frame> likelihood_frames,
-    std::span<const Frame> prefix_frames,
-    std::span<const Frame> validation_frames) {
+    std::span<const Payload> likelihood_frames,
+    std::span<const Payload> prefix_frames,
+    std::span<const Payload> validation_frames) {
     auto layouts = prefix_layouts(prefix_frames);
     if (layouts.empty()) {
         return std::unexpected("HCA key recovery failed: prefix grammar rejected every table layout");
@@ -1166,7 +1040,7 @@ struct FrameMetrics {
 
 [[nodiscard]] std::vector<Candidate> joint_refine(
     Candidate initial,
-    std::span<const Frame> frames) {
+    std::span<const Payload> frames) {
     const uint64_t base = initial.q & ~(uint64_t{0xFF} << 8) & ~(uint64_t{0xFF} << 48);
     std::vector<Candidate> candidates;
     candidates.reserve(65536);
@@ -1544,9 +1418,6 @@ std::expected<KeyRecoveryResult, std::string> recover_key(
     std::atomic_size_t next_group = 0;
     std::atomic_size_t completed_groups = 0;
     std::atomic_size_t resolved_groups = 0;
-    std::atomic_bool exact_consensus_found = false;
-    std::optional<uint64_t> exact_consensus_key;
-    std::mutex result_mutex;
     std::mutex progress_mutex;
 
     const auto publish_progress = [&](size_t completed) {
@@ -1593,36 +1464,7 @@ std::expected<KeyRecoveryResult, std::string> recover_key(
                 resolved_groups.fetch_add(1, std::memory_order_relaxed);
             }
         }
-        {
-            const std::scoped_lock lock(result_mutex);
-            recovered_groups[index] = std::move(result);
-            if (fast_shared_pass && !exact_consensus_found.load(std::memory_order_relaxed)) {
-                for (const auto& candidate : recovered_groups[index].candidates) {
-                    if (candidate.score < 1.0f || candidate.unknown_high_bits != 0) {
-                        continue;
-                    }
-                    const bool confirmed = std::ranges::any_of(
-                        recovered_groups,
-                        [&](const GroupRecovery& other) {
-                            if (&other == &recovered_groups[index]) {
-                                return false;
-                            }
-                            return std::ranges::any_of(
-                                other.candidates,
-                                [&](const KeyCandidate& other_candidate) {
-                                    return other_candidate.score >= 1.0f &&
-                                        other_candidate.unknown_high_bits == 0 &&
-                                        other_candidate.key == candidate.key;
-                                });
-                        });
-                    if (confirmed) {
-                        exact_consensus_key = candidate.key;
-                        exact_consensus_found.store(true, std::memory_order_release);
-                        break;
-                    }
-                }
-            }
-        }
+        recovered_groups[index] = std::move(result);
         if (report_progress) {
             const auto completed = completed_groups.fetch_add(1, std::memory_order_relaxed) + 1;
             publish_progress(completed);
@@ -1631,14 +1473,8 @@ std::expected<KeyRecoveryResult, std::string> recover_key(
 
     const auto worker = [&] {
         while (!options.stop_token.stop_requested()) {
-            if (fast_shared_pass && exact_consensus_found.load(std::memory_order_acquire)) {
-                return;
-            }
             const auto index = next_group.fetch_add(1, std::memory_order_relaxed);
             if (index >= groups.size()) {
-                return;
-            }
-            if (fast_shared_pass && exact_consensus_found.load(std::memory_order_acquire)) {
                 return;
             }
             recover_group(index, !fast_shared_pass, true);
@@ -1652,6 +1488,29 @@ std::expected<KeyRecoveryResult, std::string> recover_key(
     run_workers(worker_count, worker);
     if (options.stop_token.stop_requested()) {
         return std::unexpected("HCA key recovery canceled");
+    }
+
+    std::optional<uint64_t> exact_consensus_key;
+    if (fast_shared_pass) {
+        for (size_t left = 0; left < recovered_groups.size() && !exact_consensus_key; ++left) {
+            for (const auto& candidate : recovered_groups[left].candidates) {
+                if (candidate.score < 1.0f || candidate.unknown_high_bits != 0) {
+                    continue;
+                }
+                for (size_t right = left + 1; right < recovered_groups.size(); ++right) {
+                    const bool confirmed = std::ranges::any_of(
+                        recovered_groups[right].candidates,
+                        [&](const KeyCandidate& other) {
+                            return other.score >= 1.0f && other.unknown_high_bits == 0
+                                && other.key == candidate.key;
+                        });
+                    if (confirmed) {
+                        exact_consensus_key = candidate.key;
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     if (exact_consensus_key) {
@@ -1693,8 +1552,6 @@ std::expected<KeyRecoveryResult, std::string> recover_key(
                 if (index >= groups.size()) {
                     return;
                 }
-                const bool was_processed = !recovered_groups[index].candidates.empty()
-                    || !recovered_groups[index].error.empty();
                 auto validated = validate_group(index);
                 if (validated && *validated) {
                     auto candidate = std::move(**validated);
@@ -1702,18 +1559,6 @@ std::expected<KeyRecoveryResult, std::string> recover_key(
                         .candidates = {std::move(candidate)},
                         .error = {},
                     };
-                    if (!was_processed) {
-                        resolved_groups.fetch_add(1, std::memory_order_relaxed);
-                    }
-                } else if (!was_processed) {
-                    recover_group(index, false, false);
-                    if (!validated && recovered_groups[index].error.empty()) {
-                        recovered_groups[index].error = std::move(validated.error());
-                    }
-                }
-                if (!was_processed) {
-                    const auto completed = completed_groups.fetch_add(1, std::memory_order_relaxed) + 1;
-                    publish_progress(completed);
                 }
             }
         };

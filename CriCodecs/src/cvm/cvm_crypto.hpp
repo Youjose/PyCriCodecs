@@ -3,8 +3,7 @@
  * @file cvm_crypto.hpp
  * @brief CVM/ROFS TOC scramble helpers.
  *
- * Scramble behavior is based on reviewed SDK samples and official ROFS helper
- * evidence. The bounded key/mask implementation is CriCodecs work by Youjose.
+ * Key and mask implementation by Youjose, based on the CRI ROFS algorithm.
  */
 
 #include <array>

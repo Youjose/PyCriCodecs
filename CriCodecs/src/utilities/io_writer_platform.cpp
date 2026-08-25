@@ -40,17 +40,7 @@ struct fallback_writer_state {
 
 writer::~writer() { static_cast<void>(close()); }
 
-writer::writer(writer&& other) noexcept
-#if !defined(_WIN32) && !defined(__unix__) && !defined(__APPLE__) && !defined(__linux__)
-    : m_fallback(std::move(other.m_fallback)),
-#else
-    : m_handle(std::exchange(other.m_handle, nullptr)),
-#endif
-      m_buffer(std::move(other.m_buffer)),
-      m_buffer_pos(std::exchange(other.m_buffer_pos, 0)),
-      m_total_written(std::exchange(other.m_total_written, 0)),
-      m_buffer_zeroed(std::exchange(other.m_buffer_zeroed, false)),
-      m_write_failed(std::exchange(other.m_write_failed, false)) {}
+writer::writer(writer&& other) noexcept : writer() { *this = std::move(other); }
 
 writer& writer::operator=(writer&& other) noexcept {
     if (this == &other) return *this;
@@ -63,7 +53,6 @@ writer& writer::operator=(writer&& other) noexcept {
 #endif
     m_buffer = std::move(other.m_buffer);
     m_buffer_pos = std::exchange(other.m_buffer_pos, 0);
-    m_total_written = std::exchange(other.m_total_written, 0);
     m_buffer_zeroed = std::exchange(other.m_buffer_zeroed, false);
     m_write_failed = std::exchange(other.m_write_failed, false);
     return *this;
@@ -78,7 +67,6 @@ std::expected<void, const char*> writer::open(
 
     m_buffer.resize(buffer_size);
     m_buffer_pos = 0;
-    m_total_written = 0;
     m_buffer_zeroed = true;
     m_write_failed = false;
     return {};
@@ -234,13 +222,11 @@ void writer::write_to_buffer(const uint8_t* data, size_t size) noexcept {
     if (size == 0 || !is_open() || m_write_failed) return;
     if (m_buffer.empty()) {
         m_write_failed = !write_direct(data, size);
-        if (!m_write_failed) m_total_written += size;
         return;
     }
     if (size >= m_buffer.size()) {
         if (m_buffer_pos != 0 && !flush_buffer()) return;
         m_write_failed = !write_direct(data, size);
-        if (!m_write_failed) m_total_written += size;
         return;
     }
 
@@ -262,7 +248,6 @@ std::expected<void, const char*> writer::flush_buffer() {
         m_write_failed = true;
         return std::unexpected("I/O writer failed: write failed");
     }
-    m_total_written += m_buffer_pos;
     m_buffer_pos = 0;
     return {};
 }
@@ -297,7 +282,6 @@ void writer::write_zeros(size_t count) noexcept {
             m_write_failed = true;
             return;
         }
-        m_total_written += m_buffer.size();
         count -= m_buffer.size();
     }
     if (count != 0) {

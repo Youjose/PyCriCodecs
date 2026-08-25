@@ -158,7 +158,7 @@ std::expected<AcbContainer, std::string> AcbContainer::load(
 std::expected<void, std::string> AcbContainer::finish_load_from_source() {
     auto header = UtfTable::load(m_source);
     if (!header) {
-        return std::unexpected("ACB load failed: source is not a valid UTF table");
+        return std::unexpected("ACB load failed: " + header.error());
     }
 
     m_header = std::move(*header);

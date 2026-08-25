@@ -12,6 +12,7 @@
 
 #include "../utilities/io_endian.hpp"
 
+#include <algorithm>
 #include <memory>
 #include <utility>
 
@@ -36,13 +37,7 @@ std::expected<UtfTable, std::string> UtfTable::load(std::span<const uint8_t> dat
 
     UtfTable table;
     table.m_source = io::SourceView(data, std::move(owner));
-
-    auto result = table.parse_header();
-    if (!result) return std::unexpected(result.error());
-
-    result = table.parse_schema();
-    if (!result) return std::unexpected(result.error());
-
+    if (auto result = table.parse(); !result) return std::unexpected(result.error());
     return table;
 }
 
@@ -56,69 +51,57 @@ std::expected<UtfTable, std::string> UtfTable::load(const std::filesystem::path&
     return load(data, std::move(reader));
 }
 
-std::expected<void, std::string> UtfTable::parse_header() {
+std::expected<void, std::string> UtfTable::parse() {
     const uint8_t* buf = m_source.data();
 
-    uint32_t magic = read_be<uint32_t>(buf + 0x00);
-    if (magic != MAGIC_UTF) {
+    if (read_be<uint32_t>(buf) != MAGIC_UTF) {
         return std::unexpected("UTF parse failed: invalid magic");
     }
 
-    m_table_size     = read_be<uint32_t>(buf + 0x04) + 0x08;
-    m_version        = read_be<uint16_t>(buf + 0x08);
-    m_rows_offset    = read_be<uint16_t>(buf + 0x0A) + 0x08;
-    m_strings_offset = read_be<uint32_t>(buf + 0x0C) + 0x08;
-    m_data_offset    = read_be<uint32_t>(buf + 0x10) + 0x08;
-    m_name_offset    = read_be<uint32_t>(buf + 0x14);
-    m_serialized_column_count = read_be<uint16_t>(buf + 0x18);
-    m_row_width      = read_be<uint16_t>(buf + 0x1A);
-    m_num_rows       = read_be<uint32_t>(buf + 0x1C);
+    const uint64_t table_size = static_cast<uint64_t>(read_be<uint32_t>(buf + 0x04)) + 0x08;
+    const uint64_t rows_offset = static_cast<uint64_t>(read_be<uint16_t>(buf + 0x0A)) + 0x08;
+    const uint64_t strings_offset = static_cast<uint64_t>(read_be<uint32_t>(buf + 0x0C)) + 0x08;
+    const uint64_t data_offset = static_cast<uint64_t>(read_be<uint32_t>(buf + 0x10)) + 0x08;
+    m_version = read_be<uint16_t>(buf + 0x08);
+    const uint32_t name_offset = read_be<uint32_t>(buf + 0x14);
+    const uint16_t column_count = read_be<uint16_t>(buf + 0x18);
+    m_row_width = read_be<uint16_t>(buf + 0x1A);
+    m_loaded_row_count = read_be<uint32_t>(buf + 0x1C);
 
     if (m_version != 0x00 && m_version != 0x01) {
         return std::unexpected("UTF parse failed: unknown version: " + std::to_string(m_version));
     }
 
-    if (m_table_size > m_source.size()) {
+    if (table_size > m_source.size() || table_size > UINT32_MAX) {
         return std::unexpected("UTF parse failed: table size exceeds data size");
     }
-    if (m_rows_offset < HEADER_SIZE ||
-        m_rows_offset > m_strings_offset ||
-        m_strings_offset > m_data_offset ||
-        m_data_offset > m_table_size) {
+    if (rows_offset < HEADER_SIZE || rows_offset > strings_offset ||
+        strings_offset > data_offset || data_offset > table_size || data_offset > UINT32_MAX) {
         return std::unexpected("UTF parse failed: invalid section offsets");
     }
 
-    uint32_t schema_offset = HEADER_SIZE;
-    uint32_t schema_size = m_rows_offset - schema_offset;
-    uint32_t strings_size = m_data_offset - m_strings_offset;
+    m_table_size = static_cast<uint32_t>(table_size);
+    m_rows_offset = static_cast<uint32_t>(rows_offset);
+    m_strings_offset = static_cast<uint32_t>(strings_offset);
+    m_data_offset = static_cast<uint32_t>(data_offset);
 
-    if (strings_size == 0 || m_name_offset >= strings_size) {
+    const uint32_t strings_size = m_data_offset - m_strings_offset;
+
+    if (strings_size == 0 || name_offset >= strings_size) {
         return std::unexpected("UTF parse failed: invalid string table");
     }
-    if (m_serialized_column_count == 0) {
+    if (column_count == 0) {
         return std::unexpected("UTF parse failed: table has no columns");
     }
 
-    m_schema_buf.assign(m_source.begin() + schema_offset, m_source.begin() + schema_offset + schema_size);
+    m_table_name = string_at(name_offset);
+    m_columns.reserve(column_count);
 
-    m_string_table.assign(
-        reinterpret_cast<const char*>(m_source.data() + m_strings_offset),
-        strings_size
-    );
-
-    m_table_name = string_at(m_name_offset);
-    m_columns.reserve(m_serialized_column_count);
-
-    return {};
-}
-
-std::expected<void, std::string> UtfTable::parse_schema() {
-    const uint8_t* buf = m_schema_buf.data();
-    uint32_t pos = 0;
+    uint32_t pos = HEADER_SIZE;
     uint32_t column_offset = 0;
 
-    for (uint16_t i = 0; i < m_serialized_column_count; ++i) {
-        if (pos + 5 > m_schema_buf.size()) {
+    for (uint16_t i = 0; i < column_count; ++i) {
+        if (pos + 5 > m_rows_offset) {
             return std::unexpected("UTF parse failed: schema ended before column " + std::to_string(i));
         }
 
@@ -133,45 +116,48 @@ std::expected<void, std::string> UtfTable::parse_schema() {
             return std::unexpected("UTF parse failed: invalid column flag at column " + std::to_string(i));
         }
 
-        uint32_t name_offset = read_be<uint32_t>(buf + pos + 1);
-        if (name_offset >= m_string_table.size()) {
+        const uint32_t column_name_offset = read_be<uint32_t>(buf + pos + 1);
+        if (column_name_offset >= strings_size) {
             return std::unexpected("UTF parse failed: invalid column name offset");
         }
         pos += 5;
 
-        uint32_t value_size = get_type_size(type);
+        const uint32_t value_size = get_type_size(type);
         if (value_size == 0) {
             return std::unexpected("UTF parse failed: unknown column type: " + std::to_string(type_byte));
         }
 
-        Column col;
-        col.name = string_at(name_offset);
-        col.type = type;
-        col.flag = flag;
-        col.default_offset = 0;
-        col.row_offset = 0;
+        Column column{
+            .name = std::string(string_at(column_name_offset)),
+            .type = type,
+            .flag = flag,
+        };
 
         if (has_flag(flag, ColumnFlag::Default)) {
-            if (pos + value_size > m_schema_buf.size()) {
+            if (pos + value_size > m_rows_offset) {
                 return std::unexpected("UTF parse failed: default value is out of bounds");
             }
-            col.default_offset = pos;
+            column.default_offset = pos - HEADER_SIZE;
             pos += value_size;
         }
         if (has_flag(flag, ColumnFlag::Row)) {
-            col.row_offset = column_offset;
+            column.row_offset = column_offset;
             column_offset += value_size;
         }
 
-        m_columns.push_back(std::move(col));
+        m_columns.push_back(std::move(column));
     }
 
-    const uint64_t rows_size = static_cast<uint64_t>(m_num_rows) * m_row_width;
-    if (static_cast<uint64_t>(m_rows_offset) + rows_size > m_strings_offset) {
+    const uint64_t declared_rows_end = static_cast<uint64_t>(m_rows_offset)
+        + static_cast<uint64_t>(m_loaded_row_count) * m_row_width;
+    const uint64_t last_row_fields_end = m_loaded_row_count == 0
+        ? m_rows_offset
+        : static_cast<uint64_t>(m_rows_offset)
+            + static_cast<uint64_t>(m_loaded_row_count - 1) * m_row_width
+            + column_offset;
+    if (std::max(declared_rows_end, last_row_fields_end) > m_strings_offset) {
         return std::unexpected("UTF parse failed: row data exceeds row section");
     }
-
-    m_default_values.assign(m_columns.size(), std::monostate{});
 
     return {};
 }

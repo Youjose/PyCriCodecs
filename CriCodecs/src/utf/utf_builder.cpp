@@ -18,6 +18,7 @@
 #include <concepts>
 #include <cstring>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 
 namespace cricodecs::utf {
@@ -56,23 +57,14 @@ using util::align_up;
 
 UtfTable UtfTable::create(std::string_view name, uint16_t version) {
     UtfTable table;
-    table.m_table_name = std::string(name);
+    table.m_table_name = name;
     table.m_version = version;
-    table.m_num_rows = 0;
     return table;
 }
 
 void UtfTable::add_column(std::string_view name, ColumnType type, ColumnFlag flag) {
-    if (m_values.empty() && m_num_rows > 0) {
-        *this = editable_copy();
-    }
-    Column col;
-    col.name = std::string(name);
-    col.type = type;
-    col.flag = flag;
-    col.default_offset = 0;
-    col.row_offset = 0;
-    m_columns.push_back(std::move(col));
+    make_editable();
+    m_columns.push_back({.name = std::string(name), .type = type, .flag = flag});
     m_default_values.push_back(std::monostate{});
     for (auto& row : m_values) {
         row.resize(m_columns.size(), std::monostate{});
@@ -81,13 +73,9 @@ void UtfTable::add_column(std::string_view name, ColumnType type, ColumnFlag fla
 }
 
 uint32_t UtfTable::add_row() {
-    if (m_values.empty() && m_num_rows > 0) {
-        *this = editable_copy();
-    }
-    uint32_t row_idx = m_num_rows++;
-    m_values.resize(m_num_rows);
-    m_values[row_idx].resize(m_columns.size(), std::monostate{});
-    return row_idx;
+    make_editable();
+    m_values.emplace_back(m_columns.size(), std::monostate{});
+    return static_cast<uint32_t>(m_values.size() - 1);
 }
 
 std::expected<void, std::string> UtfTable::set(uint32_t row, uint32_t col, Value value) {
@@ -101,16 +89,11 @@ std::expected<void, std::string> UtfTable::set(uint32_t row, uint32_t col, Value
         return std::unexpected(
             "UTF set failed: value type does not match column " + m_columns[col].name);
     }
-    if (m_values.empty() && m_num_rows > 0) {
-        *this = editable_copy();
-    }
+    make_editable();
     if (has_flag(m_columns[col].flag, ColumnFlag::Default) &&
         !has_flag(m_columns[col].flag, ColumnFlag::Row)) {
-        const auto default_value = col < m_default_values.size()
-            ? m_default_values[col]
-            : Value{std::monostate{}};
         for (auto& values : m_values) {
-            values[col] = default_value;
+            values[col] = m_default_values[col];
         }
         m_columns[col].flag = ColumnFlag::Name | ColumnFlag::Row;
         m_row_width = 0;
@@ -127,18 +110,15 @@ std::expected<void, std::string> UtfTable::set_default_value(uint32_t col, Value
         return std::unexpected(
             "UTF default set failed: value type does not match column " + m_columns[col].name);
     }
-    if (m_values.empty() && m_num_rows > 0) {
-        *this = editable_copy();
-    }
-    if (col >= m_default_values.size()) {
-        m_default_values.resize(m_columns.size(), std::monostate{});
-    }
+    make_editable();
     m_default_values[col] = std::move(value);
     m_columns[col].flag = m_columns[col].flag | ColumnFlag::Default;
     return {};
 }
 
 UtfTable UtfTable::editable_copy() const {
+    if (!is_loaded()) return *this;
+
     auto editable = UtfTable::create(m_table_name, m_version);
     editable.set_text_encoding(m_text_encoding);
     if (m_row_width != 0) {
@@ -190,65 +170,38 @@ UtfTable UtfTable::editable_copy() const {
 }
 
 std::vector<uint8_t> UtfTable::build() const {
-    std::vector<ColumnFlag> flags(m_columns.size(), ColumnFlag::Name);
+    if (is_loaded()) return editable_copy().build();
 
-    for (size_t c = 0; c < m_columns.size(); ++c) {
-        if (has_flag(m_columns[c].flag, ColumnFlag::Row) ||
-            has_flag(m_columns[c].flag, ColumnFlag::Default)) {
-            flags[c] = m_columns[c].flag;
+    const uint32_t rows = row_count();
+    std::vector<ColumnFlag> flags;
+    flags.reserve(m_columns.size());
+    for (size_t column = 0; column < m_columns.size(); ++column) {
+        const auto explicit_flags = m_columns[column].flag;
+        if (has_flag(explicit_flags, ColumnFlag::Row) || has_flag(explicit_flags, ColumnFlag::Default)) {
+            flags.push_back(explicit_flags);
             continue;
         }
 
-        if (m_num_rows == 0) {
-            flags[c] = ColumnFlag::Name;
-        } else if (m_num_rows == 1) {
-            if (std::holds_alternative<std::monostate>(m_values[0][c])) {
-                flags[c] = ColumnFlag::Name;
-            } else {
-                flags[c] = ColumnFlag::Name | ColumnFlag::Row;
-            }
-        } else {
-            bool all_mono = true;
-            bool all_same = true;
-            for (uint32_t r = 0; r < m_num_rows; ++r) {
-                if (!std::holds_alternative<std::monostate>(m_values[r][c]))
-                    all_mono = false;
-            }
-            if (all_mono) {
-                flags[c] = ColumnFlag::Name;
-                continue;
-            }
-
-            for (uint32_t r = 1; r < m_num_rows && all_same; ++r) {
-                if (m_values[r][c].index() != m_values[0][c].index()) {
-                    all_same = false;
-                } else {
-                    std::visit([&](auto&& val0) {
-                        using T = std::decay_t<decltype(val0)>;
-                        if constexpr (std::same_as<T, std::monostate>) {
-                            all_same = true;
-                        } else if constexpr (std::same_as<T, std::vector<uint8_t>>) {
-                            auto& val_r = std::get<std::vector<uint8_t>>(m_values[r][c]);
-                            all_same = (val0 == val_r);
-                        } else if constexpr (std::same_as<T, GUID>) {
-                            auto& val_r = std::get<GUID>(m_values[r][c]);
-                            all_same = (val0 == val_r);
-                        } else if constexpr (std::same_as<T, DataRef>) {
-                            auto& val_r = std::get<DataRef>(m_values[r][c]);
-                            all_same = (val0.offset == val_r.offset && val0.size == val_r.size);
-                        } else {
-                            all_same = (val0 == std::get<T>(m_values[r][c]));
-                        }
-                    }, m_values[0][c]);
-                }
-            }
-
-            if (all_same && !std::holds_alternative<std::monostate>(m_values[0][c])) {
-                flags[c] = ColumnFlag::Name | ColumnFlag::Default;
-            } else {
-                flags[c] = ColumnFlag::Name | ColumnFlag::Row;
-            }
+        const auto value_at = [column](const auto& row) -> const Value& { return row[column]; };
+        const bool empty = std::ranges::all_of(m_values, [](const Value& value) {
+            return std::holds_alternative<std::monostate>(value);
+        }, value_at);
+        if (empty) {
+            flags.push_back(ColumnFlag::Name);
+            continue;
         }
+        if (rows == 1) {
+            flags.push_back(ColumnFlag::Name | ColumnFlag::Row);
+            continue;
+        }
+
+        const Value& first = m_values.front()[column];
+        const bool constant = std::ranges::all_of(m_values, [&first](const Value& value) {
+            return value == first;
+        }, value_at);
+        flags.push_back(constant
+            ? ColumnFlag::Name | ColumnFlag::Default
+            : ColumnFlag::Name | ColumnFlag::Row);
     }
 
     auto default_value_for_column = [&](size_t column_index) -> const Value* {
@@ -263,20 +216,18 @@ std::vector<uint8_t> UtfTable::build() const {
         return nullptr;
     };
 
-    std::vector<std::string> strings;
     cricodecs::util::flat_unordered_map<std::string, uint32_t, cricodecs::util::transparent_string_hash, std::equal_to<>> string_offsets;
-    strings.reserve(m_columns.size() + 1);
     string_offsets.reserve(m_columns.size() + 1);
-    uint32_t next_string_offset = 0;
+    std::vector<uint8_t> string_blob;
 
-    auto add_string = [&](const std::string& s) -> uint32_t {
+    auto add_string = [&](std::string_view s) -> uint32_t {
         auto it = string_offsets.find(s);
         if (it != string_offsets.end()) return it->second;
 
-        const uint32_t offset = next_string_offset;
-        next_string_offset += static_cast<uint32_t>(s.size() + 1);
-        string_offsets[s] = offset;
-        strings.push_back(s);
+        const uint32_t offset = static_cast<uint32_t>(string_blob.size());
+        string_blob.insert(string_blob.end(), s.begin(), s.end());
+        string_blob.push_back(0);
+        string_offsets.emplace(std::string(s), offset);
         return offset;
     };
 
@@ -305,7 +256,7 @@ std::vector<uint8_t> UtfTable::build() const {
 
     for (size_t c = 0; c < m_columns.size(); ++c) {
         if (m_columns[c].type != ColumnType::String) continue;
-        for (uint32_t r = 0; r < m_num_rows; ++r) {
+        for (uint32_t r = 0; r < rows; ++r) {
             if (std::holds_alternative<std::string>(m_values[r][c])) {
                 add_string(std::get<std::string>(m_values[r][c]));
             }
@@ -328,30 +279,24 @@ std::vector<uint8_t> UtfTable::build() const {
     uint32_t header_row_width = (m_row_width > 0) ? m_row_width : computed_row_width;
 
     uint32_t rows_offset = HEADER_SIZE + schema_size;
-    uint32_t rows_size = m_num_rows * computed_row_width;
-
-    std::vector<uint8_t> string_blob;
-    for (const auto& s : strings) {
-        string_blob.insert(string_blob.end(), s.begin(), s.end());
-        string_blob.push_back(0);
-    }
+    uint32_t rows_size = rows * computed_row_width;
 
     uint32_t strings_offset = rows_offset + rows_size;
     uint32_t strings_size = static_cast<uint32_t>(string_blob.size());
 
     std::vector<uint8_t> data_blob;
-    std::unordered_map<const void*, uint32_t> data_offsets;
+    std::unordered_map<const Value*, uint32_t> data_offsets;
 
-    auto append_vldata = [&](const void* key, const std::vector<uint8_t>& data) {
-        if (data_offsets.contains(key)) {
-            return;
-        }
+    auto append_vldata = [&](const Value& value) {
+        if (data_offsets.contains(&value)) return;
+        const auto& data = std::get<std::vector<uint8_t>>(value);
+        if (data.empty()) return;
         if (m_data_alignment > 0 && !data_blob.empty()) {
-            // ACB-style UTF payloads expect a gap before each aligned VLData entry.
+            // ACB places a gap before each aligned VLData entry.
             const uint32_t aligned = align_up(static_cast<uint32_t>(data_blob.size()) + 1, m_data_alignment);
             data_blob.resize(aligned, 0);
         }
-        data_offsets[key] = static_cast<uint32_t>(data_blob.size());
+        data_offsets[&value] = static_cast<uint32_t>(data_blob.size());
         data_blob.insert(data_blob.end(), data.begin(), data.end());
     };
 
@@ -361,31 +306,20 @@ std::vector<uint8_t> UtfTable::build() const {
         }
         const Value* default_value = default_value_for_column(c);
         if (default_value != nullptr && std::holds_alternative<std::vector<uint8_t>>(*default_value)) {
-            const auto& data = std::get<std::vector<uint8_t>>(*default_value);
-            if (!data.empty()) {
-                append_vldata(default_value, data);
-            } else {
-                data_offsets[default_value] = 0;
-            }
+            append_vldata(*default_value);
         }
     }
 
-    for (uint32_t r = 0; r < m_num_rows; ++r) {
+    for (uint32_t r = 0; r < rows; ++r) {
         for (size_t c = 0; c < m_columns.size(); ++c) {
-            if (m_columns[c].type == ColumnType::VLData) {
-                if (std::holds_alternative<std::vector<uint8_t>>(m_values[r][c])) {
-                    const auto& data = std::get<std::vector<uint8_t>>(m_values[r][c]);
-                    if (!data.empty()) {
-                        append_vldata(&m_values[r][c], data);
-                    } else {
-                        data_offsets[&m_values[r][c]] = 0;
-                    }
-                }
+            if (m_columns[c].type == ColumnType::VLData &&
+                std::holds_alternative<std::vector<uint8_t>>(m_values[r][c])) {
+                append_vldata(m_values[r][c]);
             }
         }
     }
 
-    bool has_data = !data_blob.empty();
+    const bool has_data = !data_blob.empty();
     uint32_t data_offset = strings_offset + strings_size;
 
     if (m_data_alignment > 0 && has_data) {
@@ -412,26 +346,15 @@ std::vector<uint8_t> UtfTable::build() const {
     write_be<uint32_t>(buf + 0x14, table_name_offset);
     write_be<uint16_t>(buf + 0x18, static_cast<uint16_t>(m_columns.size()));
     write_be<uint16_t>(buf + 0x1A, static_cast<uint16_t>(header_row_width));
-    write_be<uint32_t>(buf + 0x1C, m_num_rows);
+    write_be<uint32_t>(buf + 0x1C, rows);
 
-    auto write_value = [&](uint8_t* dst, const Value& val, [[maybe_unused]] ColumnType type) {
+    auto write_value = [&](uint8_t* dst, const Value& val) {
         std::visit([&](auto&& v) {
             using T = std::decay_t<decltype(v)>;
             if constexpr (std::same_as<T, std::monostate>) {
-            } else if constexpr (std::same_as<T, uint8_t> || std::same_as<T, int8_t>) {
-                dst[0] = static_cast<uint8_t>(v);
-            } else if constexpr (std::same_as<T, uint16_t>) {
-                write_be<uint16_t>(dst, v);
-            } else if constexpr (std::same_as<T, int16_t>) {
-                write_be<int16_t>(dst, v);
-            } else if constexpr (std::same_as<T, uint32_t>) {
-                write_be<uint32_t>(dst, v);
-            } else if constexpr (std::same_as<T, int32_t>) {
-                write_be<int32_t>(dst, v);
-            } else if constexpr (std::same_as<T, uint64_t>) {
-                write_be<uint64_t>(dst, v);
-            } else if constexpr (std::same_as<T, int64_t>) {
-                write_be<int64_t>(dst, v);
+            } else if constexpr (std::integral<T>) {
+                if constexpr (sizeof(T) == 1) dst[0] = static_cast<uint8_t>(v);
+                else write_be<T>(dst, v);
             } else if constexpr (std::same_as<T, float>) {
                 write_be<uint32_t>(dst, std::bit_cast<uint32_t>(v));
             } else if constexpr (std::same_as<T, double>) {
@@ -461,18 +384,18 @@ std::vector<uint8_t> UtfTable::build() const {
 
         if (has_flag(flags[c], ColumnFlag::Default)) {
             if (const Value* default_value = default_value_for_column(c); default_value != nullptr) {
-                write_value(buf + schema_pos, *default_value, m_columns[c].type);
+                write_value(buf + schema_pos, *default_value);
             }
             schema_pos += get_type_size(m_columns[c].type);
         }
     }
 
     uint32_t row_pos = rows_offset;
-    for (uint32_t r = 0; r < m_num_rows; ++r) {
+    for (uint32_t r = 0; r < rows; ++r) {
         uint32_t col_pos = row_pos;
         for (size_t c = 0; c < m_columns.size(); ++c) {
             if (!has_flag(flags[c], ColumnFlag::Row)) continue;
-            write_value(buf + col_pos, m_values[r][c], m_columns[c].type);
+            write_value(buf + col_pos, m_values[r][c]);
             col_pos += get_type_size(m_columns[c].type);
         }
         row_pos += computed_row_width;
@@ -480,9 +403,7 @@ std::vector<uint8_t> UtfTable::build() const {
 
     std::memcpy(buf + strings_offset, string_blob.data(), string_blob.size());
 
-    if (!data_blob.empty() && data_offset + data_blob.size() <= output.size()) {
-        std::memcpy(buf + data_offset, data_blob.data(), data_blob.size());
-    }
+    if (!data_blob.empty()) std::memcpy(buf + data_offset, data_blob.data(), data_blob.size());
 
     return output;
 }

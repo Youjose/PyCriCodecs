@@ -11,7 +11,6 @@
 
 #include <algorithm>
 #include <array>
-#include <functional>
 #include <limits>
 #include <utility>
 
@@ -959,13 +958,8 @@ std::expected<AcbCueAssembly, std::string> AcbCueGraph::assemble_cue(uint32_t cu
         });
     };
 
-    std::function<void(AcbCueNode)> visit;
-    auto connect = [&](AcbCueNode from, AcbCueNode to, AcbCueEdgeKind kind, uint32_t ordinal) {
-        assembly.edges.push_back({from, to, kind, ordinal});
-        visit(to);
-    };
-
-    visit = [&](AcbCueNode node) {
+    const auto& graph = *this;
+    const auto visit = [&](this auto&& self, AcbCueNode node) -> void {
         auto& state = node_state[node_slot(node)];
         if (state == 1) {
             assembly.has_cycle = true;
@@ -976,6 +970,11 @@ std::expected<AcbCueAssembly, std::string> AcbCueGraph::assemble_cue(uint32_t cu
         }
         state = 1;
         assembly.nodes.push_back(node);
+
+        const auto connect = [&](AcbCueNode from, AcbCueNode to, AcbCueEdgeKind kind, uint32_t ordinal) {
+            assembly.edges.push_back({from, to, kind, ordinal});
+            self(to);
+        };
 
         auto connect_reference = [&](uint16_t type, uint16_t index, AcbCueEdgeKind edge_kind, uint32_t ordinal) {
             if (type == 0) return;
@@ -997,7 +996,7 @@ std::expected<AcbCueAssembly, std::string> AcbCueGraph::assemble_cue(uint32_t cu
         };
 
         auto connect_track = [&](uint16_t index, bool action, uint32_t ordinal) {
-            const auto& rows = action ? m_action_tracks : m_tracks;
+            const auto& rows = action ? graph.m_action_tracks : graph.m_tracks;
             if (index >= rows.size()) {
                 add_unresolved(node, action ? 0xA001 : 0xA000, index, "track index is out of range");
                 return;
@@ -1025,9 +1024,9 @@ std::expected<AcbCueAssembly, std::string> AcbCueGraph::assemble_cue(uint32_t cu
             if (index == invalid_acb_index) return;
             // Older/smaller schemas can retain a numeric CommandIndex while
             // omitting the corresponding optional table entirely.
-            if (commands(kind).empty()) return;
+            if (graph.commands(kind).empty()) return;
 
-            if (command_stream(kind, index) == nullptr) {
+            if (graph.command_stream(kind, index) == nullptr) {
                 add_unresolved(node, 0xC000 + static_cast<uint16_t>(kind), index,
                     "command-stream index is out of range");
                 return;
@@ -1037,13 +1036,13 @@ std::expected<AcbCueAssembly, std::string> AcbCueGraph::assemble_cue(uint32_t cu
 
         switch (node.kind) {
             case AcbCueNodeKind::cue: {
-                const auto& cue = m_cues[node.index];
+                const auto& cue = graph.m_cues[node.index];
                 connect_reference(
                     cue.reference.type, cue.reference.index, AcbCueEdgeKind::cue_reference, 0);
                 break;
             }
             case AcbCueNodeKind::synth: {
-                const auto& synth = m_synths[node.index];
+                const auto& synth = graph.m_synths[node.index];
                 for (uint32_t i = 0; i < synth.reference_items.size(); ++i) {
                     const auto& reference = synth.reference_items[i];
                     connect_reference(
@@ -1057,7 +1056,7 @@ std::expected<AcbCueAssembly, std::string> AcbCueGraph::assemble_cue(uint32_t cu
                 break;
             }
             case AcbCueNodeKind::sequence: {
-                const auto& sequence = m_sequences[node.index];
+                const auto& sequence = graph.m_sequences[node.index];
                 for (uint32_t i = 0; i < sequence.track_indices.size(); ++i) {
                     connect_track(sequence.track_indices[i], false, i);
                 }
@@ -1074,8 +1073,8 @@ std::expected<AcbCueAssembly, std::string> AcbCueGraph::assemble_cue(uint32_t cu
                 break;
             }
             case AcbCueNodeKind::track: {
-                const auto& track = m_tracks[node.index];
-                if (!track_events().empty()) {
+                const auto& track = graph.m_tracks[node.index];
+                if (!graph.track_events().empty()) {
                     connect_stream(
                         AcbCommandTableKind::track_event,
                         track.event_index,
@@ -1093,12 +1092,12 @@ std::expected<AcbCueAssembly, std::string> AcbCueGraph::assemble_cue(uint32_t cu
                 break;
             }
             case AcbCueNodeKind::action_track: {
-                const auto& track = m_action_tracks[node.index];
+                const auto& track = graph.m_action_tracks[node.index];
                 // Unlike a normal TrackTable row, the action program is
                 // selected by ActionTrackTable.CommandIndex. This relationship
                 // holds across all action-bearing corpus schemas; EventIndex
                 // is not the action program stored in the file.
-                if (!track_events().empty()) {
+                if (!graph.track_events().empty()) {
                     connect_stream(
                         AcbCommandTableKind::track_event,
                         track.command_index,
@@ -1112,13 +1111,13 @@ std::expected<AcbCueAssembly, std::string> AcbCueGraph::assemble_cue(uint32_t cu
                 break;
             }
             case AcbCueNodeKind::block_sequence: {
-                const auto& sequence = m_block_sequences[node.index];
+                const auto& sequence = graph.m_block_sequences[node.index];
                 for (uint32_t i = 0; i < sequence.track_indices.size(); ++i) {
                     connect_track(sequence.track_indices[i], false, i);
                 }
                 for (uint32_t i = 0; i < sequence.block_indices.size(); ++i) {
                     const auto block = sequence.block_indices[i];
-                    if (block >= m_blocks.size()) {
+                    if (block >= graph.m_blocks.size()) {
                         add_unresolved(node, 8, block, "block index is out of range");
                     } else {
                         connect(node, {AcbCueNodeKind::block, block}, AcbCueEdgeKind::block, i);
@@ -1135,7 +1134,7 @@ std::expected<AcbCueAssembly, std::string> AcbCueGraph::assemble_cue(uint32_t cu
                 break;
             }
             case AcbCueNodeKind::block: {
-                const auto& block = m_blocks[node.index];
+                const auto& block = graph.m_blocks[node.index];
                 for (uint32_t i = 0; i < block.track_indices.size(); ++i) {
                     connect_track(block.track_indices[i], false, i);
                 }
@@ -1148,7 +1147,7 @@ std::expected<AcbCueAssembly, std::string> AcbCueGraph::assemble_cue(uint32_t cu
             case AcbCueNodeKind::track_command:
             case AcbCueNodeKind::synth_command: {
                 const auto kind = command_table_kind(node.kind);
-                const auto* stream = command_stream(kind, node.index);
+                const auto* stream = graph.command_stream(kind, node.index);
                 if (stream != nullptr) {
                     uint32_t ordinal = 0;
                     for (const auto& command : stream->commands) {
@@ -1165,10 +1164,10 @@ std::expected<AcbCueAssembly, std::string> AcbCueGraph::assemble_cue(uint32_t cu
             case AcbCueNodeKind::waveform:
                 break;
             case AcbCueNodeKind::outside_link: {
-                const auto& link = m_outside_links[node.index];
+                const auto& link = graph.m_outside_links[node.index];
                 auto reason = std::string("external ACB cue requires linked ACB");
-                const auto acb_name = string_value(link.acb_name_string_index);
-                const auto cue_name = string_value(link.cue_name_string_index);
+                const auto acb_name = graph.string_value(link.acb_name_string_index);
+                const auto cue_name = graph.string_value(link.cue_name_string_index);
                 if (!acb_name.empty() || !cue_name.empty()) {
                     reason += ": ";
                     reason += acb_name.empty() ? "<current ACB>" : std::string(acb_name);

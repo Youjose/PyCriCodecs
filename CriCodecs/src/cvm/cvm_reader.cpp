@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <array>
 #include <flat_set>
-#include <functional>
 #include <string_view>
 
 #include "cvm_crypto.hpp"
@@ -262,8 +261,11 @@ template <typename T>
     std::flat_set<uint32_t> visited_directories;
     std::flat_set<uint32_t> decrypted_sectors{pvd_sector};
 
-    std::function<std::expected<uint32_t, std::string>(uint32_t, uint32_t)> decrypt_directory_tree =
-        [&](uint32_t extent_sector, uint32_t directory_size) -> std::expected<uint32_t, std::string> {
+    const auto decrypt_directory_tree = [&](
+        this auto&& self,
+        uint32_t extent_sector,
+        uint32_t directory_size
+    ) -> std::expected<uint32_t, std::string> {
         const uint32_t sector_count = static_cast<uint32_t>(divide_round_up(directory_size, sector_size));
         if (visited_directories.insert(extent_sector).second) {
             for (uint32_t sector = 0; sector < sector_count; ++sector) {
@@ -296,7 +298,7 @@ template <typename T>
                     continue;
                 }
                 if ((record->flags & 0x02u) != 0) {
-                    auto child_end = decrypt_directory_tree(record->extent_sector, record->data_length);
+                    auto child_end = self(record->extent_sector, record->data_length);
                     if (!child_end) {
                         return std::unexpected(child_end.error());
                     }

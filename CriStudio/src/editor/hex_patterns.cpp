@@ -76,12 +76,16 @@ HexPatternSet infer_entry_hex_patterns(
     uint64_t total_size,
     std::span<const uint8_t> prefix
 ) {
+    return infer_hex_patterns(entry_hex_format(entry), total_size, prefix);
+}
+
+std::string entry_hex_format(const EntrySummary& entry) {
     std::string format = entry.type.empty() ? entry.source_format : entry.type;
     if (!entry.nested_source_format.empty()) {
         format += " ";
         format += entry.nested_source_format;
     }
-    return infer_hex_patterns(format, total_size, prefix);
+    return format;
 }
 
 } // namespace cristudio

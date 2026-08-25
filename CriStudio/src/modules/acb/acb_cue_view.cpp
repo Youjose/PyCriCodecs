@@ -83,22 +83,6 @@ std::string command_table_name(
     return "Command";
 }
 
-std::string evidence_name(
-    cricodecs::acb::AcbInterpretationEvidence evidence) {
-    using cricodecs::acb::AcbInterpretationEvidence;
-    switch (evidence) {
-        case AcbInterpretationEvidence::none:
-            return "unknown";
-        case AcbInterpretationEvidence::structural:
-            return "structural";
-        case AcbInterpretationEvidence::runtime_confirmed:
-            return "runtime confirmed";
-        case AcbInterpretationEvidence::fixture_inferred:
-            return "fixture inferred";
-    }
-    return "unknown";
-}
-
 const cricodecs::acb::AcbCueCommandStream* command_stream_for_node(
     const cricodecs::acb::AcbCueGraph& graph,
     const cricodecs::acb::AcbCueNode& node) {
@@ -164,7 +148,6 @@ std::vector<CueCommandView> cue_commands(
                 .meaning = std::string(
                     cricodecs::acb::cue_command_meaning_name(
                         command.meaning)),
-                .evidence = evidence_name(command.evidence),
                 .target_type = command.target
                     ? std::optional<uint16_t>{
                           static_cast<uint16_t>(command.target->type)}

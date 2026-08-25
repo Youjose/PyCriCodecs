@@ -53,7 +53,6 @@ struct CueCommandView {
     uint32_t command_index = 0;
     uint16_t code = 0;
     std::string meaning;
-    std::string evidence;
     std::optional<uint16_t> target_type;
     std::optional<uint16_t> target_index;
     std::optional<uint16_t> argument_u16;

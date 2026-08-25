@@ -1,38 +1,24 @@
 #include <QCoreApplication>
 #include "modules/adx/adx_common.hpp"
 
+#include "editor/editor_helpers.hpp"
+#include "io_reader.hpp"
 #include "path_text.hpp"
 
-#include <algorithm>
-#include <cstddef>
 #include <utility>
 
 namespace cristudio::modules::adx {
-namespace {
 
-QString hex_preview(std::span<const uint8_t> bytes, size_t max_bytes = 4096) {
-    if (bytes.empty()) {
-        return QCoreApplication::translate("Adx.AdxCommon", "(no bytes)");
+std::expected<std::vector<uint8_t>, QString> read_adx_source(
+    const std::filesystem::path& path,
+    std::string error_prefix
+) {
+    auto bytes = cricodecs::io::read_file_bytes(path, std::move(error_prefix));
+    if (!bytes) {
+        return std::unexpected(utf8_to_qstring(bytes.error()));
     }
-
-    const auto shown = std::min(bytes.size(), max_bytes);
-    QString out;
-    out.reserve(static_cast<qsizetype>(shown * 4));
-    for (size_t offset = 0; offset < shown; offset += 16) {
-        out += QStringLiteral("%1  ").arg(static_cast<qulonglong>(offset), 8, 16, QLatin1Char('0')).toUpper();
-        const auto row_end = std::min(offset + 16, shown);
-        for (size_t index = offset; index < row_end; ++index) {
-            out += QStringLiteral("%1 ").arg(bytes[index], 2, 16, QLatin1Char('0')).toUpper();
-        }
-        out += QLatin1Char('\n');
-    }
-    if (bytes.size() > shown) {
-        out += QCoreApplication::translate("Adx.AdxCommon", "... truncated, %1 total bytes ...\n").arg(static_cast<qulonglong>(bytes.size()));
-    }
-    return out;
+    return std::move(*bytes);
 }
-
-} // namespace
 
 void apply_keys(cricodecs::adx::Adx& adx, const DecryptionKeys& keys) {
     switch (keys.adx_mode) {

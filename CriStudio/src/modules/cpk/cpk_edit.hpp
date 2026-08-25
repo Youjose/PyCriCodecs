@@ -104,28 +104,10 @@ void set_options(
 
 void set_all_request_compress(cricodecs::cpk::Cpk& cpk, bool request_compress);
 
-[[nodiscard]] std::expected<void, std::string> set_group(
-    cricodecs::cpk::Cpk& cpk,
-    size_t index,
-    std::string value
-);
-
-[[nodiscard]] std::expected<void, std::string> set_attribute(
-    cricodecs::cpk::Cpk& cpk,
-    size_t index,
-    std::string value
-);
-
 [[nodiscard]] std::expected<void, std::string> set_user_string(
     cricodecs::cpk::Cpk& cpk,
     size_t index,
     std::string value
-);
-
-[[nodiscard]] std::expected<void, std::string> set_update_date_time(
-    cricodecs::cpk::Cpk& cpk,
-    size_t index,
-    uint64_t value
 );
 
 } // namespace cristudio::modules::cpk

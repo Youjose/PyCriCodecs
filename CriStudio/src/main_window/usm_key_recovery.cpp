@@ -21,12 +21,6 @@
 namespace cristudio {
 namespace {
 
-[[nodiscard]] QString key_text(uint64_t key) {
-    return QStringLiteral("0x%1").arg(
-        QString::number(static_cast<qulonglong>(key), 16).toUpper().rightJustified(14, QLatin1Char('0'))
-    );
-}
-
 [[nodiscard]] QString masking_inference(const UsmKeyRecoveryResult& result) {
     if (result.hca_video_supported) {
         return QCoreApplication::translate("MainWindow.UsmKeyRecovery", "Likely masked; embedded HCA and video recovery agree");
@@ -61,7 +55,7 @@ namespace {
         const bool recommended = ranked_sources.insert(result.source).second;
         candidates.push_back(KeyRecoveryCandidate{
             .identity = result.key,
-            .key = key_text(result.key),
+            .key = recovery_key_text(result.key, 14),
             .score = evidence_rank_score(result),
             .file = utf8_to_qstring(result.source),
             .recommended = recommended,
@@ -80,8 +74,7 @@ void MainWindow::start_usm_key_recovery(
         statusBar()->showMessage(QCoreApplication::translate("MainWindow.UsmKeyRecovery", "No files selected for USM key recovery"), 3000);
         return;
     }
-    if (m_usm_key_recovery_running || m_hca_key_recovery_running ||
-        m_adx_key_recovery_running || m_aac_key_recovery_running) {
+    if (key_recovery_running()) {
         statusBar()->showMessage(QCoreApplication::translate("MainWindow.UsmKeyRecovery", "Key recovery is already running"), 3000);
         return;
     }
@@ -106,7 +99,6 @@ void MainWindow::start_usm_key_recovery(
     }
 
     statusBar()->showMessage(QCoreApplication::translate("MainWindow.UsmKeyRecovery", "Recovering USM keys..."));
-    m_usm_key_recovery_running = true;
     const auto request_id = ++m_usm_key_recovery_request_id;
     auto keys = m_decryption_keys;
     m_usm_key_recovery_watcher->setFuture(QtConcurrent::run(
@@ -176,7 +168,6 @@ void MainWindow::start_usm_key_recovery(
 
 void MainWindow::consume_usm_key_recovery_result() {
     auto task = m_usm_key_recovery_watcher->future().takeResult();
-    m_usm_key_recovery_running = false;
     if (m_preview_recover_key_button != nullptr) {
         m_preview_recover_key_button->setEnabled(true);
     }
@@ -216,7 +207,7 @@ void MainWindow::consume_usm_key_recovery_result() {
         const float rank_score = evidence_rank_score(result);
         if (!show_key_recovery_candidate(rank_score, best_by_source[result.source])) continue;
         ++visible_candidate_count;
-        const auto key = key_text(result.key);
+        const auto key = recovery_key_text(result.key, 14);
         const auto score = QString::number(rank_score, 'f', 6);
         text += QCoreApplication::translate(
                     "MainWindow.UsmKeyRecovery",

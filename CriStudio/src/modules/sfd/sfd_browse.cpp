@@ -18,19 +18,6 @@ std::string hex_byte(uint8_t value) {
     return out.str();
 }
 
-EntrySummary sourced_entry(
-    EntrySummary entry,
-    const std::filesystem::path& source_path,
-    std::string source_format,
-    uint32_t source_index
-) {
-    entry.source_path = source_path;
-    entry.source_format = std::move(source_format);
-    entry.source_index = source_index;
-    entry.has_source = true;
-    return entry;
-}
-
 std::string stream_type(const cricodecs::sfd::SfdStream& stream) {
     switch (stream.type) {
     case cricodecs::sfd::SfdStreamType::audio:
@@ -60,7 +47,7 @@ LoadedDocument summarize(const std::filesystem::path& path, const cricodecs::sfd
 
     doc.entries.reserve(sfd.streams().size());
     for (const auto& stream : sfd.streams()) {
-        doc.entries.push_back(sourced_entry({
+        doc.entries.push_back(source_entry({
             archive_display_path(stream.suggested_path().generic_string()),
             stream_type(stream),
             byte_count(stream.extracted_size),

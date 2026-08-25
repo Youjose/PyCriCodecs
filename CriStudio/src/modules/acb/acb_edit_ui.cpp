@@ -6,20 +6,10 @@
 #include <QCoreApplication>
 #include <QFileDialog>
 
-#include <cstddef>
 #include <string>
 #include <utility>
 
 namespace cristudio::modules::acb {
-namespace {
-
-std::string qstring_to_utf8(const QString& text) {
-    const auto utf8 = text.toUtf8();
-    return {utf8.constData(), static_cast<size_t>(utf8.size())};
-}
-
-} // namespace
-
 std::expected<AssociatedAwbOpenPayload, QString> prepare_associated_awb_open(
     QWidget*,
     const cricodecs::acb::AcbContainer& acb,

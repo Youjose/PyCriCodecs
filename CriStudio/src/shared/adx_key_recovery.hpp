@@ -1,6 +1,6 @@
 #pragma once
 
-#include "document/document_types.hpp"
+#include "shared/key_recovery_source.hpp"
 
 #include <array>
 #include <cstddef>
@@ -18,19 +18,7 @@ enum class AdxRecoveryKind : uint8_t {
     Ahx,
 };
 
-struct AdxRecoverySource {
-    enum class Kind : uint8_t {
-        Document,
-        Entry,
-    };
-
-    Kind kind = Kind::Document;
-    std::filesystem::path path;
-    std::string name;
-    std::string format;
-    std::string loader_tag;
-    EntrySummary entry;
-};
+using AdxRecoverySource = KeyRecoverySource;
 
 struct AdxKeyCandidateResult {
     uint16_t start = 0;

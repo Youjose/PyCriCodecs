@@ -1,10 +1,12 @@
 #include "shared/i18n.hpp"
 #include "main_window.hpp"
 
+#include "main_window/ui_helpers.hpp"
 #include "path_text.hpp"
 
 #include <QCoreApplication>
 #include <QApplication>
+#include <QAction>
 #include <QDateTime>
 #include <QFile>
 #include <QFileDialog>
@@ -32,11 +34,6 @@
 namespace cristudio {
 namespace {
 
-std::string qt_to_utf8_local(const QString& text) {
-    const auto utf8 = text.toUtf8();
-    return std::string(utf8.constData(), static_cast<size_t>(utf8.size()));
-}
-
 bool extraction_message_is_failure_local(const std::string& message) {
     auto lower = QString::fromStdString(message).toLower();
     return lower.contains(QStringLiteral("failed")) ||
@@ -46,39 +43,18 @@ bool extraction_message_is_failure_local(const std::string& message) {
            lower.contains(QStringLiteral("needs "));
 }
 
-QString to_qstring_local(const std::filesystem::path& path) {
-    return path_to_qstring(path);
-}
-
-QString archive_basename_local(QString text) {
-    text.replace(QLatin1Char('\\'), QLatin1Char('/'));
-    while (text.endsWith(QLatin1Char('/'))) {
-        text.chop(1);
-    }
-    const auto slash = text.lastIndexOf(QLatin1Char('/'));
-    return slash >= 0 && slash + 1 < text.size() ? text.mid(slash + 1) : text;
-}
-
-QString strip_mux_prefix_local(QString text) {
-    // Internal synthetic-entry prefix; it is parsed and must never be translated.
-    constexpr auto prefix = "Mux preview/";
-    return text.startsWith(QLatin1String(prefix))
-        ? text.mid(static_cast<int>(std::char_traits<char>::length(prefix)))
-        : text;
-}
-
 QString extraction_target_label_local(const ExtractionTarget& target) {
     switch (target.kind) {
     case ExtractionTarget::Kind::Document:
-        return archive_basename_local(utf8_to_qstring(target.document.display_name.empty()
+        return archive_basename(utf8_to_qstring(target.document.display_name.empty()
             ? target.document.path.filename().generic_string()
             : target.document.display_name));
     case ExtractionTarget::Kind::Entry:
-        return archive_basename_local(strip_mux_prefix_local(utf8_to_qstring(target.entry.name.empty()
+        return archive_basename(strip_mux_prefix(utf8_to_qstring(target.entry.name.empty()
             ? target.entry.type
             : target.entry.name)));
     case ExtractionTarget::Kind::AcbCue:
-        return archive_basename_local(
+        return archive_basename(
             utf8_to_qstring(target.acb_output_name.empty()
                 ? std::string("ACB cue")
                 : target.acb_output_name));
@@ -152,7 +128,7 @@ void MainWindow::start_loading_paths(std::vector<std::filesystem::path> paths) {
     if (paths.empty()) {
         return;
     }
-    if (m_load_running) {
+    if (load_running()) {
         m_queued_load_paths.insert(
             m_queued_load_paths.end(),
             std::make_move_iterator(paths.begin()),
@@ -168,7 +144,6 @@ void MainWindow::start_loading_paths(std::vector<std::filesystem::path> paths) {
     m_loading_status_label->show();
     m_loading_bar->show();
     statusBar()->showMessage(QCoreApplication::translate("MainWindow.Background", "Loading assets..."));
-    m_load_running = true;
     auto keys = m_decryption_keys;
     m_load_watcher->setFuture(QtConcurrent::run([paths = std::move(paths), progress, keys = std::move(keys)]() mutable {
         LoadResult result;
@@ -181,7 +156,7 @@ void MainWindow::start_loading_paths(std::vector<std::filesystem::path> paths) {
             if (canonical_error) {
                 ++result.rejected_count;
                 progress->rejected_count.fetch_add(1, std::memory_order_relaxed);
-                result.log_messages.push_back(QCoreApplication::translate("MainWindow.Background", "Rejected path: ") + to_qstring_local(file_path));
+                result.log_messages.push_back(QCoreApplication::translate("MainWindow.Background", "Rejected path: ") + path_to_qstring(file_path));
                 return;
             }
 
@@ -191,13 +166,13 @@ void MainWindow::start_loading_paths(std::vector<std::filesystem::path> paths) {
                 ++result.rejected_count;
                 progress->rejected_count.fetch_add(1, std::memory_order_relaxed);
                 result.log_messages.push_back(
-                    QCoreApplication::translate("MainWindow.Background", "Discarded invalid file: ") + to_qstring_local(file_path) +
+                    QCoreApplication::translate("MainWindow.Background", "Discarded invalid file: ") + path_to_qstring(file_path) +
                     QStringLiteral(" (") + utf8_to_qstring(reason) + QStringLiteral(")")
                 );
                 return;
             }
             progress->valid_count.fetch_add(1, std::memory_order_relaxed);
-            result.loaded.emplace_back(std::move(*document), to_qstring_local(canonical));
+            result.loaded.emplace_back(std::move(*document), path_to_qstring(canonical));
         };
 
         for (const auto& path : paths) {
@@ -212,7 +187,7 @@ void MainWindow::start_loading_paths(std::vector<std::filesystem::path> paths) {
                      it.increment(ec)) {
                     if (ec) {
                         result.log_messages.push_back(
-                            QCoreApplication::translate("MainWindow.Background", "Skipped directory entry under ") + to_qstring_local(path) +
+                            QCoreApplication::translate("MainWindow.Background", "Skipped directory entry under ") + path_to_qstring(path) +
                             QStringLiteral(": ") + QString::fromStdString(ec.message())
                         );
                         ec.clear();
@@ -226,7 +201,7 @@ void MainWindow::start_loading_paths(std::vector<std::filesystem::path> paths) {
             } else if (std::filesystem::is_regular_file(path, ec)) {
                 process_file(path);
             } else {
-                result.log_messages.push_back(QCoreApplication::translate("MainWindow.Background", "Rejected path: ") + to_qstring_local(path));
+                result.log_messages.push_back(QCoreApplication::translate("MainWindow.Background", "Rejected path: ") + path_to_qstring(path));
             }
         }
 
@@ -240,7 +215,7 @@ void MainWindow::start_extraction(std::vector<ExtractionTarget> targets, Extract
         statusBar()->showMessage(QCoreApplication::translate("MainWindow.Background", "Nothing selected to extract"), 3000);
         return;
     }
-    if (m_extract_running) {
+    if (extraction_running()) {
         statusBar()->showMessage(QCoreApplication::translate("MainWindow.Background", "Extraction is already running"), 3000);
         return;
     }
@@ -271,12 +246,16 @@ void MainWindow::start_extraction(std::vector<ExtractionTarget> targets, Extract
     if (output_dir_text.isEmpty()) {
         return;
     }
+    const bool include_mux_outputs = m_extract_mux_outputs_action != nullptr &&
+        m_extract_mux_outputs_action->isChecked();
+    const bool render_acb_cues = m_extract_acb_cues_action != nullptr &&
+        m_extract_acb_cues_action->isChecked();
     const auto plan = extraction_plan_text_local(
         targets,
         mode,
         output_dir_text,
-        m_allow_mux_extract_outputs,
-        m_extract_acb_cue_outputs);
+        include_mux_outputs,
+        render_acb_cues);
     const auto answer = QMessageBox::question(
         this,
         mode == ExtractionMode::Raw ? QCoreApplication::translate("MainWindow.Background", "Raw Extraction Plan") : QCoreApplication::translate("MainWindow.Background", "Extraction Plan"),
@@ -301,11 +280,10 @@ void MainWindow::start_extraction(std::vector<ExtractionTarget> targets, Extract
         m_cancel_extraction_button->show();
     }
     statusBar()->showMessage(mode == ExtractionMode::Raw ? QCoreApplication::translate("MainWindow.Background", "Raw extraction running...") : QCoreApplication::translate("MainWindow.Background", "Extraction running..."));
-    m_extract_running = true;
     const auto keys = m_decryption_keys;
     ExtractionOptions options;
-    options.include_mux_outputs = m_allow_mux_extract_outputs;
-    options.render_acb_cues = m_extract_acb_cue_outputs;
+    options.include_mux_outputs = include_mux_outputs;
+    options.render_acb_cues = render_acb_cues;
     options.mux_audio_choice = mux_audio_choice.value_or(0);
     options.stop_token = m_extract_stop_source.get_token();
     if (options.include_mux_outputs) {
@@ -355,7 +333,7 @@ void MainWindow::start_extraction(std::vector<ExtractionTarget> targets, Extract
             }
             const auto report_name = QStringLiteral("cristudio_extraction_report_%1.txt")
                 .arg(QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMddTHHmmssZ")));
-            const auto report_path = output_dir / qt_to_utf8_local(report_name);
+            const auto report_path = output_dir / qstring_to_utf8(report_name);
             QFile report_file(path_to_qstring(report_path));
             if (report_file.open(QIODevice::WriteOnly | QIODevice::Text)) {
                 QTextStream stream(&report_file);
@@ -400,7 +378,7 @@ void MainWindow::start_extraction(std::vector<ExtractionTarget> targets, Extract
                 report_file.flush();
                 combined.diagnostic_path = report_path;
             } else {
-                combined.messages.push_back(cristudio::i18n::translate_utf8("MainWindow.Background", "Could not write extraction report: ") + qt_to_utf8_local(report_file.errorString()));
+                combined.messages.push_back(cristudio::i18n::translate_utf8("MainWindow.Background", "Could not write extraction report: ") + qstring_to_utf8(report_file.errorString()));
             }
             write_live_log(
                 QCoreApplication::translate("MainWindow.Background", "Extraction %1: %2 extracted, %3 failed, %4 total")
@@ -419,7 +397,7 @@ void MainWindow::start_extraction(std::vector<ExtractionTarget> targets, Extract
 }
 
 void MainWindow::cancel_extraction() {
-    if (!m_extract_running || m_extract_stop_source.stop_requested()) {
+    if (!extraction_running() || m_extract_stop_source.stop_requested()) {
         return;
     }
     m_extract_stop_source.request_stop();
@@ -433,13 +411,13 @@ void MainWindow::cancel_extraction() {
 }
 
 void MainWindow::poll_background_work() {
-    if (m_load_running) {
+    if (load_running()) {
         update_loading_indicator();
     }
-    if (m_extract_running) {
+    if (extraction_running()) {
         update_extraction_indicator();
     }
-    if (!m_load_running && !m_extract_running) {
+    if (!load_running() && !extraction_running()) {
         m_work_timer->stop();
     }
 }
@@ -481,7 +459,6 @@ void MainWindow::update_extraction_indicator() {
 
 void MainWindow::consume_load_result() {
     auto result = m_load_watcher->future().takeResult();
-    m_load_running = false;
     update_loading_indicator();
     if (m_drop_active_load_result) {
         m_drop_active_load_result = false;
@@ -551,14 +528,13 @@ void MainWindow::start_document_materialization(int row) {
     if (canonical.isEmpty()) {
         return;
     }
-    if (m_materialize_running) {
+    if (materialization_running()) {
         if (canonical != m_materialize_canonical_path) {
             m_pending_materialize_canonical_path = canonical;
         }
         return;
     }
 
-    m_materialize_running = true;
     m_materialize_canonical_path = canonical;
     m_pending_materialize_canonical_path.clear();
     const auto request_id = ++m_materialize_request_id;
@@ -577,7 +553,6 @@ void MainWindow::start_document_materialization(int row) {
 
 void MainWindow::consume_materialize_result() {
     auto result = m_materialize_watcher->future().takeResult();
-    m_materialize_running = false;
     m_materialize_canonical_path.clear();
 
     const auto row = m_file_model == nullptr ? -1 : m_file_model->index_of_path(result.canonical_path);
@@ -613,7 +588,6 @@ void MainWindow::consume_materialize_result() {
 
 void MainWindow::consume_extract_result() {
     auto report = m_extract_watcher->future().takeResult();
-    m_extract_running = false;
     update_extraction_indicator();
     if (!report.messages_logged_live) {
         for (const auto& message : report.messages) {

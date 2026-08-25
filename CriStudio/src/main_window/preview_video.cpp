@@ -39,28 +39,20 @@
 namespace cristudio {
 
 void MainWindow::start_document_video_preview(const LoadedDocument& document) {
-    if (m_preview_running || !is_video_document(document)) {
+    if (preview_running() || !is_video_document(document)) {
         return;
     }
 
     m_current_preview_entry = std::nullopt;
     set_preview_entry_actions_visible(false);
-    if (m_toggle_preview_action != nullptr) {
-        m_toggle_preview_action->setChecked(true);
-    }
-    if (m_preview_panel_button != nullptr) {
-        m_preview_panel_button->setChecked(true);
-    }
-    toggle_preview_panel();
     show_preview_document(document);
 
     const auto request_id = m_preview_request_id;
-    show_pending_media_preview(QCoreApplication::translate("MainWindow.PreviewVideo", "Loading video preview..."));
+    show_media_preview_message(QCoreApplication::translate("MainWindow.PreviewVideo", "Loading video preview..."));
     append_log(QCoreApplication::translate("MainWindow.PreviewVideo", "Video preview started [%1]: %2")
         .arg(request_id)
         .arg(path_to_qstring(document.path)));
 
-    m_preview_running = true;
     m_preview_watcher->setFuture(QtConcurrent::run([document, request_id] {
         const auto stage = QCoreApplication::translate("MainWindow.PreviewVideo", "validating the video stream with ffmpeg");
         try {
@@ -191,13 +183,9 @@ void MainWindow::configure_video_preview(const VideoPreview& video) {
     reset_audio_preview();
     m_video_temp_dir = video.temporary_directory;
     if (!ensure_media_backend()) {
-        show_unavailable_media_preview(QCoreApplication::translate("MainWindow.PreviewVideo", "Video preview backend is unavailable"));
+        show_media_preview_message(QCoreApplication::translate("MainWindow.PreviewVideo", "Video preview backend is unavailable"));
         return;
     }
-    if (m_video_widget == nullptr) {
-        return;
-    }
-
     auto playback_note = utf8_to_qstring(video.format);
     m_preview_duration_ms = static_cast<qint64>(std::min<uint64_t>(
         video.duration_ms,
@@ -205,12 +193,12 @@ void MainWindow::configure_video_preview(const VideoPreview& video) {
     ));
 
     if (!video.playable_path.empty()) {
-        m_audio_source_path = to_qstring(video.playable_path);
+        m_audio_source_path = path_to_qstring(video.playable_path);
     } else if (!video.video_bytes.empty()) {
         m_audio_temp_dir = std::make_unique<QTemporaryDir>();
         if (!m_audio_temp_dir->isValid()) {
-            m_audio_status_label->setText(QCoreApplication::translate("MainWindow.PreviewVideo", "Could not create temporary video preview directory"));
-            fade_widget_in(m_audio_panel);
+            m_media.status_label->setText(QCoreApplication::translate("MainWindow.PreviewVideo", "Could not create temporary video preview directory"));
+            fade_widget_in(m_media.panel);
             return;
         }
 
@@ -220,8 +208,8 @@ void MainWindow::configure_video_preview(const VideoPreview& video) {
         const auto output_path = m_audio_temp_dir->filePath(QStringLiteral("preview") + suffix);
         QFile output(output_path);
         if (!output.open(QIODevice::WriteOnly)) {
-            m_audio_status_label->setText(QCoreApplication::translate("MainWindow.PreviewVideo", "Could not write temporary video preview"));
-            fade_widget_in(m_audio_panel);
+            m_media.status_label->setText(QCoreApplication::translate("MainWindow.PreviewVideo", "Could not write temporary video preview"));
+            fade_widget_in(m_media.panel);
             return;
         }
         output.write(reinterpret_cast<const char*>(video.video_bytes.data()), static_cast<qsizetype>(video.video_bytes.size()));
@@ -233,45 +221,29 @@ void MainWindow::configure_video_preview(const VideoPreview& video) {
     }
 
     if (m_audio_source_path.isEmpty()) {
-        m_audio_status_label->setText(video.note.empty()
+        m_media.status_label->setText(video.note.empty()
             ? QCoreApplication::translate("MainWindow.PreviewVideo", "Video preview is unavailable")
             : utf8_to_qstring(video.note));
-        fade_widget_in(m_audio_panel);
+        fade_widget_in(m_media.panel);
         return;
     }
 
-    m_audio_player->setVideoOutput(m_video_widget);
+    m_audio_player->setVideoOutput(m_video.widget);
     m_audio_player->setSource(QUrl::fromLocalFile(m_audio_source_path));
     if (m_preview_duration_ms > 0) {
-        m_audio_progress->setRange(0, static_cast<int>(std::clamp<qint64>(
+        m_media.seek_slider->setRange(0, static_cast<int>(std::clamp<qint64>(
             m_preview_duration_ms,
             0,
             std::numeric_limits<int>::max()
         )));
     }
-    m_video_preview_active = true;
-    m_audio_play_button->setEnabled(true);
-    m_audio_progress->setEnabled(true);
-    if (m_audio_volume_label != nullptr) {
-        m_audio_volume_label->show();
-    }
-    if (m_audio_volume_slider != nullptr) {
-        m_audio_volume_slider->show();
-        m_audio_volume_slider->setEnabled(true);
-    }
-    m_audio_status_label->setText(playback_note);
-    update_audio_time_label();
-    if (m_video_container != nullptr) {
-        m_video_container->show();
-    }
-    m_video_widget->show();
-    fade_widget_in(m_audio_panel);
+    m_media.status_label->setText(playback_note);
+    m_video.frame->show();
+    m_video.widget->show();
+    show_playable_media_controls();
     m_nested_entry_view->hide();
     m_nested_image_scroll->hide();
     m_nested_body->hide();
-    if (m_preview_tabs != nullptr) {
-        m_preview_tabs->setCurrentIndex(0);
-    }
 }
 
 void MainWindow::release_video_preview_resources() {
@@ -290,12 +262,8 @@ void MainWindow::release_video_preview_resources() {
 }
 
 void MainWindow::recreate_video_widget() {
-    if (m_video_widget == nullptr || m_video_container == nullptr) {
-        return;
-    }
-
-    auto* old_widget = m_video_widget;
-    auto* box = qobject_cast<QVBoxLayout*>(m_video_container->layout());
+    auto* old_widget = m_video.widget;
+    auto* box = qobject_cast<QVBoxLayout*>(m_video.frame->layout());
     const auto index = box != nullptr ? box->indexOf(old_widget) : -1;
 
     old_widget->hide();
@@ -304,13 +272,13 @@ void MainWindow::recreate_video_widget() {
     }
     old_widget->deleteLater();
 
-    m_video_widget = new QVideoWidget(m_video_container);
-    m_video_widget->setMinimumHeight(260);
-    m_video_widget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    m_video_widget->setAspectRatioMode(Qt::KeepAspectRatio);
-    m_video_widget->hide();
+    m_video.widget = new QVideoWidget(m_video.frame);
+    m_video.widget->setMinimumHeight(260);
+    m_video.widget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    m_video.widget->setAspectRatioMode(Qt::KeepAspectRatio);
+    m_video.widget->hide();
     if (box != nullptr && index >= 0) {
-        box->insertWidget(index, m_video_widget);
+        box->insertWidget(index, m_video.widget);
     }
 }
 

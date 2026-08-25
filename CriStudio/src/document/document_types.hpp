@@ -175,12 +175,10 @@ struct EmbeddedPreview {
     std::optional<LoadedDocument> document;
     std::optional<AudioPreview> audio;
     std::optional<VideoPreview> video;
-    std::string hex_dump;
     std::string message;
     std::vector<uint8_t> raw_preview_bytes;
     uint64_t raw_total_size = 0;
     std::vector<uint8_t> preview_bytes;
-    bool hex_truncated = false;
 };
 
 enum class ExtractionMode {

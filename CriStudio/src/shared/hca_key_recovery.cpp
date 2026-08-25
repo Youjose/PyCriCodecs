@@ -1,6 +1,7 @@
 #include "shared/i18n.hpp"
 #include "shared/hca_key_recovery.hpp"
 
+#include "path_text.hpp"
 #include "shared/embedded_entry_extractor.hpp"
 
 #include "acb_container.hpp"
@@ -25,13 +26,6 @@ struct CollectedHca {
     uint16_t subkey = 0;
     size_t group = 0;
 };
-
-[[nodiscard]] std::string lower_ascii(std::string text) {
-    std::ranges::transform(text, text.begin(), [](unsigned char value) {
-        return static_cast<char>(std::tolower(value));
-    });
-    return text;
-}
 
 [[nodiscard]] bool text_supports_hca(std::string text) {
     const auto lowered = lower_ascii(std::move(text));
@@ -301,32 +295,11 @@ bool supports_hca_key_recovery(const EntrySummary& entry) {
 }
 
 HcaRecoverySource make_hca_recovery_source(const LoadedDocument& document) {
-    return HcaRecoverySource{
-        .kind = HcaRecoverySource::Kind::Document,
-        .path = document.path,
-        .name = document.display_name,
-        .format = std::string(document_format_id(document)),
-        .loader_tag = document.loader_tag,
-    };
+    return recovery_source(document);
 }
 
 HcaRecoverySource make_hca_recovery_source(const EntrySummary& entry) {
-    EntrySummary compact{
-        .name = entry.name,
-        .source_path = entry.source_path,
-        .source_format = entry.source_format,
-        .source_index = entry.source_index,
-        .has_source = entry.has_source,
-        .nested_source_format = entry.nested_source_format,
-        .nested_source_index = entry.nested_source_index,
-        .has_nested_source = entry.has_nested_source,
-        .hca_subkey = entry.hca_subkey,
-    };
-    return HcaRecoverySource{
-        .kind = HcaRecoverySource::Kind::Entry,
-        .name = entry.name,
-        .entry = std::move(compact),
-    };
+    return recovery_source(compact_recovery_entry(entry));
 }
 
 std::expected<HcaKeyRecoveryResult, std::string> recover_hca_key(

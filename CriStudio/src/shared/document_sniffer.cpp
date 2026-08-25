@@ -201,14 +201,6 @@ std::vector<std::string> sniff_format_order_impl(
 
 } // namespace
 
-std::string lower_ascii(std::string_view text) {
-    std::string lowered(text);
-    std::ranges::transform(lowered, lowered.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    return lowered;
-}
-
 bool has_acx_header(std::span<const uint8_t> bytes) {
     return has_acx_table(bytes, bytes.size());
 }
@@ -318,12 +310,14 @@ std::vector<std::string> sniff_embedded_format_order(
 ) {
     auto order = sniff_format_order(bytes);
 
-    const auto lower_source = lower_ascii(
+    auto lower_source =
         std::string(name) + " " +
         std::string(type) + " " +
         std::string(source_format) + " " +
-        std::string(nested_source_format)
-    );
+        std::string(nested_source_format);
+    std::ranges::transform(lower_source, lower_source.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
     if (order.empty() && lower_source.find("sbt") != std::string::npos) {
         order.push_back("sbt");
     }

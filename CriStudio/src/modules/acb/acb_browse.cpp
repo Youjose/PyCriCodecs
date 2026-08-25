@@ -9,23 +9,6 @@
 #include <utility>
 
 namespace cristudio::modules::acb {
-namespace {
-
-EntrySummary sourced_entry(
-    EntrySummary entry,
-    const std::filesystem::path& source_path,
-    std::string source_format,
-    uint32_t source_index
-) {
-    entry.source_path = source_path;
-    entry.source_format = std::move(source_format);
-    entry.source_index = source_index;
-    entry.has_source = true;
-    return entry;
-}
-
-} // namespace
-
 LoadedDocument summarize(const std::filesystem::path& path, const cricodecs::acb::AcbContainer& acb) {
     auto doc = base_document(path, cristudio::i18n::translate_utf8("Acb.AcbBrowse", "ACB cue sheet"));
     doc.info.push_back(translated_info_row("Acb.AcbBrowse", "Name", std::string(acb.name())));
@@ -56,7 +39,7 @@ LoadedDocument summarize(const std::filesystem::path& path, const cricodecs::acb
         const auto resolved_codec = acb.waveform_codec(i);
         const auto codec = std::string(cricodecs::awb::entry_codec_name(
             resolved_codec.value_or(cricodecs::awb::EntryCodec::Unknown)));
-        auto entry = sourced_entry({
+        auto entry = source_entry({
             acb.waveform_filename(i),
             codec,
             indexed_label("waveform", i),

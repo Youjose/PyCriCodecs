@@ -50,17 +50,6 @@
 #include <utility>
 
 namespace cristudio {
-namespace {
-
-[[nodiscard]] std::vector<uint8_t> read_prefix(const cricodecs::io::reader& reader) {
-    constexpr size_t prefix_size = 4096;
-    std::vector<uint8_t> prefix(std::min(prefix_size, reader.size()));
-    const auto count = reader.read_at(0, prefix);
-    prefix.resize(count);
-    return prefix;
-}
-
-} // namespace
 
 void MainWindow::start_entry_preview(EntrySummary entry) {
     start_entry_preview_now(std::move(entry));
@@ -76,50 +65,7 @@ void MainWindow::start_entry_preview_now(EntrySummary entry) {
     m_document_raw_path.reset();
     m_current_preview_entry = entry;
     set_preview_entry_actions_visible(entry.has_source);
-    if (m_preview_running) {
-        ++m_preview_request_id;
-        m_pending_preview_entry = entry;
-        if (m_toggle_preview_action != nullptr) {
-            m_toggle_preview_action->setChecked(true);
-        }
-        if (m_preview_panel_button != nullptr) {
-            m_preview_panel_button->setChecked(true);
-        }
-        toggle_preview_panel();
-        m_nested_title->setText(archive_basename(strip_mux_prefix(utf8_to_qstring(entry.name))));
-        m_nested_subtitle->setText(utf8_to_qstring(entry.type.empty() ? entry.source_format : entry.type));
-        populate_entry_preview_metadata(entry);
-        update_preview_key_panel(entry);
-        m_nested_image_scroll->hide();
-        m_nested_source_pixmap = {};
-        m_nested_entry_model->clear();
-        m_nested_entry_view->hide();
-        m_nested_body->setMaximumHeight(QWIDGETSIZE_MAX);
-        reset_audio_preview();
-        if (m_preview_tabs != nullptr) {
-            m_preview_tabs->setTabEnabled(0, true);
-            m_preview_tabs->setCurrentIndex(0);
-            m_preview_tabs->show();
-        }
-        if (m_raw_hex != nullptr) {
-            m_raw_hex->clear_bytes();
-        }
-        if (m_preview_tabs != nullptr) {
-            m_preview_tabs->setTabEnabled(1, false);
-        }
-        show_pending_media_preview(QCoreApplication::translate("MainWindow.PreviewPanel", "Loading preview..."));
-        return;
-    }
-
-    m_pending_preview_entry = std::nullopt;
-    const auto request_id = ++m_preview_request_id;
-    if (m_toggle_preview_action != nullptr) {
-        m_toggle_preview_action->setChecked(true);
-    }
-    if (m_preview_panel_button != nullptr) {
-        m_preview_panel_button->setChecked(true);
-    }
-    toggle_preview_panel();
+    open_preview_panel();
     m_nested_title->setText(archive_basename(strip_mux_prefix(utf8_to_qstring(entry.name))));
     m_nested_subtitle->setText(utf8_to_qstring(entry.type.empty() ? entry.source_format : entry.type));
     populate_entry_preview_metadata(entry);
@@ -128,35 +74,30 @@ void MainWindow::start_entry_preview_now(EntrySummary entry) {
     m_nested_source_pixmap = {};
     m_nested_entry_model->clear();
     m_nested_entry_view->hide();
+    m_nested_body->setMaximumHeight(QWIDGETSIZE_MAX);
+    reset_audio_preview();
     if (m_raw_hex != nullptr) {
         m_raw_hex->clear_bytes();
     }
     if (m_preview_tabs != nullptr) {
         m_preview_tabs->setTabEnabled(0, true);
         m_preview_tabs->setTabEnabled(1, false);
-        m_preview_tabs->setCurrentIndex(0);
-    }
-    if (m_video_container != nullptr) {
-        m_video_container->hide();
-    }
-    m_nested_body->setMaximumHeight(QWIDGETSIZE_MAX);
-    reset_audio_preview();
-    if (m_preview_tabs != nullptr) {
         m_preview_tabs->setCurrentIndex(0);
         m_preview_tabs->show();
     }
-    if (m_raw_hex != nullptr) {
-        m_raw_hex->clear_bytes();
+    show_media_preview_message(QCoreApplication::translate("MainWindow.PreviewPanel", "Loading preview..."));
+
+    if (preview_running()) {
+        ++m_preview_request_id;
+        m_pending_preview_entry = std::move(entry);
+        return;
     }
-    if (m_preview_tabs != nullptr) {
-        m_preview_tabs->setTabEnabled(0, true);
-        m_preview_tabs->setTabEnabled(1, false);
-    }
-    show_pending_media_preview(QCoreApplication::translate("MainWindow.PreviewPanel", "Loading preview..."));
+
+    m_pending_preview_entry = std::nullopt;
+    const auto request_id = ++m_preview_request_id;
     append_log(QCoreApplication::translate("MainWindow.PreviewPanel", "Entry preview started [%1]: %2")
         .arg(request_id)
         .arg(utf8_to_qstring(entry.name)));
-    m_preview_running = true;
     auto keys = m_decryption_keys;
     m_preview_watcher->setFuture(QtConcurrent::run([entry, request_id, keys = std::move(keys)] {
         auto stage = QCoreApplication::translate("MainWindow.PreviewPanel", "extracting and identifying the embedded entry");
@@ -176,7 +117,6 @@ void MainWindow::start_entry_preview_now(EntrySummary entry) {
                     result.video = std::move(*preview.video);
                 }
                 result.message = QString::fromStdString(preview.message);
-                result.hex_dump = QString::fromStdString(preview.hex_dump);
                 if (!preview.raw_preview_bytes.empty()) {
                     result.raw_bytes = QByteArray(
                         reinterpret_cast<const char*>(preview.raw_preview_bytes.data()),
@@ -190,7 +130,6 @@ void MainWindow::start_entry_preview_now(EntrySummary entry) {
                         static_cast<qsizetype>(preview.preview_bytes.size())
                     );
                 }
-                result.hex_truncated = preview.hex_truncated;
                 return result;
             };
 
@@ -251,13 +190,7 @@ void MainWindow::show_entry_inspector(const EntrySummary& entry) {
     m_document_raw_reader.reset();
     m_document_raw_path.reset();
     set_preview_entry_actions_visible(false);
-    if (m_toggle_preview_action != nullptr) {
-        m_toggle_preview_action->setChecked(true);
-    }
-    if (m_preview_panel_button != nullptr) {
-        m_preview_panel_button->setChecked(true);
-    }
-    toggle_preview_panel();
+    open_preview_panel();
 
     reset_audio_preview();
     release_video_preview_resources();
@@ -326,7 +259,6 @@ void MainWindow::consume_preview_result() {
         result.request_id = m_preview_request_id;
         result.message = QCoreApplication::translate("MainWindow.PreviewPanel", "Preview failed with an unknown exception");
     }
-    m_preview_running = false;
 
     const auto discard_result_files = [&result] {
         if (result.video) {
@@ -375,7 +307,7 @@ void MainWindow::consume_preview_result() {
 
     const auto preview_succeeded = result.audio.has_value() || result.video.has_value() ||
         (result.mux.has_value() && !result.mux->playable_path.empty()) ||
-        result.document.has_value() || !result.hex_dump.isEmpty();
+        result.document.has_value() || !result.raw_bytes.isEmpty();
     if (!result.message.isEmpty() && !is_low_signal_loader_message(result.message)) {
         append_log(QCoreApplication::translate("MainWindow.PreviewPanel", "Preview result [%1]: %2").arg(result.request_id).arg(result.message));
     } else if (preview_succeeded) {
@@ -388,20 +320,10 @@ void MainWindow::consume_preview_result() {
                 reinterpret_cast<const uint8_t*>(result.raw_bytes.constData()),
                 static_cast<size_t>(result.raw_bytes.size())
             );
-            m_raw_hex->set_bytes(
-                bytes,
-                result.raw_total_size
-            );
             if (m_current_preview_entry.has_value()) {
-                std::string lazy_format = m_current_preview_entry->type.empty()
-                    ? m_current_preview_entry->source_format
-                    : m_current_preview_entry->type;
-                if (!m_current_preview_entry->nested_source_format.empty()) {
-                    lazy_format += " ";
-                    lazy_format += m_current_preview_entry->nested_source_format;
-                }
-                m_raw_hex->set_lazy_format(lazy_format);
-                m_raw_hex->set_patterns(infer_entry_hex_patterns(*m_current_preview_entry, result.raw_total_size, bytes));
+                m_raw_hex->set_source(bytes, result.raw_total_size, *m_current_preview_entry);
+            } else {
+                m_raw_hex->set_source(bytes, result.raw_total_size);
             }
         } else if (m_current_preview_entry.has_value()) {
             m_raw_hex->clear_bytes();
@@ -429,7 +351,7 @@ void MainWindow::consume_preview_result() {
         }
         configure_mux_preview(*result.mux);
         if (!result.message.isEmpty() && result.mux->playable_path.empty()) {
-            m_audio_status_label->setText(result.message);
+            m_media.status_label->setText(result.message);
         }
     } else if (result.document && is_mux_document(*result.document) && !result.message.isEmpty()) {
         m_nested_title->setText(archive_basename(utf8_to_qstring(result.document->display_name)));
@@ -437,7 +359,7 @@ void MainWindow::consume_preview_result() {
         populate_info_grid(m_nested_info_grid, result.document->info);
         update_preview_key_panel(&*result.document);
         reset_audio_preview();
-        show_unavailable_media_preview(result.message);
+        show_media_preview_message(result.message);
     } else if (result.document) {
         show_preview_document(*result.document);
         if (result.audio) {
@@ -445,10 +367,10 @@ void MainWindow::consume_preview_result() {
         } else if (result.video) {
             configure_video_preview(*result.video);
         } else if (is_audio_document(*result.document) && !result.message.isEmpty()) {
-            fade_widget_in(m_audio_panel);
-            m_audio_play_button->setEnabled(false);
-            m_audio_progress->setEnabled(false);
-            m_audio_status_label->setText(result.message);
+            fade_widget_in(m_media.panel);
+            m_media.play_button->setEnabled(false);
+            m_media.seek_slider->setEnabled(false);
+            m_media.status_label->setText(result.message);
             m_nested_body->hide();
         }
     } else if (result.video) {
@@ -465,7 +387,7 @@ void MainWindow::consume_preview_result() {
         }
         m_nested_image_scroll->hide();
         configure_audio_preview(*result.audio);
-    } else if (!result.hex_dump.isEmpty()) {
+    } else if (!result.raw_bytes.isEmpty()) {
         reset_audio_preview();
         if (!result.preview_bytes.isEmpty()) {
             QImage image;
@@ -497,7 +419,7 @@ void MainWindow::consume_preview_result() {
         if (!result.acb_cue_preview) {
             m_nested_subtitle->setText(QCoreApplication::translate("MainWindow.PreviewPanel", "Preview unavailable"));
         }
-        show_unavailable_media_preview(
+        show_media_preview_message(
             result.message.isEmpty()
                 ? QCoreApplication::translate("MainWindow.PreviewPanel", "Preview unavailable")
                 : result.message
@@ -642,7 +564,7 @@ void MainWindow::show_document(const LoadedDocument* document) {
             } else {
                 m_preview_tabs->setTabEnabled(0, true);
                 m_preview_tabs->setCurrentIndex(0);
-                show_pending_media_preview(QCoreApplication::translate("MainWindow.PreviewPanel", "Raw preview is unavailable for this file."));
+                show_media_preview_message(QCoreApplication::translate("MainWindow.PreviewPanel", "Raw preview is unavailable for this file."));
             }
         } else {
             m_preview_tabs->setCurrentIndex(0);
@@ -714,11 +636,7 @@ void MainWindow::prepare_document_raw_tab(const LoadedDocument& document) {
     m_document_raw_path = document.path;
 
     if (m_raw_hex != nullptr) {
-        m_raw_hex->set_reader(&*m_document_raw_reader);
-        m_raw_hex->set_lazy_format(std::string(document_format_id(document)));
-        const auto prefix = read_prefix(*m_document_raw_reader);
-        auto patterns = infer_document_hex_patterns(document, prefix);
-        m_raw_hex->set_patterns(std::move(patterns));
+        m_raw_hex->set_source(*m_document_raw_reader, document);
     }
     if (m_preview_tabs != nullptr) {
         m_preview_tabs->setTabEnabled(
@@ -737,13 +655,7 @@ void MainWindow::populate_document_raw_tab(const LoadedDocument& document, bool 
         return;
     }
 
-    if (m_toggle_preview_action != nullptr) {
-        m_toggle_preview_action->setChecked(true);
-    }
-    if (m_preview_panel_button != nullptr) {
-        m_preview_panel_button->setChecked(true);
-    }
-    toggle_preview_panel();
+    open_preview_panel();
     reset_audio_preview();
     release_video_preview_resources();
     set_preview_entry_actions_visible(false);
@@ -777,13 +689,7 @@ void MainWindow::show_preview_document(const LoadedDocument& document) {
     if (m_acb_cue_controls != nullptr) {
         m_acb_cue_controls->hide();
     }
-    if (m_toggle_preview_action != nullptr) {
-        m_toggle_preview_action->setChecked(true);
-    }
-    if (m_preview_panel_button != nullptr) {
-        m_preview_panel_button->setChecked(true);
-    }
-    toggle_preview_panel();
+    open_preview_panel();
     m_nested_title->setText(archive_basename(utf8_to_qstring(document.display_name)));
     const auto format = utf8_to_qstring(localized_document_format(document));
     m_nested_subtitle->setText(format);
@@ -817,7 +723,7 @@ void MainWindow::show_preview_document(const LoadedDocument& document) {
         m_nested_body->setVisible(is_audio);
         if (is_audio) {
             m_nested_body->setMaximumHeight(96);
-            show_pending_media_preview(QCoreApplication::translate("MainWindow.PreviewPanel", "Loading audio preview..."));
+            show_media_preview_message(QCoreApplication::translate("MainWindow.PreviewPanel", "Loading audio preview..."));
         }
     }
 }
@@ -875,120 +781,41 @@ void MainWindow::clear_preview_panel() {
     }
 }
 
-void MainWindow::show_pending_media_preview(const QString& message) {
-    if (m_video_widget != nullptr) {
-        m_video_widget->hide();
-    }
-    if (m_video_container != nullptr) {
-        m_video_container->hide();
-    }
-    if (m_mux_audio_row != nullptr) {
-        m_mux_audio_row->hide();
-    }
-    if (m_mux_subtitle_row != nullptr) {
-        m_mux_subtitle_row->hide();
-    }
-    if (m_audio_loop_row != nullptr) {
-        m_audio_loop_row->hide();
-    }
-    if (m_audio_play_button != nullptr) {
-        m_audio_play_button->setVisible(true);
-        m_audio_play_button->setEnabled(false);
-        m_audio_play_button->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
-        m_audio_play_button->setText(QCoreApplication::translate("MainWindow.PreviewPanel", "Play"));
-    }
-    if (m_audio_progress != nullptr) {
-        m_audio_progress->setVisible(true);
-        m_audio_progress->setRange(0, 0);
-        m_audio_progress->setValue(0);
-        m_audio_progress->setEnabled(false);
-    }
-    if (m_audio_time_label != nullptr) {
-        m_audio_time_label->setVisible(true);
-        m_audio_time_label->setText(QStringLiteral("0:00 / 0:00"));
-    }
-    if (m_audio_volume_label != nullptr) {
-        m_audio_volume_label->hide();
-    }
-    if (m_audio_volume_slider != nullptr) {
-        m_audio_volume_slider->hide();
-    }
-    if (m_audio_status_label != nullptr) {
-        m_audio_status_label->setText(message);
-    }
-    if (m_audio_panel != nullptr) {
-        fade_widget_in(m_audio_panel);
-    }
-    if (m_nested_entry_view != nullptr) {
-        m_nested_entry_view->hide();
-    }
-    if (m_nested_image_scroll != nullptr) {
-        m_nested_image_scroll->hide();
-    }
-    if (m_nested_body != nullptr) {
-        m_nested_body->hide();
-    }
-    if (m_preview_tabs != nullptr) {
-        m_preview_tabs->setCurrentIndex(0);
-    }
+void MainWindow::show_media_preview_message(const QString& message) {
+    m_video.widget->hide();
+    m_video.frame->hide();
+    m_media.audio_row->hide();
+    m_media.subtitle_row->hide();
+    m_media.loop_row->hide();
+    m_media.play_button->show();
+    m_media.play_button->setEnabled(false);
+    m_media.play_button->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
+    m_media.play_button->setText(QCoreApplication::translate("MainWindow.PreviewPanel", "Play"));
+    m_media.seek_slider->show();
+    m_media.seek_slider->setRange(0, 0);
+    m_media.seek_slider->setValue(0);
+    m_media.seek_slider->setEnabled(false);
+    m_media.time_label->show();
+    m_media.time_label->setText(QStringLiteral("0:00 / 0:00"));
+    m_media.volume_label->hide();
+    m_media.volume_slider->hide();
+    m_media.status_label->setText(message);
+    fade_widget_in(m_media.panel);
+    m_nested_entry_view->hide();
+    m_nested_image_scroll->hide();
+    m_nested_body->hide();
+    m_preview_tabs->setCurrentIndex(0);
 }
 
-void MainWindow::show_unavailable_media_preview(const QString& message) {
-    if (m_video_widget != nullptr) {
-        m_video_widget->hide();
-    }
-    if (m_video_container != nullptr) {
-        m_video_container->hide();
-    }
-    if (m_mux_audio_row != nullptr) {
-        m_mux_audio_row->hide();
-    }
-    if (m_mux_subtitle_row != nullptr) {
-        m_mux_subtitle_row->hide();
-    }
-    if (m_audio_loop_row != nullptr) {
-        m_audio_loop_row->hide();
-    }
-    if (m_audio_play_button != nullptr) {
-        m_audio_play_button->setVisible(true);
-        m_audio_play_button->setEnabled(false);
-        m_audio_play_button->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
-        m_audio_play_button->setText(QCoreApplication::translate("MainWindow.PreviewPanel", "Play"));
-    }
-    if (m_audio_progress != nullptr) {
-        m_audio_progress->setVisible(true);
-        m_audio_progress->setRange(0, 0);
-        m_audio_progress->setValue(0);
-        m_audio_progress->setEnabled(false);
-    }
-    if (m_audio_time_label != nullptr) {
-        m_audio_time_label->setVisible(true);
-        m_audio_time_label->setText(QStringLiteral("0:00 / 0:00"));
-    }
-    if (m_audio_volume_label != nullptr) {
-        m_audio_volume_label->hide();
-    }
-    if (m_audio_volume_slider != nullptr) {
-        m_audio_volume_slider->hide();
-    }
-    if (m_audio_status_label != nullptr) {
-        m_audio_status_label->setText(message);
-    }
-    if (m_audio_panel != nullptr) {
-        fade_widget_in(m_audio_panel);
-    }
-    if (m_nested_entry_view != nullptr) {
-        m_nested_entry_view->hide();
-    }
-    if (m_nested_image_scroll != nullptr) {
-        m_nested_image_scroll->hide();
-    }
-    if (m_nested_body != nullptr) {
-        m_nested_body->hide();
-    }
-    if (m_preview_tabs != nullptr) {
-        m_preview_tabs->setCurrentIndex(0);
-    }
+void MainWindow::show_playable_media_controls() {
+    m_media.play_button->setEnabled(true);
+    m_media.seek_slider->setEnabled(true);
+    m_media.volume_label->show();
+    m_media.volume_slider->show();
+    m_media.volume_slider->setEnabled(true);
+    update_audio_time_label();
+    fade_widget_in(m_media.panel);
+    m_preview_tabs->setCurrentIndex(0);
 }
 
 void MainWindow::toggle_preview_panel() {
@@ -1032,6 +859,16 @@ void MainWindow::toggle_preview_panel() {
         m_nested_panel->hide();
     }
     schedule_position_edge_buttons();
+}
+
+void MainWindow::open_preview_panel() {
+    if (m_toggle_preview_action != nullptr) {
+        m_toggle_preview_action->setChecked(true);
+    }
+    if (m_preview_panel_button != nullptr) {
+        m_preview_panel_button->setChecked(true);
+    }
+    toggle_preview_panel();
 }
 
 void MainWindow::refresh_current_preview() {
@@ -1133,7 +970,7 @@ void MainWindow::populate_info_grid(QGridLayout* grid, const std::vector<InfoRow
     }
 
     if (rows.empty()) {
-        grid->addWidget(make_dim_label(QCoreApplication::translate("MainWindow.PreviewPanel", "No metadata")), 0, 0);
+        grid->addWidget(dim_label(QCoreApplication::translate("MainWindow.PreviewPanel", "No metadata")), 0, 0);
         return;
     }
 
@@ -1149,15 +986,15 @@ void MainWindow::populate_info_grid(QGridLayout* grid, const std::vector<InfoRow
                 ++row;
                 slot = 0;
             }
-            grid->addWidget(make_dim_label(label), row, 0);
-            grid->addWidget(make_value_label(value), row, 1, 1, 3);
+            grid->addWidget(dim_label(label), row, 0);
+            grid->addWidget(value_label(value), row, 1, 1, 3);
             ++row;
             continue;
         }
 
         const auto column = slot * 2;
-        grid->addWidget(make_dim_label(label), row, column);
-        grid->addWidget(make_value_label(value), row, column + 1);
+        grid->addWidget(dim_label(label), row, column);
+        grid->addWidget(value_label(value), row, column + 1);
         ++slot;
         if (slot == 2) {
             slot = 0;

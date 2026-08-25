@@ -17,6 +17,7 @@ namespace cristudio {
 [[nodiscard]] std::string lower_extension_text(std::string_view name);
 [[nodiscard]] std::string bool_text(bool value);
 [[nodiscard]] std::string number(uint64_t value);
+[[nodiscard]] std::string hex_number(uint64_t value);
 [[nodiscard]] std::string byte_count(uint64_t value);
 [[nodiscard]] std::string indexed_label(std::string_view label, uint64_t value);
 [[nodiscard]] std::string float_text(float value);
@@ -46,5 +47,10 @@ namespace cristudio {
 
 void add_source_info(LoadedDocument& doc);
 [[nodiscard]] LoadedDocument base_document(const std::filesystem::path& path, std::string format);
+[[nodiscard]] EntrySummary source_entry(
+    EntrySummary entry,
+    const std::filesystem::path& source_path,
+    std::string source_format,
+    uint32_t source_index);
 
 } // namespace cristudio

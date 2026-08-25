@@ -1,5 +1,6 @@
 #include "modules/utf/utf_edit_ui.hpp"
 
+#include "editor/editor_helpers.hpp"
 #include "modules/utf/utf_edit.hpp"
 #include "path_text.hpp"
 
@@ -19,20 +20,6 @@
 
 namespace cristudio::modules::utf {
 namespace {
-
-std::string qstring_to_utf8(const QString& text) {
-    const auto utf8 = text.toUtf8();
-    return std::string(utf8.constData(), static_cast<size_t>(utf8.size()));
-}
-
-QString bytes_to_hex(std::span<const uint8_t> bytes) {
-    QString out;
-    out.reserve(static_cast<qsizetype>(bytes.size() * 2));
-    for (const auto byte : bytes) {
-        out += QStringLiteral("%1").arg(byte, 2, 16, QLatin1Char('0'));
-    }
-    return out.toUpper();
-}
 
 } // namespace
 

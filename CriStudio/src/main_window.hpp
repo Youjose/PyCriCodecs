@@ -1,6 +1,7 @@
 #pragma once
 
 #include "document_loader.hpp"
+#include "editor/editor_widgets.hpp"
 #include "entry_table_model.hpp"
 #include "file_list_model.hpp"
 #include "io_reader.hpp"
@@ -39,14 +40,12 @@ class QLabel;
 class QGridLayout;
 class QLineEdit;
 class QListView;
-class QListWidget;
 class QMenu;
 class QMediaPlayer;
 class QObject;
 class QPlainTextEdit;
 class QPoint;
 class QProgressBar;
-class QSlider;
 class QScrollArea;
 class QShowEvent;
 class QSplitter;
@@ -117,6 +116,11 @@ private:
     void retranslate_ui();
     void apply_pending_language();
     void sync_language_actions();
+    [[nodiscard]] bool load_running() const;
+    [[nodiscard]] bool extraction_running() const;
+    [[nodiscard]] bool materialization_running() const;
+    [[nodiscard]] bool preview_running() const;
+    [[nodiscard]] bool key_recovery_running() const;
     void open_files();
     void open_folder();
     void new_utf_editor_document();
@@ -176,8 +180,8 @@ private:
     void configure_audio_preview(const AudioPreview& audio);
     void configure_video_preview(const VideoPreview& video);
     void configure_mux_preview(const MuxPreview& mux);
-    void show_pending_media_preview(const QString& message);
-    void show_unavailable_media_preview(const QString& message);
+    void show_media_preview_message(const QString& message);
+    void show_playable_media_controls();
     void release_video_preview_resources();
     void recreate_video_widget();
     void reset_audio_preview();
@@ -187,6 +191,7 @@ private:
     void set_preview_image(const QImage& image);
     void update_preview_image();
     void toggle_left_panel();
+    void open_preview_panel();
     void toggle_preview_panel();
     void clear_loaded_files();
     void unload_selected_files();
@@ -309,11 +314,9 @@ private:
         std::optional<VideoPreview> video = std::nullopt;
         std::optional<MuxPreview> mux = std::nullopt;
         QString message;
-        QString hex_dump;
         QByteArray raw_bytes;
         uint64_t raw_total_size = 0;
         QByteArray preview_bytes;
-        bool hex_truncated = false;
         bool acb_cue_preview = false;
         uint64_t request_id = 0;
     };
@@ -446,29 +449,13 @@ private:
     QToolButton* m_preview_recover_adx_key_button = nullptr;
     QToolButton* m_preview_recover_aac_key_button = nullptr;
     QTabWidget* m_preview_tabs = nullptr;
-    QWidget* m_preview_tab = nullptr;
-    QPlainTextEdit* m_raw_body = nullptr;
     HexPreviewWidget* m_raw_hex = nullptr;
-    QWidget* m_video_container = nullptr;
     QScrollArea* m_nested_image_scroll = nullptr;
     QLabel* m_nested_image = nullptr;
     QTreeView* m_nested_entry_view = nullptr;
     QPlainTextEdit* m_nested_body = nullptr;
-    QVideoWidget* m_video_widget = nullptr;
-    QWidget* m_audio_panel = nullptr;
-    QWidget* m_mux_audio_row = nullptr;
-    QComboBox* m_mux_audio_combo = nullptr;
-    QWidget* m_mux_subtitle_row = nullptr;
-    QComboBox* m_mux_subtitle_combo = nullptr;
-    QToolButton* m_audio_play_button = nullptr;
-    QWidget* m_audio_loop_row = nullptr;
-    QCheckBox* m_audio_loop_toggle = nullptr;
-    QListWidget* m_audio_loop_list = nullptr;
-    QSlider* m_audio_progress = nullptr;
-    QLabel* m_audio_time_label = nullptr;
-    QLabel* m_audio_status_label = nullptr;
-    QLabel* m_audio_volume_label = nullptr;
-    QSlider* m_audio_volume_slider = nullptr;
+    VideoDisplay m_video;
+    MediaControls m_media;
     QMediaPlayer* m_audio_player = nullptr;
     QAudioOutput* m_audio_output = nullptr;
     QPixmap m_nested_source_pixmap;
@@ -513,43 +500,33 @@ private:
     QTimer* m_memory_usage_timer = nullptr;
     QFutureWatcher<LoadResult>* m_load_watcher = nullptr;
     std::shared_ptr<LoadProgress> m_load_progress;
-    bool m_load_running = false;
     bool m_drop_active_load_result = false;
     std::vector<std::filesystem::path> m_queued_load_paths;
     QFutureWatcher<ExtractionReport>* m_extract_watcher = nullptr;
     std::shared_ptr<ExtractionProgress> m_extract_progress;
-    bool m_extract_running = false;
     std::stop_source m_extract_stop_source;
     QFutureWatcher<HcaKeyRecoveryTaskResult>* m_hca_key_recovery_watcher = nullptr;
-    bool m_hca_key_recovery_running = false;
     uint64_t m_hca_key_recovery_request_id = 0;
     std::stop_source m_hca_key_recovery_stop_source;
     QFutureWatcher<UsmKeyRecoveryTaskResult>* m_usm_key_recovery_watcher = nullptr;
-    bool m_usm_key_recovery_running = false;
     uint64_t m_usm_key_recovery_request_id = 0;
     QFutureWatcher<AdxKeyRecoveryTaskResult>* m_adx_key_recovery_watcher = nullptr;
-    bool m_adx_key_recovery_running = false;
     uint64_t m_adx_key_recovery_request_id = 0;
     QFutureWatcher<AacKeyRecoveryTaskResult>* m_aac_key_recovery_watcher = nullptr;
-    bool m_aac_key_recovery_running = false;
     uint64_t m_aac_key_recovery_request_id = 0;
     QFutureWatcher<MaterializeResult>* m_materialize_watcher = nullptr;
-    bool m_materialize_running = false;
     uint64_t m_materialize_request_id = 0;
     QString m_materialize_canonical_path;
     QString m_pending_materialize_canonical_path;
     QFutureWatcher<PreviewResult>* m_preview_watcher = nullptr;
-    bool m_preview_running = false;
     uint64_t m_preview_request_id = 0;
     bool m_audio_slider_dragging = false;
     bool m_audio_resume_after_seek = false;
     bool m_audio_loop_seeking = false;
-    uint64_t m_audio_sample_count = 0;
     uint32_t m_audio_sample_rate = 0;
     std::vector<AudioLoop> m_audio_loops;
     qint64 m_preview_duration_ms = 0;
     QString m_audio_source_path;
-    bool m_video_preview_active = false;
     std::filesystem::path m_video_temp_dir;
     std::vector<std::filesystem::path> m_deferred_video_temp_dirs;
     std::unique_ptr<QTemporaryDir> m_audio_temp_dir;
@@ -567,11 +544,8 @@ private:
     std::optional<cricodecs::io::reader> m_document_raw_reader = std::nullopt;
     std::optional<std::filesystem::path> m_document_raw_path = std::nullopt;
     bool m_skip_next_file_click_reload = false;
-    QString m_ffmpeg_executable;
-    bool m_ffmpeg_path_checked = false;
+    std::optional<QString> m_ffmpeg_executable;
     DecryptionKeys m_decryption_keys;
-    bool m_allow_mux_extract_outputs = true;
-    bool m_extract_acb_cue_outputs = false;
     KeyPanelKind m_doc_key_kind = KeyPanelKind::None;
     KeyPanelKind m_preview_key_kind = KeyPanelKind::None;
 };

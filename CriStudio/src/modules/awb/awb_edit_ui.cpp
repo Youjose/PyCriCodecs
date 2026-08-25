@@ -1,5 +1,6 @@
 #include "modules/awb/awb_edit_ui.hpp"
 
+#include "editor/editor_widgets.hpp"
 #include "editor/table_item_helpers.hpp"
 #include "modules/awb/awb_edit.hpp"
 #include "modules/ui_value_helpers.hpp"
@@ -25,25 +26,6 @@
 
 namespace cristudio::modules::awb {
 namespace {
-
-QLabel* dim_label(QString text, QWidget* parent) {
-    auto* label = new QLabel(std::move(text), parent);
-    label->setObjectName(QStringLiteral("DimLabel"));
-    label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    return label;
-}
-
-void bind_valid_inputs(QPushButton* accept, std::initializer_list<QLineEdit*> edits) {
-    const auto refresh = [accept, edits] {
-        accept->setEnabled(std::ranges::all_of(edits, [](const QLineEdit* edit) {
-            return edit->hasAcceptableInput();
-        }));
-    };
-    for (auto* edit : edits) {
-        QObject::connect(edit, &QLineEdit::textChanged, accept, [refresh](const QString&) { refresh(); });
-    }
-    refresh();
-}
 
 } // namespace
 
@@ -94,11 +76,9 @@ std::optional<uint64_t> choose_wave_id(
         current, 0, std::numeric_limits<uint64_t>::max(), &dialog, QCoreApplication::translate("Awb.AwbEditUi", "Wave ID"));
     form->addRow(QCoreApplication::translate("Awb.AwbEditUi", "Wave ID"), wave_id_edit);
     layout->addLayout(form);
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    auto* buttons = dialog_buttons(dialog);
     layout->addWidget(buttons);
-    bind_valid_inputs(buttons->button(QDialogButtonBox::Ok), {wave_id_edit});
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    bind_valid_inputs(*buttons->button(QDialogButtonBox::Ok), {wave_id_edit});
     if (dialog.exec() != QDialog::Accepted) {
         return std::nullopt;
     }
@@ -126,12 +106,10 @@ std::optional<BatchWaveIdOptions> choose_batch_wave_ids(QWidget* parent) {
     note->setWordWrap(true);
     layout->addWidget(note);
 
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    buttons->button(QDialogButtonBox::Ok)->setText(QCoreApplication::translate("Awb.AwbEditUi", "Assign"));
-    bind_valid_inputs(buttons->button(QDialogButtonBox::Ok), {start_edit, step_edit});
+    auto* buttons = dialog_buttons(
+        dialog, QCoreApplication::translate("Awb.AwbEditUi", "Assign"));
+    bind_valid_inputs(*buttons->button(QDialogButtonBox::Ok), {start_edit, step_edit});
     layout->addWidget(buttons);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     if (dialog.exec() != QDialog::Accepted) {
         return std::nullopt;
     }
@@ -200,10 +178,8 @@ std::optional<BuildOptions> choose_build_options(QWidget* parent, const cricodec
     note->setWordWrap(true);
     layout->addWidget(note);
 
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    auto* buttons = dialog_buttons(dialog);
     layout->addWidget(buttons);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     if (dialog.exec() != QDialog::Accepted) {
         return std::nullopt;
     }

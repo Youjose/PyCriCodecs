@@ -1,6 +1,7 @@
 #include "shared/i18n.hpp"
 #include "shared/mux_export_helpers.hpp"
 
+#include "main_window/preview_helpers.hpp"
 #include "path_text.hpp"
 
 #include <QDir>
@@ -11,38 +12,18 @@
 #include <QTemporaryDir>
 
 #include <algorithm>
-#include <cctype>
 #include <stop_token>
-#include <string_view>
+#include <utility>
 
 namespace cristudio {
 namespace {
 
-std::string ffmpeg_error_text(QProcess& process) {
+QString ffmpeg_error_text(QProcess& process) {
     auto text = QString::fromLocal8Bit(process.readAllStandardError()).trimmed();
     if (text.isEmpty()) {
         text = QString::fromLocal8Bit(process.readAllStandardOutput()).trimmed();
     }
-    return text.toStdString();
-}
-
-bool has_video_decode_error(std::string_view stderr_text) {
-    auto lower = std::string(stderr_text);
-    std::ranges::transform(lower, lower.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    return lower.find("failed to read frame header") != std::string::npos ||
-           lower.find("failed to read unit") != std::string::npos ||
-           lower.find("invalid value") != std::string::npos ||
-           lower.find("invalid le value") != std::string::npos ||
-           lower.find("invalid data found when processing input") != std::string::npos ||
-           lower.find("extra padding at end of superframe") != std::string::npos ||
-           lower.find("unexpected ffmpeg behavior") != std::string::npos ||
-           lower.find("not all references are available") != std::string::npos ||
-           lower.find("error submitting packet to decoder") != std::string::npos ||
-           lower.find("error processing packet in decoder") != std::string::npos ||
-           lower.find("error while decoding") != std::string::npos ||
-           lower.find("could not find codec parameters") != std::string::npos;
+    return text;
 }
 
 enum class StagedStream {
@@ -113,6 +94,21 @@ std::expected<void, std::string> write_staged_bytes(
     return {};
 }
 
+std::expected<void, std::string> write_staged_file(
+    const QString& path,
+    const char* bytes,
+    size_t size,
+    StagedStream stream,
+    std::stop_token stop_token,
+    QIODevice::OpenMode mode = QIODevice::WriteOnly
+) {
+    QFile file(path);
+    if (!file.open(mode)) {
+        return std::unexpected(staged_stream_error(stream, false, file.errorString()));
+    }
+    return write_staged_bytes(file, bytes, size, stream, stop_token);
+}
+
 std::expected<void, std::string> wait_for_process(
     QProcess& process,
     int timeout_ms,
@@ -180,6 +176,105 @@ std::expected<void, std::string> validate_mux_output_file(
 
 } // namespace
 
+std::expected<StagedMuxInputs, std::string> stage_mux_inputs(
+    const MuxPreview& mux,
+    const QString& directory,
+    std::stop_token stop_token
+) {
+    StagedMuxInputs inputs;
+    const QDir output_dir(directory);
+    const auto video_suffix = mux.video_suffix.empty()
+        ? QStringLiteral(".m2v")
+        : utf8_to_qstring(mux.video_suffix);
+    inputs.video_path = output_dir.filePath(QStringLiteral("video") + video_suffix);
+    if (auto result = write_staged_file(
+            inputs.video_path,
+            reinterpret_cast<const char*>(mux.video_bytes.data()),
+            mux.video_bytes.size(),
+            StagedStream::Video,
+            stop_token); !result) {
+        return std::unexpected(result.error());
+    }
+
+    if (!mux.audio_wav_bytes.empty()) {
+        inputs.audio_path = output_dir.filePath(QStringLiteral("audio.wav"));
+        if (auto result = write_staged_file(
+                inputs.audio_path,
+                reinterpret_cast<const char*>(mux.audio_wav_bytes.data()),
+                mux.audio_wav_bytes.size(),
+                StagedStream::Audio,
+                stop_token); !result) {
+            return std::unexpected(result.error());
+        }
+    }
+
+    inputs.subtitle_paths.reserve(static_cast<qsizetype>(mux.subtitle_choices.size()));
+    for (size_t index = 0; index < mux.subtitle_choices.size(); ++index) {
+        const auto& subtitle = mux.subtitle_choices[index];
+        auto path = output_dir.filePath(QStringLiteral("subtitle-%1.srt").arg(index));
+        if (auto result = write_staged_file(
+                path,
+                subtitle.srt_text.data(),
+                subtitle.srt_text.size(),
+                StagedStream::Subtitle,
+                stop_token,
+                QIODevice::WriteOnly | QIODevice::Text); !result) {
+            return std::unexpected(result.error());
+        }
+        inputs.subtitle_paths.push_back(std::move(path));
+    }
+    return inputs;
+}
+
+QStringList mux_copy_arguments(const MuxPreview& mux, const StagedMuxInputs& inputs) {
+    QStringList arguments{
+        QStringLiteral("-hide_banner"),
+        QStringLiteral("-loglevel"),
+        QStringLiteral("error"),
+        QStringLiteral("-y"),
+    };
+    if (mux.frame_rate_n != 0 && mux.frame_rate_d != 0) {
+        arguments << QStringLiteral("-r") << QStringLiteral("%1/%2").arg(mux.frame_rate_n).arg(mux.frame_rate_d);
+    }
+    if (!mux.ffmpeg_input_format.empty()) {
+        arguments << QStringLiteral("-f") << utf8_to_qstring(mux.ffmpeg_input_format);
+    }
+    arguments << QStringLiteral("-i") << inputs.video_path;
+    if (!inputs.audio_path.isEmpty()) {
+        arguments << QStringLiteral("-i") << inputs.audio_path;
+    }
+    for (const auto& subtitle_path : inputs.subtitle_paths) {
+        arguments << QStringLiteral("-i") << subtitle_path;
+    }
+
+    arguments << QStringLiteral("-map") << QStringLiteral("0:v:0");
+    if (!inputs.audio_path.isEmpty()) {
+        arguments << QStringLiteral("-map") << QStringLiteral("1:a:0");
+    }
+    const int subtitle_input_base = inputs.audio_path.isEmpty() ? 1 : 2;
+    for (int index = 0; index < inputs.subtitle_paths.size(); ++index) {
+        arguments << QStringLiteral("-map") << QStringLiteral("%1:0").arg(subtitle_input_base + index);
+    }
+    arguments << QStringLiteral("-c:v") << QStringLiteral("copy");
+    if (!inputs.audio_path.isEmpty()) {
+        arguments << QStringLiteral("-c:a") << QStringLiteral("copy");
+    }
+    if (!inputs.subtitle_paths.empty()) {
+        arguments << QStringLiteral("-c:s") << QStringLiteral("srt");
+        for (int index = 0; index < inputs.subtitle_paths.size(); ++index) {
+            arguments
+                << QStringLiteral("-metadata:s:s:%1").arg(index)
+                << QStringLiteral("title=language %1").arg(
+                    mux.subtitle_choices[static_cast<size_t>(index)].language_id);
+        }
+    }
+    arguments
+        << QStringLiteral("-max_interleave_delta") << QStringLiteral("0")
+        << QStringLiteral("-muxdelay") << QStringLiteral("0")
+        << QStringLiteral("-muxpreload") << QStringLiteral("0");
+    return arguments;
+}
+
 std::expected<void, std::string> write_mux_extract_file(
     const MuxPreview& mux,
     const std::filesystem::path& output_path,
@@ -201,110 +296,12 @@ std::expected<void, std::string> write_mux_extract_file(
         return std::unexpected(cristudio::i18n::translate_utf8("Shared.MuxExportHelpers", "could not create temporary mux extraction directory"));
     }
 
-    const auto video_suffix = mux.video_suffix.empty()
-        ? QStringLiteral(".m2v")
-        : utf8_to_qstring(mux.video_suffix);
-    const auto video_path = temp_dir.filePath(QStringLiteral("video") + video_suffix);
-    QFile video_file(video_path);
-    if (!video_file.open(QIODevice::WriteOnly)) {
-        return std::unexpected(cristudio::i18n::translate_utf8("Shared.MuxExportHelpers", "could not write temporary mux video stream"));
+    auto inputs = stage_mux_inputs(mux, temp_dir.path(), stop_token);
+    if (!inputs) {
+        return std::unexpected(inputs.error());
     }
-    if (auto written = write_staged_bytes(
-            video_file,
-            reinterpret_cast<const char*>(mux.video_bytes.data()),
-            mux.video_bytes.size(),
-            StagedStream::Video,
-            stop_token); !written) {
-        return std::unexpected(written.error());
-    }
-    video_file.close();
-
-    QString audio_path;
-    if (!mux.audio_wav_bytes.empty()) {
-        audio_path = temp_dir.filePath(QStringLiteral("audio.wav"));
-        QFile audio_file(audio_path);
-        if (!audio_file.open(QIODevice::WriteOnly)) {
-            return std::unexpected(cristudio::i18n::translate_utf8("Shared.MuxExportHelpers", "could not write temporary mux audio stream"));
-        }
-        if (auto written = write_staged_bytes(
-                audio_file,
-                reinterpret_cast<const char*>(mux.audio_wav_bytes.data()),
-                mux.audio_wav_bytes.size(),
-                StagedStream::Audio,
-                stop_token); !written) {
-            return std::unexpected(written.error());
-        }
-        audio_file.close();
-    }
-
-    QStringList subtitle_paths;
-    subtitle_paths.reserve(static_cast<qsizetype>(mux.subtitle_choices.size()));
-    for (size_t index = 0; index < mux.subtitle_choices.size(); ++index) {
-        if (stop_token.stop_requested()) {
-            return std::unexpected(cristudio::i18n::translate_utf8("Shared.MuxExportHelpers", "extraction canceled"));
-        }
-        const auto& subtitle = mux.subtitle_choices[index];
-        const auto subtitle_path = temp_dir.filePath(QStringLiteral("subtitle-%1.srt").arg(index));
-        QFile subtitle_file(subtitle_path);
-        if (!subtitle_file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-            return std::unexpected(cristudio::i18n::translate_utf8("Shared.MuxExportHelpers", "could not write temporary mux subtitle stream"));
-        }
-        if (auto written = write_staged_bytes(
-                subtitle_file,
-                subtitle.srt_text.data(),
-                subtitle.srt_text.size(),
-                StagedStream::Subtitle,
-                stop_token); !written) {
-            return std::unexpected(written.error());
-        }
-        subtitle_file.close();
-        subtitle_paths.push_back(subtitle_path);
-    }
-
-    QStringList arguments{
-        QStringLiteral("-hide_banner"),
-        QStringLiteral("-loglevel"),
-        QStringLiteral("error"),
-        QStringLiteral("-y"),
-    };
-    if (mux.frame_rate_n != 0 && mux.frame_rate_d != 0) {
-        arguments << QStringLiteral("-r") << QStringLiteral("%1/%2").arg(mux.frame_rate_n).arg(mux.frame_rate_d);
-    }
-    if (!mux.ffmpeg_input_format.empty()) {
-        arguments << QStringLiteral("-f") << utf8_to_qstring(mux.ffmpeg_input_format);
-    }
-    arguments << QStringLiteral("-i") << video_path;
-    if (!audio_path.isEmpty()) {
-        arguments << QStringLiteral("-i") << audio_path;
-    }
-    for (const auto& subtitle_path : subtitle_paths) {
-        arguments << QStringLiteral("-i") << subtitle_path;
-    }
-    arguments << QStringLiteral("-map") << QStringLiteral("0:v:0");
-    if (!audio_path.isEmpty()) {
-        arguments << QStringLiteral("-map") << QStringLiteral("1:a:0");
-    }
-    const auto subtitle_input_base = audio_path.isEmpty() ? 1 : 2;
-    for (int i = 0; i < subtitle_paths.size(); ++i) {
-        arguments << QStringLiteral("-map") << QStringLiteral("%1:0").arg(subtitle_input_base + i);
-    }
-    arguments << QStringLiteral("-c:v") << QStringLiteral("copy");
-    if (!audio_path.isEmpty()) {
-        arguments << QStringLiteral("-c:a") << QStringLiteral("copy");
-    }
-    if (!subtitle_paths.empty()) {
-        arguments << QStringLiteral("-c:s") << QStringLiteral("srt");
-        for (int i = 0; i < subtitle_paths.size(); ++i) {
-            const auto& subtitle = mux.subtitle_choices[static_cast<size_t>(i)];
-            arguments
-                << QStringLiteral("-metadata:s:s:%1").arg(i)
-                << QStringLiteral("title=language %1").arg(subtitle.language_id);
-        }
-    }
+    auto arguments = mux_copy_arguments(mux, *inputs);
     arguments
-        << QStringLiteral("-max_interleave_delta") << QStringLiteral("0")
-        << QStringLiteral("-muxdelay") << QStringLiteral("0")
-        << QStringLiteral("-muxpreload") << QStringLiteral("0")
         << QStringLiteral("-f") << QStringLiteral("matroska")
         << path_to_qstring(output_path);
 
@@ -321,7 +318,7 @@ std::expected<void, std::string> write_mux_extract_file(
         if (!waited) {
             return std::unexpected(waited.error());
         }
-        return std::unexpected(cristudio::i18n::translate_utf8("Shared.MuxExportHelpers", "ffmpeg stream-copy mux failed: ") + ffmpeg_error_text(ffmpeg_process));
+        return std::unexpected(cristudio::i18n::translate_utf8("Shared.MuxExportHelpers", "ffmpeg stream-copy mux failed: ") + ffmpeg_error_text(ffmpeg_process).toStdString());
     }
 
     if (auto valid = validate_mux_output_file(ffmpeg_path, output_path, stop_token); !valid) {

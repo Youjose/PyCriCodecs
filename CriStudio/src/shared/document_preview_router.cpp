@@ -6,6 +6,7 @@
 #include "modules/hca/hca_preview.hpp"
 #include "modules/usm/usm_browse.hpp"
 #include "modules/wav/wav_preview.hpp"
+#include "path_text.hpp"
 #include "shared/document_sniffer.hpp"
 #include "shared/ffmpeg_audio_preview.hpp"
 #include "shared/video_probe.hpp"

@@ -1,6 +1,7 @@
 #include "editor/hex_preview_widget.hpp"
 
 #include "io_reader.hpp"
+#include "path_text.hpp"
 
 #include <QCoreApplication>
 #include <QAction>
@@ -34,6 +35,8 @@
 
 namespace cristudio {
 namespace {
+
+constexpr size_t pattern_prefix_limit = 4096;
 
 QChar text_char(uint8_t value) {
     if (value >= 0x20 && value <= 0x7E) {
@@ -71,15 +74,6 @@ bool is_dark_color(QColor color) {
         0.7152 * color.greenF() +
         0.0722 * color.blueF();
     return luminance < 0.35;
-}
-
-std::string lower_ascii(std::string_view text) {
-    std::string out;
-    out.reserve(text.size());
-    for (const auto ch : text) {
-        out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
-    }
-    return out;
 }
 
 bool is_lazy_usm_format(std::string_view format) {
@@ -192,37 +186,63 @@ HexPreviewWidget::HexPreviewWidget(QWidget* parent)
     setMouseTracking(true);
 }
 
-void HexPreviewWidget::set_bytes(std::span<const uint8_t> bytes, uint64_t total_size) {
+void HexPreviewWidget::set_storage(std::span<const uint8_t> bytes, uint64_t total_size) {
     m_reader = nullptr;
     m_bytes.assign(bytes.begin(), bytes.end());
-    m_patterns = {};
     m_total_size = total_size == 0 ? static_cast<uint64_t>(m_bytes.size()) : total_size;
-    m_lazy_format.clear();
-    m_lazy_usm_chunks.clear();
-    m_lazy_usm_scanned_until = 0;
-    m_lazy_usm_valid = false;
-    m_lazy_sbt_cues.clear();
-    m_lazy_sbt_scanned_until = 0;
-    m_lazy_sbt_valid = false;
-    m_lazy_chunks.clear();
-    m_lazy_chunk_scanned_until = 0;
-    m_lazy_chunks_initialized = false;
-    m_lazy_chunks_valid = false;
-    m_lazy_cvm_initialized = false;
-    m_lazy_cvm_pvd_offset = 0;
-    m_lazy_cvm_pvd_valid = false;
-    m_anchor.reset();
-    m_cursor.reset();
-    update_scrollbar();
-    viewport()->update();
 }
 
-void HexPreviewWidget::set_reader(const cricodecs::io::reader* reader) {
-    m_reader = reader;
+void HexPreviewWidget::set_storage(const cricodecs::io::reader& reader) {
+    m_reader = &reader;
     m_bytes.clear();
-    m_patterns = {};
-    m_total_size = reader == nullptr ? 0 : static_cast<uint64_t>(reader->size());
-    m_lazy_format.clear();
+    m_total_size = static_cast<uint64_t>(reader.size());
+}
+
+std::vector<uint8_t> HexPreviewWidget::read_pattern_prefix() const {
+    std::vector<uint8_t> prefix(std::min(pattern_prefix_limit, source_size()));
+    prefix.resize(read_source(0, prefix));
+    return prefix;
+}
+
+void HexPreviewWidget::set_source(
+    std::span<const uint8_t> bytes,
+    uint64_t total_size,
+    std::string_view format) {
+    set_storage(bytes, total_size);
+    const auto prefix = read_pattern_prefix();
+    configure_source(format, infer_hex_patterns(format, m_total_size, prefix));
+}
+
+void HexPreviewWidget::set_source(
+    std::span<const uint8_t> bytes,
+    uint64_t total_size,
+    const EntrySummary& entry) {
+    set_storage(bytes, total_size);
+    const auto prefix = read_pattern_prefix();
+    configure_source(
+        entry_hex_format(entry),
+        infer_entry_hex_patterns(entry, m_total_size, prefix));
+}
+
+void HexPreviewWidget::set_source(
+    const cricodecs::io::reader& reader,
+    std::string_view format) {
+    set_storage(reader);
+    const auto prefix = read_pattern_prefix();
+    configure_source(format, infer_hex_patterns(format, m_total_size, prefix));
+}
+
+void HexPreviewWidget::set_source(
+    const cricodecs::io::reader& reader,
+    const LoadedDocument& document) {
+    set_storage(reader);
+    const auto prefix = read_pattern_prefix();
+    configure_source(
+        document_format_id(document),
+        infer_document_hex_patterns(document, prefix));
+}
+
+void HexPreviewWidget::reset_lazy_state() {
     m_lazy_usm_chunks.clear();
     m_lazy_usm_scanned_until = 0;
     m_lazy_usm_valid = false;
@@ -236,35 +256,9 @@ void HexPreviewWidget::set_reader(const cricodecs::io::reader* reader) {
     m_lazy_cvm_initialized = false;
     m_lazy_cvm_pvd_offset = 0;
     m_lazy_cvm_pvd_valid = false;
-    m_anchor.reset();
-    m_cursor.reset();
-    update_scrollbar();
-    viewport()->update();
 }
 
-void HexPreviewWidget::set_lazy_format(std::string_view format) {
-    const auto next = lower_ascii(format);
-    if (m_lazy_format == next) {
-        return;
-    }
-    m_lazy_format = next;
-    m_lazy_usm_chunks.clear();
-    m_lazy_usm_scanned_until = 0;
-    m_lazy_usm_valid = false;
-    m_lazy_sbt_cues.clear();
-    m_lazy_sbt_scanned_until = 0;
-    m_lazy_sbt_valid = false;
-    m_lazy_chunks.clear();
-    m_lazy_chunk_scanned_until = 0;
-    m_lazy_chunks_initialized = false;
-    m_lazy_chunks_valid = false;
-    m_lazy_cvm_initialized = false;
-    m_lazy_cvm_pvd_offset = 0;
-    m_lazy_cvm_pvd_valid = false;
-    viewport()->update();
-}
-
-void HexPreviewWidget::set_patterns(HexPatternSet patterns) {
+void HexPreviewWidget::apply_patterns(HexPatternSet patterns) {
     std::erase_if(patterns.ranges, [](const HexPatternRange& pattern) {
         return pattern.size == 0;
     });
@@ -281,6 +275,21 @@ void HexPreviewWidget::set_patterns(HexPatternSet patterns) {
         m_pattern_prefix_max_end.push_back(max_end);
     }
     m_patterns = std::move(patterns);
+}
+
+void HexPreviewWidget::configure_source(std::string_view format, HexPatternSet patterns) {
+    m_lazy_format = lower_ascii(format);
+    reset_lazy_state();
+    apply_patterns(std::move(patterns));
+    m_anchor.reset();
+    m_cursor.reset();
+    m_offset_row = 0;
+    m_active_lane = Lane::Hex;
+    m_dragging = false;
+    m_pattern_status.clear();
+    setToolTip({});
+    update_scrollbar();
+    verticalScrollBar()->setValue(0);
     viewport()->update();
 }
 
@@ -295,27 +304,8 @@ void HexPreviewWidget::set_patterns_enabled(bool enabled) {
 void HexPreviewWidget::clear_bytes() {
     m_reader = nullptr;
     m_bytes.clear();
-    m_patterns = {};
-    m_pattern_prefix_max_end.clear();
     m_total_size = 0;
-    m_lazy_format.clear();
-    m_lazy_usm_chunks.clear();
-    m_lazy_usm_scanned_until = 0;
-    m_lazy_usm_valid = false;
-    m_lazy_sbt_cues.clear();
-    m_lazy_sbt_scanned_until = 0;
-    m_lazy_sbt_valid = false;
-    m_lazy_chunks.clear();
-    m_lazy_chunk_scanned_until = 0;
-    m_lazy_chunks_initialized = false;
-    m_lazy_chunks_valid = false;
-    m_lazy_cvm_initialized = false;
-    m_lazy_cvm_pvd_offset = 0;
-    m_lazy_cvm_pvd_valid = false;
-    m_anchor.reset();
-    m_cursor.reset();
-    update_scrollbar();
-    viewport()->update();
+    configure_source({}, {});
 }
 
 int HexPreviewWidget::row_height() const {
@@ -870,79 +860,6 @@ std::optional<HexPreviewWidget::ActivePattern> HexPreviewWidget::lazy_usm_patter
     };
 }
 
-void HexPreviewWidget::add_lazy_usm_patterns_for_row(
-    size_t row_start,
-    size_t row_end,
-    std::array<std::optional<ActivePattern>, 16>& row_patterns
-) const {
-    if (!m_patterns_enabled || !is_lazy_usm_format(m_lazy_format) || row_start >= row_end) {
-        return;
-    }
-    ensure_lazy_usm_chunks_until(static_cast<uint64_t>(row_end));
-    const auto consider = [&](uint64_t pattern_offset, uint64_t pattern_size, QString label, QColor color) {
-        if (pattern_size == 0) {
-            return;
-        }
-        const auto pattern_end = pattern_offset + pattern_size;
-        if (pattern_end <= row_start || pattern_offset >= row_end) {
-            return;
-        }
-        const auto first = static_cast<size_t>(std::max<uint64_t>(pattern_offset, row_start));
-        const auto last = static_cast<size_t>(std::min<uint64_t>(pattern_end, row_end));
-        for (size_t index = first; index < last; ++index) {
-            auto& current = row_patterns[index - row_start];
-            if (!current || pattern_size <= current->size) {
-                current = ActivePattern{pattern_offset, pattern_size, label, color};
-            }
-        }
-    };
-    for (const auto& chunk : m_lazy_usm_chunks) {
-        const auto packed_size = static_cast<uint64_t>(chunk.chunk_size) + 0x08u;
-        if (chunk.offset + packed_size <= row_start) {
-            continue;
-        }
-        if (chunk.offset >= row_end) {
-            break;
-        }
-        consider(chunk.offset, packed_size,
-            QCoreApplication::translate("Editor.HexPreviewWidget", "USM chunk %1, size %2").arg(chunk.magic).arg(chunk.chunk_size),
-            lazy_usm_color(chunk.offset));
-        consider(chunk.offset, 0x20,
-            QCoreApplication::translate("Editor.HexPreviewWidget", "USM %1 header, channel %2, payload type 0x%3")
-                .arg(chunk.magic)
-                .arg(chunk.channel)
-                .arg(chunk.payload_type_and_flags & 0x03u, 2, 16, QLatin1Char('0')).toUpper(),
-            lazy_usm_color(chunk.offset + 1));
-        consider(chunk.offset + 0x00, 4,
-            QCoreApplication::translate("Editor.HexPreviewWidget", "chunk.magic = %1").arg(chunk.magic), lazy_usm_color(chunk.offset + 10));
-        consider(chunk.offset + 0x04, 4,
-            QCoreApplication::translate("Editor.HexPreviewWidget", "chunk.size = %1").arg(chunk.chunk_size), lazy_usm_color(chunk.offset + 11));
-        consider(chunk.offset + 0x08, 2,
-            QCoreApplication::translate("Editor.HexPreviewWidget", "chunk.payload_offset = %1").arg(chunk.payload_offset), lazy_usm_color(chunk.offset + 12));
-        consider(chunk.offset + 0x0A, 2,
-            QCoreApplication::translate("Editor.HexPreviewWidget", "chunk.padding = %1").arg(cricodecs::io::read_be<uint16_t>(chunk.header.data() + 0x0A)), lazy_usm_color(chunk.offset + 14));
-        consider(chunk.offset + 0x0C, 1,
-            QCoreApplication::translate("Editor.HexPreviewWidget", "chunk.channel = %1").arg(chunk.channel), lazy_usm_color(chunk.offset + 15));
-        consider(chunk.offset + 0x0D, 1,
-            QCoreApplication::translate("Editor.HexPreviewWidget", "chunk.reserved_0d = %1").arg(hex_byte(chunk.header[0x0D])), lazy_usm_color(chunk.offset + 16));
-        consider(chunk.offset + 0x0E, 2,
-            QCoreApplication::translate("Editor.HexPreviewWidget", "chunk.payload_type_and_flags = %1").arg(hex_word(chunk.payload_type_and_flags)), lazy_usm_color(chunk.offset + 17));
-        consider(chunk.offset + 0x10, 4,
-            QCoreApplication::translate("Editor.HexPreviewWidget", "chunk.frame_time = %1").arg(cricodecs::io::read_be<uint32_t>(chunk.header.data() + 0x10)), lazy_usm_color(chunk.offset + 19));
-        consider(chunk.offset + 0x14, 4,
-            QCoreApplication::translate("Editor.HexPreviewWidget", "chunk.frame_rate = %1").arg(cricodecs::io::read_be<uint32_t>(chunk.header.data() + 0x14)), lazy_usm_color(chunk.offset + 20));
-        consider(chunk.offset + 0x18, 4,
-            QCoreApplication::translate("Editor.HexPreviewWidget", "chunk.reserved_18 = %1").arg(hex_word(cricodecs::io::read_be<uint32_t>(chunk.header.data() + 0x18))), lazy_usm_color(chunk.offset + 21));
-        consider(chunk.offset + 0x1C, 4,
-            QCoreApplication::translate("Editor.HexPreviewWidget", "chunk.reserved_1c = %1").arg(hex_word(cricodecs::io::read_be<uint32_t>(chunk.header.data() + 0x1C))), lazy_usm_color(chunk.offset + 22));
-        if (chunk.chunk_size > chunk.payload_offset) {
-            consider(chunk.offset + 0x08u + chunk.payload_offset, chunk.chunk_size - chunk.payload_offset,
-                QCoreApplication::translate("Editor.HexPreviewWidget", "USM %1 payload").arg(chunk.magic),
-                lazy_usm_color(chunk.offset + 2));
-        }
-    }
-}
-
 QString HexPreviewWidget::pattern_status_text(const ActivePattern& pattern, size_t index) const {
     return QCoreApplication::translate("Editor.HexPreviewWidget", "%1  @ 0x%2  +0x%3  size %4")
         .arg(pattern.label)
@@ -1149,8 +1066,10 @@ void HexPreviewWidget::show_go_to_offset_dialog() {
     );
     root->addWidget(limit);
 
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    buttons->button(QDialogButtonBox::Ok)->setText(QCoreApplication::translate("Editor.HexPreviewWidget", "Jump"));
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    buttons->button(QDialogButtonBox::Ok)->setText(
+        QCoreApplication::translate("Editor.HexPreviewWidget", "Jump"));
     root->addWidget(buttons);
 
     QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
@@ -1374,26 +1293,9 @@ void HexPreviewWidget::paintEvent(QPaintEvent*) {
 
         std::array<std::optional<ActivePattern>, 16> row_patterns{};
         if (m_patterns_enabled && has_patterns) {
-            const auto consider_byte_pattern = [&](size_t index, ActivePattern pattern) {
-                auto& current = row_patterns[index - offset];
-                if (!current || pattern.size <= current->size) {
-                    current = std::move(pattern);
-                }
-            };
-            const auto apply_pattern_range = [&](uint64_t pattern_offset, uint64_t pattern_size, const QString& label, QColor color) {
-                if (pattern_size == 0) {
-                    return;
-                }
-                const auto pattern_end = pattern_offset + pattern_size;
-                if (pattern_end <= offset || pattern_offset >= row_end) {
-                    return;
-                }
-                const auto first = static_cast<size_t>(std::max<uint64_t>(pattern_offset, offset));
-                const auto last = static_cast<size_t>(std::min<uint64_t>(pattern_end, row_end));
-                for (size_t index = first; index < last; ++index) {
-                    consider_byte_pattern(index, ActivePattern{pattern_offset, pattern_size, label, color});
-                }
-            };
+            for (size_t index = offset; index < row_end; ++index) {
+                row_patterns[index - offset] = pattern_at(index);
+            }
             auto paint_pattern = [&](uint64_t first, uint64_t last, QColor color) {
                 const auto start_column = static_cast<int>(first - offset);
                 const auto end_column = static_cast<int>(last - offset);
@@ -1425,72 +1327,6 @@ void HexPreviewWidget::paintEvent(QPaintEvent*) {
                 painter.drawLine(text_rect.bottomLeft(), text_rect.bottomRight());
             };
 
-            const auto last_pattern = std::ranges::lower_bound(
-                m_patterns.ranges,
-                static_cast<uint64_t>(row_end),
-                {},
-                &HexPatternRange::offset
-            );
-            const auto first_candidate = std::ranges::upper_bound(
-                m_pattern_prefix_max_end,
-                static_cast<uint64_t>(offset)
-            );
-            auto it = m_patterns.ranges.begin() + std::distance(m_pattern_prefix_max_end.begin(), first_candidate);
-            for (; it != last_pattern; ++it) {
-                if (pattern_end(*it) <= offset) {
-                    continue;
-                }
-                apply_pattern_range(it->offset, it->size, it->label, it->color);
-            }
-            for (const auto& repeat : m_patterns.repeats) {
-                if (repeat.stride == 0 || repeat.count == 0) {
-                    continue;
-                }
-                const auto repeat_data_end = repeat.offset + repeat.stride * repeat.count;
-                if (repeat_data_end <= offset || repeat.offset >= row_end) {
-                    continue;
-                }
-                const auto first_instance = offset <= repeat.offset
-                    ? 0
-                    : (static_cast<uint64_t>(offset) - repeat.offset) / repeat.stride;
-                const auto last_instance = std::min<uint64_t>(
-                    repeat.count - 1,
-                    (static_cast<uint64_t>(row_end - 1) - repeat.offset) / repeat.stride);
-                for (uint64_t instance = first_instance; instance <= last_instance; ++instance) {
-                    const auto base = repeat.offset + instance * repeat.stride;
-                    apply_pattern_range(
-                        base,
-                        repeat.size,
-                        QStringLiteral("%1 %2").arg(repeat.label).arg(static_cast<qulonglong>(instance)),
-                        repeat.color
-                    );
-                    for (const auto& field : repeat.fields) {
-                        auto label = QStringLiteral("%1 %2.%3")
-                            .arg(repeat.label)
-                            .arg(static_cast<qulonglong>(instance))
-                            .arg(field.name);
-                        apply_pattern_range(base + field.offset, field.size, label, field.color);
-                    }
-                }
-            }
-            add_lazy_usm_patterns_for_row(offset, row_end, row_patterns);
-            if (is_lazy_sbt_format(m_lazy_format)) {
-                for (size_t index = offset; index < row_end; ++index) {
-                    if (auto pattern = lazy_sbt_pattern_at(index)) {
-                        consider_byte_pattern(index, std::move(*pattern));
-                    }
-                }
-            }
-            if (is_lazy_riff_format(m_lazy_format) || is_lazy_aix_format(m_lazy_format) || is_lazy_cvm_format(m_lazy_format)) {
-                for (size_t index = offset; index < row_end; ++index) {
-                    if (auto pattern = lazy_chunk_pattern_at(index)) {
-                        consider_byte_pattern(index, std::move(*pattern));
-                    }
-                    if (auto pattern = lazy_cvm_pattern_at(index)) {
-                        consider_byte_pattern(index, std::move(*pattern));
-                    }
-                }
-            }
             size_t run_start = offset;
             while (run_start < row_end) {
                 const auto& pattern = row_patterns[run_start - offset];

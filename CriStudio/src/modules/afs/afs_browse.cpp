@@ -13,12 +13,6 @@
 namespace cristudio::modules::afs {
 namespace {
 
-std::string hex_u64(uint64_t value) {
-    std::ostringstream out;
-    out << "0x" << std::uppercase << std::hex << value;
-    return out.str();
-}
-
 std::string hex_bytes(std::span<const uint8_t> bytes) {
     std::ostringstream out;
     for (size_t i = 0; i < bytes.size(); ++i) {
@@ -29,19 +23,6 @@ std::string hex_bytes(std::span<const uint8_t> bytes) {
             << static_cast<unsigned>(bytes[i]);
     }
     return out.str();
-}
-
-EntrySummary sourced_entry(
-    EntrySummary entry,
-    const std::filesystem::path& source_path,
-    std::string source_format,
-    uint32_t source_index
-) {
-    entry.source_path = source_path;
-    entry.source_format = std::move(source_format);
-    entry.source_index = source_index;
-    entry.has_source = true;
-    return entry;
 }
 
 } // namespace
@@ -64,9 +45,9 @@ LoadedDocument summarize(const std::filesystem::path& path, const cricodecs::afs
     doc.info.push_back(translated_info_row("Afs.AfsBrowse", "Alignment", number(afs.alignment())));
     doc.info.push_back(translated_info_row("Afs.AfsBrowse", "Directory table", bool_text(afs.has_directory_table())));
     doc.info.push_back(translated_info_row("Afs.AfsBrowse", "Directory table on build", bool_text(afs.directory_table_enabled())));
-    doc.info.push_back(translated_info_row("Afs.AfsBrowse", "Directory offset", afs.directory_table_offset() ? hex_u64(*afs.directory_table_offset()) : "-"));
+    doc.info.push_back(translated_info_row("Afs.AfsBrowse", "Directory offset", afs.directory_table_offset() ? hex_number(*afs.directory_table_offset()) : "-"));
     doc.info.push_back(translated_info_row("Afs.AfsBrowse", "Directory size", afs.directory_table_size() ? byte_count(*afs.directory_table_size()) : "-"));
-    doc.info.push_back(translated_info_row("Afs.AfsBrowse", "First payload offset", afs.first_payload_offset() ? hex_u64(*afs.first_payload_offset()) : "-"));
+    doc.info.push_back(translated_info_row("Afs.AfsBrowse", "First payload offset", afs.first_payload_offset() ? hex_number(*afs.first_payload_offset()) : "-"));
 
     doc.entries.reserve(afs.entries().size());
     for (const auto& entry : afs.entries()) {
@@ -89,7 +70,7 @@ LoadedDocument summarize(const std::filesystem::path& path, const cricodecs::afs
         if (std::ranges::any_of(entry.directory_metadata, [](uint8_t value) { return value != 0; })) {
             detail += cristudio::i18n::translate_utf8("Afs.AfsBrowse", ", metadata ") + hex_bytes(entry.directory_metadata);
         }
-        doc.entries.push_back(sourced_entry({
+        doc.entries.push_back(source_entry({
             archive_display_path(entry.suggested_path().generic_string()),
             cricodecs::afs::entry_extension(entry.type),
             byte_count(entry.size),

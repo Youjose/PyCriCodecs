@@ -1,5 +1,6 @@
 #include "main_window.hpp"
 
+#include "editor/editor_widgets.hpp"
 #include "editor_workspace.hpp"
 #include "path_text.hpp"
 #include "cvm_builder.hpp"
@@ -25,11 +26,6 @@
 namespace cristudio {
 namespace {
 
-std::string qt_to_utf8_local(const QString& text) {
-    const auto utf8 = text.toUtf8();
-    return std::string(utf8.constData(), static_cast<size_t>(utf8.size()));
-}
-
 std::string default_cvm_disc_name_local(const std::filesystem::path& input_dir) {
     QString base = QFileInfo(path_to_qstring(input_dir)).fileName();
     if (base.trimmed().isEmpty()) {
@@ -38,7 +34,7 @@ std::string default_cvm_disc_name_local(const std::filesystem::path& input_dir) 
     if (base.size() > 28) {
         base.truncate(28);
     }
-    return qt_to_utf8_local(base + QStringLiteral(".cvm"));
+    return qstring_to_utf8(base + QStringLiteral(".cvm"));
 }
 
 std::optional<cricodecs::cpk::CpkPreset> choose_new_cpk_preset(QWidget* parent) {
@@ -316,23 +312,21 @@ void MainWindow::new_cvm_from_directory_document() {
     layout->addRow(QCoreApplication::translate("MainWindow.EditorActions", "Publisher identifier"), publisher_identifier);
     layout->addRow(QCoreApplication::translate("MainWindow.EditorActions", "Data preparer identifier"), data_preparer_identifier);
     layout->addRow(QCoreApplication::translate("MainWindow.EditorActions", "Application identifier"), application_identifier);
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    auto* buttons = dialog_buttons(dialog);
     layout->addRow(buttons);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
 
-    options.disc_name = qt_to_utf8_local(disc_name->text().trimmed());
-    options.recording_date = qt_to_utf8_local(recording_date->text().trimmed());
-    options.media = qt_to_utf8_local(media->currentText());
-    options.system_identifier = qt_to_utf8_local(system_identifier->text().trimmed());
-    options.volume_identifier = qt_to_utf8_local(volume_identifier->text().trimmed());
-    options.volume_set_identifier = qt_to_utf8_local(volume_set_identifier->text().trimmed());
-    options.publisher_identifier = qt_to_utf8_local(publisher_identifier->text().trimmed());
-    options.data_preparer_identifier = qt_to_utf8_local(data_preparer_identifier->text().trimmed());
-    options.application_identifier = qt_to_utf8_local(application_identifier->text().trimmed());
+    options.disc_name = qstring_to_utf8(disc_name->text().trimmed());
+    options.recording_date = qstring_to_utf8(recording_date->text().trimmed());
+    options.media = qstring_to_utf8(media->currentText());
+    options.system_identifier = qstring_to_utf8(system_identifier->text().trimmed());
+    options.volume_identifier = qstring_to_utf8(volume_identifier->text().trimmed());
+    options.volume_set_identifier = qstring_to_utf8(volume_set_identifier->text().trimmed());
+    options.publisher_identifier = qstring_to_utf8(publisher_identifier->text().trimmed());
+    options.data_preparer_identifier = qstring_to_utf8(data_preparer_identifier->text().trimmed());
+    options.application_identifier = qstring_to_utf8(application_identifier->text().trimmed());
 
     m_editor_workspace->create_cvm_from_directory(input_dir, options, m_decryption_keys);
     if (m_workspace_tabs != nullptr) {

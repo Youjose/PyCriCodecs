@@ -7,23 +7,6 @@
 #include <utility>
 
 namespace cristudio::modules::csb {
-namespace {
-
-EntrySummary sourced_entry(
-    EntrySummary entry,
-    const std::filesystem::path& source_path,
-    std::string source_format,
-    uint32_t source_index
-) {
-    entry.source_path = source_path;
-    entry.source_format = std::move(source_format);
-    entry.source_index = source_index;
-    entry.has_source = true;
-    return entry;
-}
-
-} // namespace
-
 LoadedDocument summarize(const std::filesystem::path& path, const cricodecs::csb::CsbContainer& csb) {
     auto doc = base_document(path, cristudio::i18n::translate_utf8("Csb.CsbBrowse", "CSB cue archive"));
     doc.info.push_back(translated_info_row("Csb.CsbBrowse", "Name", std::string(csb.name())));
@@ -34,7 +17,7 @@ LoadedDocument summarize(const std::filesystem::path& path, const cricodecs::csb
     doc.entries.reserve(csb.stream_count());
     for (uint32_t i = 0; i < csb.stream_count(); ++i) {
         const auto& stream = csb.stream(i);
-        doc.entries.push_back(sourced_entry({
+        doc.entries.push_back(source_entry({
             archive_display_path(stream.suggested_path().generic_string()),
             stream.wrapper_table_name.empty() ? std::string(cricodecs::csb::stream_file_extension(stream.format))
                                               : stream.wrapper_table_name,

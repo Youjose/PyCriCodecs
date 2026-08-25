@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor/hex_patterns.hpp"
+#include "path_text.hpp"
 
 #include <QColor>
 #include <QString>
@@ -30,7 +31,6 @@ void add_repeat(
     uint64_t total_size
 );
 [[nodiscard]] bool has(std::span<const uint8_t> bytes, size_t offset, std::string_view text);
-[[nodiscard]] std::string lower_ascii(std::string_view text);
 [[nodiscard]] std::optional<uint64_t> decimal_prefix(std::string_view text);
 [[nodiscard]] std::optional<uint64_t> byte_size_prefix(std::string_view text);
 [[nodiscard]] std::optional<uint64_t> info_value(const LoadedDocument& document, std::string_view name);

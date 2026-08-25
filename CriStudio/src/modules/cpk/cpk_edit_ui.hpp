@@ -20,10 +20,7 @@ struct EntryProperties {
     std::string filename;
     uint32_t id = 0;
     bool request_compress = false;
-    std::string group;
-    std::string attribute;
     std::string user_string = "<NULL>";
-    uint64_t update_date_time = 0;
 };
 
 struct BuildOptionsSelection {

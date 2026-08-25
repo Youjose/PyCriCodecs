@@ -263,13 +263,13 @@ public:
     }
 
     [[nodiscard]] bool is_dirty() const noexcept { return m_dirty; }
-    [[nodiscard]] bool has_background_work() const noexcept { return m_save_running; }
+    [[nodiscard]] bool has_background_work() const noexcept { return save_running(); }
 
     void retranslate() {
         retranslate_editor_document_ui(m_ui);
         const bool playing = m_editor_media_player != nullptr &&
             m_editor_media_player->playbackState() == QMediaPlayer::PlayingState;
-        m_ui.mux_play_button->setText(playing
+        m_ui.media.play_button->setText(playing
             ? QCoreApplication::translate("Editor.EditorDocumentWidget", "Pause")
             : QCoreApplication::translate("Editor.EditorDocumentWidget", "Play"));
         m_ui.table_model->retranslate();
@@ -290,8 +290,7 @@ public:
             refresh_archive_document_ui(
                 m_ui,
                 archive_view(),
-                m_request.keys,
-                std::span<const uint8_t>(m_bytes.data(), m_bytes.size())
+                m_request.keys
             );
             if (selected_row >= 0 && selected_row < m_ui.archive_table->rowCount()) {
                 m_ui.archive_table->setCurrentCell(selected_row, 0);
@@ -309,13 +308,12 @@ public:
                 m_transform_kind,
                 transform_view(),
                 m_visible_transform_rows,
-                m_ui.transform_filter_edit->text(),
-                std::span<const uint8_t>(m_bytes.data(), m_bytes.size())
+                m_ui.transform_filter_edit->text()
             );
             if (selected_row >= 0 && selected_row < m_ui.transform_model->rowCount()) {
                 m_ui.transform_table->selectRow(selected_row);
             }
-        } else if (m_has_utf && m_utf) {
+        } else if (m_utf) {
             refresh_utf_view();
         }
 
@@ -327,7 +325,7 @@ public:
         if (!m_dirty) {
             return true;
         }
-        if (m_save_running) {
+        if (save_running()) {
             QMessageBox::information(
                 parent,
                 QCoreApplication::translate("Editor.EditorDocumentWidget", "Editor tab is busy"),
@@ -359,11 +357,15 @@ protected:
 
 private:
 
+    [[nodiscard]] bool save_running() const noexcept {
+        return m_save_future.valid();
+    }
+
     void poll_background_work() {
         for (const auto& line : take_job_logs(m_active_job_log)) {
             append_log(line);
         }
-        if (!m_save_running || !m_save_future.valid()) {
+        if (!save_running()) {
             return;
         }
         if (m_save_future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
@@ -375,11 +377,8 @@ private:
             append_log(line);
         }
         m_active_job_log.reset();
-        m_save_running = false;
         update_header_actions();
-        if (m_ui.progress != nullptr) {
-            m_ui.progress->hide();
-        }
+        m_ui.progress->hide();
         const bool saves_document = m_active_job_saves_document;
         const auto job_label = std::exchange(m_active_job_label, {});
         m_active_job_saves_document = false;
@@ -419,7 +418,6 @@ private:
         dismiss_editor_media_preview();
         m_bytes = std::move(*bytes);
         m_document.reset();
-        m_selected_entry.reset();
         m_utf.reset();
         m_afs.reset();
         m_awb.reset();
@@ -436,8 +434,6 @@ private:
         m_acb.reset();
         m_archive_kind = ArchiveKind::None;
         m_transform_kind = TransformKind::None;
-        m_has_utf = false;
-        m_utf_transposed = false;
         m_cpk_obfuscate_utf = false;
         m_cvm_scramble_key.clear();
 
@@ -487,9 +483,6 @@ private:
     }
 
     void set_preview_tabs(bool preview_available, bool raw_available, int preferred_tab) {
-        if (m_ui.preview_tabs == nullptr) {
-            return;
-        }
         m_ui.preview_tabs->setTabEnabled(0, preview_available);
         m_ui.preview_tabs->setTabEnabled(1, raw_available);
         if (preferred_tab == 0 && preview_available) {
@@ -501,54 +494,43 @@ private:
         }
     }
 
+    [[nodiscard]] bool raw_preview_available() const noexcept {
+        return !m_ui.hex_preview->isHidden();
+    }
+
     void set_raw_preview(std::span<const uint8_t> bytes, uint64_t total_size, std::string_view format = {}) {
-        if (m_ui.hex_preview == nullptr || bytes.empty()) {
-            m_raw_preview_available = false;
-            if (m_ui.hex_preview != nullptr) {
-                m_ui.hex_preview->clear_bytes();
-                m_ui.hex_preview->hide();
-            }
+        if (bytes.empty()) {
+            m_ui.hex_preview->clear_bytes();
+            m_ui.hex_preview->hide();
             return;
         }
-        constexpr size_t max_preview = 4096;
-        const auto count = (std::min)(bytes.size(), max_preview);
-        if (bytes.data() == m_preview_scratch.data()) {
-            m_preview_scratch.resize(count);
-        } else {
-            m_preview_scratch.assign(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(count));
-        }
         const auto full_size = total_size == 0 ? bytes.size() : total_size;
-        m_ui.hex_preview->set_bytes(m_preview_scratch, full_size);
+        const auto prefix = bytes.first(std::min(bytes.size(), HexPreviewWidget::buffered_byte_limit));
         const auto effective_format = format.empty() && m_document ? std::string_view(m_document->format) : format;
-        m_ui.hex_preview->set_patterns(infer_hex_patterns(effective_format, full_size, m_preview_scratch));
+        m_ui.hex_preview->set_source(prefix, full_size, effective_format);
         m_ui.hex_preview->show();
-        m_raw_preview_available = true;
     }
 
     void clear_raw_preview() {
-        m_raw_preview_available = false;
         m_preview_scratch.clear();
-        if (m_ui.hex_preview != nullptr) {
-            m_ui.hex_preview->clear_bytes();
-            m_ui.hex_preview->hide();
-        }
+        m_ui.hex_preview->clear_bytes();
+        m_ui.hex_preview->hide();
     }
 
     void set_raw_preview(const EntrySummary& summary, std::span<const uint8_t> bytes, uint64_t total_size) {
-        set_raw_preview(bytes, total_size);
-        if (m_raw_preview_available) {
-            const auto full_size = total_size == 0 ? bytes.size() : total_size;
-            m_ui.hex_preview->set_patterns(infer_entry_hex_patterns(summary, full_size, m_preview_scratch));
+        if (bytes.empty()) {
+            set_raw_preview({}, 0);
+            return;
         }
+        const auto full_size = total_size == 0 ? bytes.size() : total_size;
+        const auto prefix = bytes.first(std::min(bytes.size(), HexPreviewWidget::buffered_byte_limit));
+        m_ui.hex_preview->set_source(prefix, full_size, summary);
+        m_ui.hex_preview->show();
     }
 
     void show_detail_preview(QString text) {
         dismiss_editor_media_preview();
         clear_raw_preview();
-        if (m_ui.payload_table == nullptr) {
-            set_preview_tabs(false, false, 0);
-            return;
-        }
         const auto lines = text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
         constexpr qsizetype max_detail_rows = 512;
         const auto visible_lines = (std::min)(lines.size(), max_detail_rows);
@@ -594,11 +576,6 @@ private:
     ) {
         dismiss_editor_media_preview();
         set_raw_preview(bytes, bytes.size(), std::string(document_format_id(document)));
-        if (m_ui.payload_table == nullptr) {
-            set_preview_tabs(false, m_raw_preview_available, 1);
-            return;
-        }
-
         constexpr size_t max_rows = 1024;
         m_ui.payload_table->clear();
         if (!document.entries.empty()) {
@@ -649,7 +626,7 @@ private:
                 QHeaderView::Stretch);
         }
         m_ui.payload_table->show();
-        set_preview_tabs(true, m_raw_preview_available, 0);
+        set_preview_tabs(true, raw_preview_available(), 0);
     }
 
     void preview_usm_stream(int index, const modules::TransformDetailRow& detail) {
@@ -716,20 +693,16 @@ private:
 
     void show_hex_preview(std::span<const uint8_t> bytes, uint64_t total_size = 0, std::string_view format = {}) {
         dismiss_editor_media_preview();
-        if (m_ui.payload_table != nullptr) {
-            m_ui.payload_table->hide();
-        }
+        m_ui.payload_table->hide();
         set_raw_preview(bytes, total_size, format);
-        set_preview_tabs(false, m_raw_preview_available, 1);
+        set_preview_tabs(false, raw_preview_available(), 1);
     }
 
     void show_hex_preview(const EntrySummary& summary, std::span<const uint8_t> bytes, uint64_t total_size = 0) {
         dismiss_editor_media_preview();
-        if (m_ui.payload_table != nullptr) {
-            m_ui.payload_table->hide();
-        }
+        m_ui.payload_table->hide();
         set_raw_preview(summary, bytes, total_size);
-        set_preview_tabs(false, m_raw_preview_available, 1);
+        set_preview_tabs(false, raw_preview_available(), 1);
     }
 
     void build_ui() {
@@ -796,7 +769,7 @@ private:
             sync_local_key_mode_controls();
         });
         connect(m_ui.cvm_scramble_check, &QAbstractButton::toggled, this, [this](bool enabled) {
-            if (m_archive_kind == ArchiveKind::Cvm && m_ui.cri_key_edit != nullptr) {
+            if (m_archive_kind == ArchiveKind::Cvm) {
                 m_ui.cri_key_edit->setEnabled(enabled);
             }
         });
@@ -839,28 +812,25 @@ private:
             refresh_transform_rows_ui();
         });
         connect(m_ui.preview_tabs, &QTabWidget::currentChanged, this, [this](int index) {
-            if (index != 0 || m_ui.mux_preview_panel == nullptr || m_editor_media_player == nullptr ||
-                m_editor_media_player->source().isEmpty()) {
+            if (index != 0 || m_editor_media_player == nullptr || m_editor_media_player->source().isEmpty()) {
                 return;
             }
             m_ui.mux_preview_panel->show();
-            if (m_ui.media_controls_panel != nullptr) {
-                m_ui.media_controls_panel->show();
-            }
+            m_ui.media.panel->show();
         });
-        connect(m_ui.mux_play_button, &QToolButton::clicked, this, [this] {
+        connect(m_ui.media.play_button, &QToolButton::clicked, this, [this] {
             if (m_editor_media_player == nullptr) {
                 return;
             }
             if (m_editor_media_player->playbackState() == QMediaPlayer::PlayingState) {
                 m_editor_media_player->pause();
-                m_ui.mux_play_button->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Play"));
+                m_ui.media.play_button->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Play"));
             } else {
                 m_editor_media_player->play();
-                m_ui.mux_play_button->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Pause"));
+                m_ui.media.play_button->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Pause"));
             }
         });
-        connect(m_ui.media_seek_slider, &QSlider::sliderPressed, this, [this] {
+        connect(m_ui.media.seek_slider, &QSlider::sliderPressed, this, [this] {
             m_editor_slider_dragging = true;
             m_editor_resume_after_seek = m_editor_media_player != nullptr &&
                 m_editor_media_player->playbackState() == QMediaPlayer::PlayingState;
@@ -868,10 +838,10 @@ private:
                 m_editor_media_player->pause();
             }
         });
-        connect(m_ui.media_seek_slider, &QSlider::sliderReleased, this, [this] {
+        connect(m_ui.media.seek_slider, &QSlider::sliderReleased, this, [this] {
             m_editor_slider_dragging = false;
             if (m_editor_media_player != nullptr) {
-                m_editor_media_player->setPosition(m_ui.media_seek_slider->value());
+                m_editor_media_player->setPosition(m_ui.media.seek_slider->value());
                 if (m_editor_resume_after_seek) {
                     m_editor_media_player->play();
                 }
@@ -879,22 +849,22 @@ private:
             m_editor_resume_after_seek = false;
             update_editor_media_time();
         });
-        connect(m_ui.media_seek_slider, &QSlider::sliderMoved, this, [this](int) {
+        connect(m_ui.media.seek_slider, &QSlider::sliderMoved, this, [this](int) {
             update_editor_media_time();
         });
-        connect(m_ui.media_volume_slider, &QSlider::valueChanged, this, [this](int value) {
+        connect(m_ui.media.volume_slider, &QSlider::valueChanged, this, [this](int value) {
             if (m_editor_audio_output != nullptr) {
                 m_editor_audio_output->setVolume(static_cast<float>(std::clamp(value, 0, 100)) / 100.0f);
             }
         });
-        connect(m_ui.mux_audio_combo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
+        connect(m_ui.media.audio_combo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
             if (index >= 0 && (m_transform_kind == TransformKind::Usm || m_transform_kind == TransformKind::Sfd)) {
-                preview_current_mux(m_ui.mux_audio_combo->currentData().toInt());
+                preview_current_mux(m_ui.media.audio_combo->currentData().toInt());
             }
         });
-        connect(m_ui.mux_subtitle_combo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
+        connect(m_ui.media.subtitle_combo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
             if (index >= 0 && m_editor_media_player != nullptr) {
-                m_editor_media_player->setActiveSubtitleTrack(m_ui.mux_subtitle_combo->currentData().toInt());
+                m_editor_media_player->setActiveSubtitleTrack(m_ui.media.subtitle_combo->currentData().toInt());
             }
         });
     }
@@ -1016,17 +986,8 @@ private:
         m_acx = std::move(scratch.acx);
         m_cpk = std::move(scratch.cpk);
         m_cvm = std::move(scratch.cvm);
-        m_adx = std::move(scratch.adx);
-        m_hca = std::move(scratch.hca);
-        m_aax = std::move(scratch.aax);
-        m_aix = std::move(scratch.aix);
-        m_usm = std::move(scratch.usm);
-        m_sfd = std::move(scratch.sfd);
-        m_csb = std::move(scratch.csb);
-        m_acb = std::move(scratch.acb);
         m_archive_kind = scratch.archive_kind;
         m_transform_kind = scratch.transform_kind;
-        m_has_utf = scratch.has_utf;
         if (scratch.title) {
             m_title = editor_label(*scratch.title);
             m_ui.title_label->setText(m_title);
@@ -1052,7 +1013,6 @@ private:
         auto loaded = cricodecs::utf::UtfTable::load(std::span<const uint8_t>(m_bytes.data(), m_bytes.size()));
         if (loaded) {
             m_utf = loaded->editable_copy();
-            m_has_utf = true;
             append_log(m_transform_kind == TransformKind::Acb
                 ? QCoreApplication::translate("Editor.EditorDocumentWidget", "ACB root UTF loaded for native-backed table editing. Embedded subtable blobs remain editable as VLData.")
                 : QCoreApplication::translate("Editor.EditorDocumentWidget", "UTF object loaded for native-backed editor mutations."));
@@ -1080,7 +1040,7 @@ private:
     }
 
     void try_load_archive() {
-        if (m_has_utf || m_transform_kind != TransformKind::None || m_bytes.empty()) {
+        if (m_utf || m_transform_kind != TransformKind::None || m_bytes.empty()) {
             return;
         }
         const auto span = std::span<const uint8_t>(m_bytes.data(), m_bytes.size());
@@ -1099,7 +1059,7 @@ private:
     void refresh_summary() {
         update_local_key_panel_visibility();
         populate_info();
-        if (m_has_utf && m_utf) {
+        if (m_utf) {
             refresh_utf_view();
             return;
         }
@@ -1137,10 +1097,6 @@ private:
     }
 
     void sync_local_key_mode_controls() {
-        if (m_ui.local_key_type == nullptr || m_ui.cri_key_edit == nullptr || m_ui.cri_key_base == nullptr ||
-            m_ui.adx_subkey_panel == nullptr || m_ui.adx_triplet_panel == nullptr) {
-            return;
-        }
         const bool adx_context = m_transform_kind == TransformKind::Adx ||
             m_transform_kind == TransformKind::Aax || m_transform_kind == TransformKind::Aix;
         const bool cvm_context = m_archive_kind == ArchiveKind::Cvm;
@@ -1159,11 +1115,6 @@ private:
     }
 
     void sync_local_cri_key_ui() {
-        if (m_ui.cri_key_edit == nullptr || m_ui.cri_key_base == nullptr ||
-            m_ui.local_key_label == nullptr || m_ui.cvm_scramble_check == nullptr
-            || m_ui.cvm_scramble_panel == nullptr) {
-            return;
-        }
         const bool adx_context = m_transform_kind == TransformKind::Adx ||
             m_transform_kind == TransformKind::Aax || m_transform_kind == TransformKind::Aix;
         const bool cvm_context = m_archive_kind == ArchiveKind::Cvm;
@@ -1229,9 +1180,6 @@ private:
     }
 
     void update_local_key_panel_visibility() {
-        if (m_ui.cri_key_panel == nullptr) {
-            return;
-        }
         const bool relevant = m_transform_kind == TransformKind::Hca ||
             m_transform_kind == TransformKind::Adx ||
             m_transform_kind == TransformKind::Aax ||
@@ -1245,12 +1193,9 @@ private:
     }
 
     void apply_local_cri_key() {
-        if (m_ui.cri_key_edit == nullptr || m_ui.cri_key_base == nullptr) {
-            return;
-        }
         auto text = m_ui.cri_key_edit->text().trimmed();
         if (m_archive_kind == ArchiveKind::Cvm) {
-            if (m_ui.cvm_scramble_check != nullptr && m_ui.cvm_scramble_check->isChecked()) {
+            if (m_ui.cvm_scramble_check->isChecked()) {
                 if (text.isEmpty()) {
                     QMessageBox::warning(this, QCoreApplication::translate("Editor.EditorDocumentWidget", "Missing scramble key"), QCoreApplication::translate("Editor.EditorDocumentWidget", "Enter a CVM scramble key string or disable Scramble on save."));
                     return;
@@ -1331,7 +1276,7 @@ private:
             sync_local_cri_key_ui();
             dismiss_editor_media_preview();
             if ((m_transform_kind == TransformKind::Aax || m_transform_kind == TransformKind::Aix) &&
-                m_ui.transform_table != nullptr && m_ui.transform_table->currentIndex().isValid()) {
+                m_ui.transform_table->currentIndex().isValid()) {
                 show_selected_transform_row(m_ui.transform_table->currentIndex().row());
             } else {
                 preview_current_audio();
@@ -1375,13 +1320,17 @@ private:
             preview_current_audio();
         } else if (m_archive_kind != ArchiveKind::None) {
             refresh_archive_view();
-        } else if (m_has_utf) {
+        } else if (m_utf) {
             refresh_utf_view();
         }
     }
 
+    [[nodiscard]] bool utf_transposed() const noexcept {
+        return m_utf && m_utf->row_count() == 1;
+    }
+
     std::pair<int, int> utf_source_cell(int view_row, int view_column) const {
-        if (!m_utf_transposed) {
+        if (!utf_transposed()) {
             return {view_row, view_column};
         }
         return view_row < 0 ? std::pair{-1, -1} : std::pair{0, view_row};
@@ -1398,8 +1347,7 @@ private:
         m_ui.transform_table->hide();
         m_ui.utf_toolbar->show();
         m_ui.utf_grid->show();
-        m_utf_transposed = m_utf->row_count() == 1;
-        m_ui.schema_table->setVisible(!m_utf_transposed);
+        m_ui.schema_table->setVisible(!utf_transposed());
         m_ui.utf_edit_panel->show();
         m_ui.binary_actions_panel->show();
         m_ui.apply_value_button->setEnabled(false);
@@ -1438,7 +1386,7 @@ private:
         show_hex_preview(std::span<const uint8_t>(m_bytes.data(), m_bytes.size()));
         m_refreshing_utf = false;
         if (m_ui.utf_grid->currentRow() < 0 && m_ui.utf_grid->rowCount() > 0 && m_ui.utf_grid->columnCount() > 0) {
-            m_ui.utf_grid->setCurrentCell(0, m_utf_transposed ? 2 : 0);
+            m_ui.utf_grid->setCurrentCell(0, utf_transposed() ? 2 : 0);
         }
         const auto [source_row, source_column] = utf_source_cell(
             m_ui.utf_grid->currentRow(), m_ui.utf_grid->currentColumn());
@@ -1447,7 +1395,7 @@ private:
 
     void refresh_archive_view() {
         m_refreshing_archive = true;
-        refresh_archive_document_ui(m_ui, archive_view(), m_request.keys, std::span<const uint8_t>(m_bytes.data(), m_bytes.size()));
+        refresh_archive_document_ui(m_ui, archive_view(), m_request.keys);
         m_refreshing_archive = false;
         show_selected_archive_entry(m_ui.archive_table->currentRow());
     }
@@ -1481,8 +1429,7 @@ private:
             m_transform_kind,
             transform_view(),
             m_visible_transform_rows,
-            QString{},
-            std::span<const uint8_t>(m_bytes.data(), m_bytes.size())
+            QString{}
         );
         if (m_ui.transform_table->currentIndex().isValid()) {
             show_selected_transform_row(m_ui.transform_table->currentIndex().row());
@@ -1500,9 +1447,7 @@ private:
     }
 
     void refresh_visible_transform_rows() {
-        const auto filter_text = m_ui.transform_filter_edit != nullptr
-            ? m_ui.transform_filter_edit->text().trimmed()
-            : QString{};
+        const auto filter_text = m_ui.transform_filter_edit->text().trimmed();
         m_visible_transform_rows.clear();
         m_visible_transform_rows.reserve(m_transform_rows.size() + m_usm_chunk_rows.size());
         for (const auto& row : m_transform_rows) {
@@ -1523,7 +1468,6 @@ private:
         refresh_document_info_ui(m_ui, this, {
             .request = &m_request,
             .byte_count = m_bytes.size(),
-            .has_utf = m_has_utf,
             .utf = m_utf ? &*m_utf : nullptr,
             .archive = &archive,
             .transform_kind = m_transform_kind,
@@ -1542,7 +1486,6 @@ private:
         if (summary == nullptr) {
             return;
         }
-        m_selected_entry = *summary;
         if (!summary->inspector_entries.empty()) {
             m_ui.field_model->set_entries(summary->inspector_entries, {cristudio::i18n::translate_utf8("Editor.EditorDocumentWidget", "Field"), cristudio::i18n::translate_utf8("Editor.EditorDocumentWidget", "Type"), cristudio::i18n::translate_utf8("Editor.EditorDocumentWidget", "Value")}, {"field", "type", "value"});
             m_ui.field_table->show();
@@ -1566,7 +1509,6 @@ private:
         if (summary == nullptr) {
             return;
         }
-        m_selected_entry = *summary;
         preview_entry_bytes(*summary);
     }
 
@@ -1646,7 +1588,7 @@ private:
                         });
                         m_ui.hex_preview->hide();
                         m_ui.payload_table->show();
-                        set_preview_tabs(true, m_raw_preview_available, 0);
+                        set_preview_tabs(true, raw_preview_available(), 0);
                         return;
                     }
                 }
@@ -1655,9 +1597,7 @@ private:
                 show_detail_preview(QCoreApplication::translate("Editor.EditorDocumentWidget", "Error: %1").arg(utf8_to_qstring(data.error())));
             }
         } else {
-            if (m_ui.payload_table != nullptr) {
-                m_ui.payload_table->hide();
-            }
+            m_ui.payload_table->hide();
             clear_raw_preview();
             set_preview_tabs(false, false, 0);
         }
@@ -1687,9 +1627,7 @@ private:
     }
 
     int selected_archive_index() const {
-        return m_ui.archive_table == nullptr
-            ? -1
-            : validated_archive_index(archive_view(), m_ui.archive_table->currentRow());
+        return validated_archive_index(archive_view(), m_ui.archive_table->currentRow());
     }
 
     void show_selected_archive_entry(int row) {
@@ -1717,7 +1655,7 @@ private:
                 });
                 m_ui.hex_preview->hide();
                 m_ui.payload_table->show();
-                set_preview_tabs(true, m_raw_preview_available, 0);
+                set_preview_tabs(true, raw_preview_available(), 0);
                 return;
             }
         }
@@ -1734,21 +1672,15 @@ private:
     }
 
     void show_selected_transform_row(int row) {
-        if (row < 0 || m_ui.transform_table == nullptr || m_transform_kind == TransformKind::None) {
+        if (row < 0 || m_transform_kind == TransformKind::None) {
             dismiss_editor_media_preview();
             clear_raw_preview();
             set_preview_tabs(false, false, 0);
             return;
         }
-        if (m_ui.payload_table != nullptr) {
-            m_ui.payload_table->hide();
-        }
-        if (m_ui.hex_preview != nullptr) {
-            m_ui.hex_preview->hide();
-        }
-        const auto* detail = m_ui.transform_model != nullptr
-            ? m_ui.transform_model->detail_at(row)
-            : nullptr;
+        m_ui.payload_table->hide();
+        m_ui.hex_preview->hide();
+        const auto* detail = m_ui.transform_model->detail_at(row);
         if (detail == nullptr) {
             return;
         }
@@ -1764,51 +1696,45 @@ private:
             set_preview_tabs(false, false, 0);
             return;
         }
-        if (m_ui.payload_table != nullptr) {
-            std::optional<cricodecs::utf::UtfTable> table = std::nullopt;
-            if (m_transform_kind == TransformKind::Acb && m_acb) {
-                if (auto loaded = modules::acb::payload_table(*m_acb, selection.payload_kind, selection.index)) {
-                    table = std::move(*loaded);
-                }
-            } else if (m_transform_kind == TransformKind::Csb && m_csb) {
-                if (auto loaded = modules::csb::payload_table(*m_csb, selection.payload_kind, selection.index)) {
-                    table = std::move(*loaded);
-                }
+        std::optional<cricodecs::utf::UtfTable> table = std::nullopt;
+        if (m_transform_kind == TransformKind::Acb && m_acb) {
+            if (auto loaded = modules::acb::payload_table(*m_acb, selection.payload_kind, selection.index)) {
+                table = std::move(*loaded);
             }
-            if (table) {
-                dismiss_editor_media_preview();
-                clear_raw_preview();
-                modules::utf::populate_utf_tables(*table, {
-                    .grid = m_ui.payload_table,
-                    .transpose_single_row = true,
-                });
-                if (m_ui.hex_preview != nullptr) {
-                    m_ui.hex_preview->hide();
-                }
-                m_ui.payload_table->show();
-                set_preview_tabs(true, m_raw_preview_available, 0);
-                return;
+        } else if (m_transform_kind == TransformKind::Csb && m_csb) {
+            if (auto loaded = modules::csb::payload_table(*m_csb, selection.payload_kind, selection.index)) {
+                table = std::move(*loaded);
             }
         }
-        if (m_transform_kind == TransformKind::Usm && m_usm && m_ui.hex_preview != nullptr) {
+        if (table) {
+            dismiss_editor_media_preview();
+            clear_raw_preview();
+            modules::utf::populate_utf_tables(*table, {
+                .grid = m_ui.payload_table,
+                .transpose_single_row = true,
+            });
+            m_ui.hex_preview->hide();
+            m_ui.payload_table->show();
+            set_preview_tabs(true, raw_preview_available(), 0);
+            return;
+        }
+        if (m_transform_kind == TransformKind::Usm && m_usm) {
             if (selection.payload_kind == 13 && selection.index >= 0) {
                 preview_usm_stream(selection.index, *detail);
                 return;
             }
         }
-        if (m_ui.hex_preview != nullptr) {
-            auto bytes = transform_payload_preview_bytes(transform_view(), selection);
-            if (bytes) {
-                if (auto format = direct_audio_format(*bytes)) {
-                    LoadedDocument document;
-                    document.display_name = qstring_to_utf8(detail->field);
-                    document.format = std::move(*format);
-                    start_audio_preview(std::move(document), std::move(*bytes));
-                    return;
-                }
-                show_hex_preview(*bytes);
+        auto bytes = transform_payload_preview_bytes(transform_view(), selection);
+        if (bytes) {
+            if (auto format = direct_audio_format(*bytes)) {
+                LoadedDocument document;
+                document.display_name = qstring_to_utf8(detail->field);
+                document.format = std::move(*format);
+                start_audio_preview(std::move(document), std::move(*bytes));
                 return;
             }
+            show_hex_preview(*bytes);
+            return;
         }
         if (selection.payload_kind == 0 && !m_bytes.empty()) {
             show_hex_preview(std::span<const uint8_t>(m_bytes.data(), m_bytes.size()));
@@ -1822,8 +1748,7 @@ private:
     }
 
     std::optional<TransformPayloadSelection> selected_transform_edit_target() const {
-        if (m_ui.transform_table == nullptr || m_ui.transform_model == nullptr ||
-            !m_ui.transform_table->currentIndex().isValid()) {
+        if (!m_ui.transform_table->currentIndex().isValid()) {
             return std::nullopt;
         }
         const auto* detail = m_ui.transform_model->detail_at(m_ui.transform_table->currentIndex().row());
@@ -1885,7 +1810,7 @@ private:
     }
 
     void add_transform_entries() {
-        if ((!m_aax && !m_aix && !m_csb) || m_save_running) {
+        if ((!m_aax && !m_aix && !m_csb) || save_running()) {
             return;
         }
         if (m_transform_kind == TransformKind::Aix && m_aix) {
@@ -2177,8 +2102,7 @@ private:
     }
 
     void toggle_transform_entry_flag() {
-        if (m_ui.transform_table == nullptr || m_ui.transform_model == nullptr ||
-            !m_ui.transform_table->currentIndex().isValid()) {
+        if (!m_ui.transform_table->currentIndex().isValid()) {
             return;
         }
         const auto* detail = m_ui.transform_model->detail_at(m_ui.transform_table->currentIndex().row());
@@ -2299,7 +2223,7 @@ private:
     }
 
     void set_all_cpk_compression(bool enabled) {
-        if (m_archive_kind != ArchiveKind::Cpk || !m_cpk || m_ui.archive_table == nullptr) {
+        if (m_archive_kind != ArchiveKind::Cpk || !m_cpk) {
             return;
         }
         modules::cpk::set_all_request_compress(*m_cpk, enabled);
@@ -2327,7 +2251,7 @@ private:
     }
 
     void apply_selected_utf_value() {
-        if (!m_utf || m_ui.utf_grid == nullptr) {
+        if (!m_utf) {
             return;
         }
         const auto [row, column] = utf_source_cell(
@@ -2344,7 +2268,7 @@ private:
         if (m_refreshing_utf || item == nullptr || !m_utf) {
             return;
         }
-        if (m_utf_transposed && item->column() != 2) {
+        if (utf_transposed() && item->column() != 2) {
             return;
         }
         const auto [row, column] = utf_source_cell(item->row(), item->column());
@@ -2366,10 +2290,10 @@ private:
     }
 
     void remove_selected_utf_row() {
-        if (!m_utf || m_ui.utf_grid == nullptr || m_ui.utf_grid->currentRow() < 0) {
+        if (!m_utf || m_ui.utf_grid->currentRow() < 0) {
             return;
         }
-        const auto row = static_cast<uint32_t>(m_utf_transposed ? 0 : m_ui.utf_grid->currentRow());
+        const auto row = static_cast<uint32_t>(utf_transposed() ? 0 : m_ui.utf_grid->currentRow());
         if (QMessageBox::question(this, QCoreApplication::translate("Editor.EditorDocumentWidget", "Remove UTF row"), QCoreApplication::translate("Editor.EditorDocumentWidget", "Remove row %1?").arg(row)) != QMessageBox::Yes) {
             return;
         }
@@ -2402,9 +2326,9 @@ private:
             return;
         }
         int column = -1;
-        if (m_ui.utf_grid != nullptr && m_ui.utf_grid->currentColumn() >= 0) {
-            column = m_utf_transposed ? m_ui.utf_grid->currentRow() : m_ui.utf_grid->currentColumn();
-        } else if (m_ui.schema_table != nullptr && m_ui.schema_table->currentRow() >= 0) {
+        if (m_ui.utf_grid->currentColumn() >= 0) {
+            column = utf_transposed() ? m_ui.utf_grid->currentRow() : m_ui.utf_grid->currentColumn();
+        } else if (m_ui.schema_table->currentRow() >= 0) {
             column = m_ui.schema_table->currentRow();
         }
         if (column < 0 || column >= static_cast<int>(m_utf->column_count())) {
@@ -2418,10 +2342,10 @@ private:
     }
 
     void rename_selected_utf_column() {
-        if (!m_utf || m_ui.utf_grid == nullptr || m_ui.utf_grid->currentColumn() < 0) {
+        if (!m_utf || m_ui.utf_grid->currentColumn() < 0) {
             return;
         }
-        const auto column = static_cast<uint32_t>(m_utf_transposed
+        const auto column = static_cast<uint32_t>(utf_transposed()
             ? m_ui.utf_grid->currentRow()
             : m_ui.utf_grid->currentColumn());
         bool ok = false;
@@ -2442,7 +2366,7 @@ private:
             return;
         }
 
-        if (m_has_utf && summary.source_format == "UTF") {
+        if (m_utf && summary.source_format == "UTF") {
             auto bytes = utf_cell_bytes(summary.source_index);
             if (bytes) {
                 show_hex_preview(summary, *bytes);
@@ -2482,7 +2406,7 @@ private:
     }
 
     void replace_selected_binary() {
-        if (!m_has_utf || !m_utf || m_ui.utf_grid == nullptr) {
+        if (!m_utf) {
             return;
         }
         const auto [row, col] = utf_source_cell(
@@ -2819,45 +2743,22 @@ private:
         std::future<std::expected<void, QString>> future,
         std::shared_ptr<BuildJobLog> log = {}
     ) {
-        if (m_save_running) {
+        if (save_running()) {
             return;
         }
         m_last_save_path = std::move(path);
         m_active_job_log = std::move(log);
         m_active_job_label = label;
         m_active_job_saves_document = false;
-        m_save_running = true;
+        m_save_future = std::move(future);
+        update_header_actions();
         m_ui.progress->show();
         append_log(QCoreApplication::translate("Editor.EditorDocumentWidget", "%1 started: %2").arg(std::move(label)).arg(path_to_qstring(m_last_save_path)));
-        m_save_future = std::move(future);
         m_poll_timer.start(50, this);
     }
 
-    QWidget* path_picker_row(QLineEdit* edit, const QString& title, bool save_path, const QString& filter = QString{}) {
-        auto* row = new QWidget(this);
-        auto* layout = new QHBoxLayout(row);
-        layout->setContentsMargins(0, 0, 0, 0);
-        layout->setSpacing(6);
-        edit->setClearButtonEnabled(true);
-        layout->addWidget(edit, 1);
-        auto* browse = new QPushButton(QCoreApplication::translate("Editor.EditorDocumentWidget", "Browse"), row);
-        layout->addWidget(browse, 0);
-        connect(browse, &QPushButton::clicked, this, [this, edit, title, save_path, filter] {
-            QString selected;
-            if (save_path) {
-                selected = QFileDialog::getSaveFileName(this, title, edit->text(), filter);
-            } else {
-                selected = QFileDialog::getOpenFileName(this, title, edit->text(), filter);
-            }
-            if (!selected.isEmpty()) {
-                edit->setText(selected);
-            }
-        });
-        return row;
-    }
-
     void open_audio_encode_wizard() {
-        if (m_save_running || (m_transform_kind != TransformKind::AudioEncode &&
+        if (save_running() || (m_transform_kind != TransformKind::AudioEncode &&
                                m_transform_kind != TransformKind::Adx &&
                                m_transform_kind != TransformKind::Hca)) {
             return;
@@ -2920,7 +2821,7 @@ private:
     }
 
     void export_acb_associated_awb() {
-        if (m_transform_kind != TransformKind::Acb || !m_acb || m_save_running) {
+        if (m_transform_kind != TransformKind::Acb || !m_acb || save_running()) {
             return;
         }
         auto export_payload = modules::acb::choose_associated_awb_export(this, *m_acb, m_title);
@@ -2943,7 +2844,7 @@ private:
     }
 
     bool open_media_build_wizard() {
-        if (m_save_running) {
+        if (save_running()) {
             return false;
         }
 
@@ -2988,12 +2889,8 @@ private:
     }
 
     void set_editor_video_visible(bool visible) {
-        if (m_ui.mux_video_frame != nullptr) {
-            m_ui.mux_video_frame->setVisible(visible);
-        }
-        if (m_ui.mux_video_widget != nullptr) {
-            m_ui.mux_video_widget->setVisible(visible);
-        }
+        m_ui.video.frame->setVisible(visible);
+        m_ui.video.widget->setVisible(visible);
     }
 
     void clear_editor_preview_files() {
@@ -3002,52 +2899,30 @@ private:
             m_editor_media_player->setVideoOutput(nullptr);
             m_editor_media_player->setSource({});
         }
-        if (m_ui.mux_video_widget != nullptr) {
-            set_editor_video_visible(false);
-            m_ui.mux_video_widget->clearFocus();
-        }
+        set_editor_video_visible(false);
+        m_ui.video.widget->clearFocus();
         m_editor_slider_dragging = false;
         m_editor_resume_after_seek = false;
-        if (m_ui.media_seek_slider != nullptr) {
-            m_ui.media_seek_slider->setRange(0, 0);
-            m_ui.media_seek_slider->setValue(0);
-            m_ui.media_seek_slider->setEnabled(false);
-        }
-        if (m_ui.media_time_label != nullptr) {
-            m_ui.media_time_label->setText(QStringLiteral("0:00 / 0:00"));
-        }
-        if (m_ui.mux_play_button != nullptr) {
-            m_ui.mux_play_button->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
-            m_ui.mux_play_button->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Play"));
-            m_ui.mux_play_button->setEnabled(false);
-        }
+        m_ui.media.seek_slider->setRange(0, 0);
+        m_ui.media.seek_slider->setValue(0);
+        m_ui.media.seek_slider->setEnabled(false);
+        m_ui.media.time_label->setText(QStringLiteral("0:00 / 0:00"));
+        m_ui.media.play_button->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
+        m_ui.media.play_button->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Play"));
+        m_ui.media.play_button->setEnabled(false);
         m_editor_audio_loops.clear();
         m_editor_audio_sample_rate = 0;
         m_editor_loop_seeking = false;
-        if (m_ui.media_loop_list != nullptr) {
-            m_ui.media_loop_list->clear();
-        }
-        if (m_ui.media_loop_toggle != nullptr) {
-            QSignalBlocker blocker(m_ui.media_loop_toggle);
-            m_ui.media_loop_toggle->setChecked(false);
-        }
-        if (m_ui.media_loop_row != nullptr) {
-            m_ui.media_loop_row->hide();
-        }
-        if (m_ui.mux_audio_combo != nullptr) {
-            QSignalBlocker blocker(m_ui.mux_audio_combo);
-            m_ui.mux_audio_combo->clear();
-        }
-        if (m_ui.mux_subtitle_combo != nullptr) {
-            QSignalBlocker blocker(m_ui.mux_subtitle_combo);
-            m_ui.mux_subtitle_combo->clear();
-        }
-        if (m_ui.mux_audio_row != nullptr) {
-            m_ui.mux_audio_row->hide();
-        }
-        if (m_ui.mux_subtitle_row != nullptr) {
-            m_ui.mux_subtitle_row->hide();
-        }
+        m_ui.media.loop_list->clear();
+        const QSignalBlocker loop_blocker(m_ui.media.loop_toggle);
+        const QSignalBlocker audio_blocker(m_ui.media.audio_combo);
+        const QSignalBlocker subtitle_blocker(m_ui.media.subtitle_combo);
+        m_ui.media.loop_toggle->setChecked(false);
+        m_ui.media.loop_row->hide();
+        m_ui.media.audio_combo->clear();
+        m_ui.media.subtitle_combo->clear();
+        m_ui.media.audio_row->hide();
+        m_ui.media.subtitle_row->hide();
         if (m_editor_preview_temp_dir.empty()) {
             return;
         }
@@ -3061,9 +2936,7 @@ private:
         ++m_prepared_media_request_id;
         m_pending_audio_preview.reset();
         clear_editor_preview_files();
-        if (m_ui.mux_preview_panel != nullptr) {
-            m_ui.mux_preview_panel->hide();
-        }
+        m_ui.mux_preview_panel->hide();
     }
 
     void ensure_editor_media_player() {
@@ -3073,19 +2946,17 @@ private:
         m_editor_media_player = new QMediaPlayer(this);
         m_editor_audio_output = new QAudioOutput(this);
         m_editor_audio_output->setVolume(static_cast<float>(
-            std::clamp(m_ui.media_volume_slider == nullptr ? 80 : m_ui.media_volume_slider->value(), 0, 100)) / 100.0f);
+            std::clamp(m_ui.media.volume_slider->value(), 0, 100)) / 100.0f);
         m_editor_media_player->setAudioOutput(m_editor_audio_output);
         connect(m_editor_media_player, &QMediaPlayer::durationChanged, this, [this](qint64 duration) {
-            if (m_ui.media_seek_slider != nullptr) {
-                m_ui.media_seek_slider->setRange(0, static_cast<int>(std::clamp<qint64>(
-                    duration, 0, (std::numeric_limits<int>::max)())));
-            }
+            m_ui.media.seek_slider->setRange(0, static_cast<int>(std::clamp<qint64>(
+                duration, 0, (std::numeric_limits<int>::max)())));
             update_editor_media_time();
         });
         connect(m_editor_media_player, &QMediaPlayer::positionChanged, this, [this](qint64 position) {
-            if (!m_editor_slider_dragging && m_ui.media_seek_slider != nullptr) {
-                QSignalBlocker blocker(m_ui.media_seek_slider);
-                m_ui.media_seek_slider->setValue(static_cast<int>(std::clamp<qint64>(
+            if (!m_editor_slider_dragging) {
+                QSignalBlocker blocker(m_ui.media.seek_slider);
+                m_ui.media.seek_slider->setValue(static_cast<int>(std::clamp<qint64>(
                     position, 0, (std::numeric_limits<int>::max)())));
             }
             handle_editor_audio_loop(position);
@@ -3093,29 +2964,27 @@ private:
         });
         connect(m_editor_media_player, &QMediaPlayer::playbackStateChanged, this,
             [this](QMediaPlayer::PlaybackState state) {
-                if (m_ui.mux_play_button != nullptr) {
-                    m_ui.mux_play_button->setIcon(style()->standardIcon(
-                        state == QMediaPlayer::PlayingState ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));
-                    m_ui.mux_play_button->setText(
-                        state == QMediaPlayer::PlayingState ? QCoreApplication::translate("Editor.EditorDocumentWidget", "Pause") : QCoreApplication::translate("Editor.EditorDocumentWidget", "Play"));
-                }
+                m_ui.media.play_button->setIcon(style()->standardIcon(
+                    state == QMediaPlayer::PlayingState ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));
+                m_ui.media.play_button->setText(
+                    state == QMediaPlayer::PlayingState ? QCoreApplication::translate("Editor.EditorDocumentWidget", "Pause") : QCoreApplication::translate("Editor.EditorDocumentWidget", "Play"));
             });
         connect(m_editor_media_player, &QMediaPlayer::errorOccurred, this,
             [this](QMediaPlayer::Error, const QString& message) {
-                if (!message.isEmpty() && m_ui.mux_status_label != nullptr) {
-                    m_ui.mux_status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Playback error: ") + message);
+                if (!message.isEmpty()) {
+                    m_ui.media.status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Playback error: ") + message);
                 }
             });
     }
 
     void update_editor_media_time() {
-        if (m_editor_media_player == nullptr || m_ui.media_time_label == nullptr) {
+        if (m_editor_media_player == nullptr) {
             return;
         }
-        const auto position = m_editor_slider_dragging && m_ui.media_seek_slider != nullptr
-            ? static_cast<qint64>(m_ui.media_seek_slider->value())
+        const auto position = m_editor_slider_dragging
+            ? static_cast<qint64>(m_ui.media.seek_slider->value())
             : m_editor_media_player->position();
-        m_ui.media_time_label->setText(
+        m_ui.media.time_label->setText(
             time_text(position) + QStringLiteral(" / ") +
             time_text(m_editor_media_player->duration()));
     }
@@ -3123,12 +2992,9 @@ private:
     void configure_editor_audio_loops(const AudioPreview& audio) {
         m_editor_audio_loops = audio.loops;
         m_editor_audio_sample_rate = audio.sample_rate;
-        if (m_ui.media_loop_list == nullptr || m_ui.media_loop_toggle == nullptr || m_ui.media_loop_row == nullptr) {
-            return;
-        }
-        QSignalBlocker toggle_blocker(m_ui.media_loop_toggle);
-        QSignalBlocker list_blocker(m_ui.media_loop_list);
-        m_ui.media_loop_list->clear();
+        QSignalBlocker toggle_blocker(m_ui.media.loop_toggle);
+        QSignalBlocker list_blocker(m_ui.media.loop_list);
+        m_ui.media.loop_list->clear();
         const auto to_ms = [sample_rate = audio.sample_rate](uint64_t sample) -> qint64 {
             return sample_rate == 0 ? 0 : static_cast<qint64>((sample * 1000ull) / sample_rate);
         };
@@ -3145,28 +3011,27 @@ private:
                     .arg(time_text(to_ms(loop.end_sample)))
                     .arg(loop.start_sample)
                     .arg(loop.end_sample),
-                m_ui.media_loop_list);
+                m_ui.media.loop_list);
             item->setData(Qt::UserRole, static_cast<int>(index));
         }
         const auto has_loops = !m_editor_audio_loops.empty() && audio.sample_rate != 0;
-        m_ui.media_loop_toggle->setChecked(false);
-        m_ui.media_loop_toggle->setEnabled(has_loops);
-        m_ui.media_loop_list->setEnabled(has_loops);
-        m_ui.media_loop_row->setVisible(has_loops);
+        m_ui.media.loop_toggle->setChecked(false);
+        m_ui.media.loop_toggle->setEnabled(has_loops);
+        m_ui.media.loop_list->setEnabled(has_loops);
+        m_ui.media.loop_row->setVisible(has_loops);
         if (has_loops) {
-            m_ui.media_loop_list->setCurrentRow(0);
+            m_ui.media.loop_list->setCurrentRow(0);
             const auto visible_rows = (std::min)(4, static_cast<int>(m_editor_audio_loops.size()));
-            m_ui.media_loop_list->setFixedHeight((std::max)(36, 32 * visible_rows + 6));
+            m_ui.media.loop_list->setFixedHeight((std::max)(36, 32 * visible_rows + 6));
         }
     }
 
     void handle_editor_audio_loop(qint64 position) {
-        if (m_editor_media_player == nullptr || m_ui.media_loop_toggle == nullptr ||
-            m_ui.media_loop_list == nullptr || !m_ui.media_loop_toggle->isChecked() ||
+        if (m_editor_media_player == nullptr || !m_ui.media.loop_toggle->isChecked() ||
             m_editor_loop_seeking || m_editor_slider_dragging || m_editor_audio_sample_rate == 0) {
             return;
         }
-        const auto index = m_ui.media_loop_list->currentRow();
+        const auto index = m_ui.media.loop_list->currentRow();
         if (index < 0 || index >= static_cast<int>(m_editor_audio_loops.size())) {
             return;
         }
@@ -3179,6 +3044,15 @@ private:
         m_editor_loop_seeking = true;
         m_editor_media_player->setPosition(start);
         m_editor_loop_seeking = false;
+    }
+
+    void show_editor_playable_media() {
+        m_ui.mux_preview_panel->show();
+        m_ui.media.panel->show();
+        m_ui.media.play_button->setEnabled(true);
+        m_ui.media.play_button->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Play"));
+        m_ui.media.seek_slider->setEnabled(true);
+        set_preview_tabs(true, raw_preview_available(), 0);
     }
 
     void finish_current_audio_preview() {
@@ -3197,22 +3071,22 @@ private:
         }
         auto preview = std::move(result.preview);
         if (!preview) {
-            m_ui.mux_status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Preview unavailable: %1").arg(utf8_to_qstring(preview.error())));
-            m_ui.mux_play_button->setEnabled(false);
+            m_ui.media.status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Preview unavailable: %1").arg(utf8_to_qstring(preview.error())));
+            m_ui.media.play_button->setEnabled(false);
             return;
         }
 
         clear_editor_preview_files();
         QTemporaryDir preview_dir(QDir::tempPath() + QStringLiteral("/CriStudio-editor-audio-preview-XXXXXX"));
         if (!preview_dir.isValid()) {
-            m_ui.mux_status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Could not create a temporary audio preview directory."));
-            m_ui.mux_play_button->setEnabled(false);
+            m_ui.media.status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Could not create a temporary audio preview directory."));
+            m_ui.media.play_button->setEnabled(false);
             return;
         }
         const auto wav_path = path_from_qstring(preview_dir.filePath(QStringLiteral("preview.wav")));
         if (auto written = write_file_bytes(wav_path, preview->wav_bytes); !written) {
-            m_ui.mux_status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Could not stage audio preview: %1").arg(written.error()));
-            m_ui.mux_play_button->setEnabled(false);
+            m_ui.media.status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Could not stage audio preview: %1").arg(written.error()));
+            m_ui.media.play_button->setEnabled(false);
             return;
         }
 
@@ -3223,19 +3097,14 @@ private:
         m_editor_media_player->setSource(QUrl::fromLocalFile(path_to_qstring(wav_path)));
         configure_editor_audio_loops(*preview);
         set_editor_video_visible(false);
-        m_ui.mux_preview_panel->show();
-        m_ui.media_controls_panel->show();
-        set_preview_tabs(true, m_raw_preview_available, 0);
-        m_ui.mux_status_label->setText(QCoreApplication::translate(
+        m_ui.media.status_label->setText(QCoreApplication::translate(
             "Editor.EditorDocumentWidget",
             "%1 - %2 Hz, %n channel(s)",
             nullptr,
             static_cast<int>(preview->channels))
             .arg(utf8_to_qstring(preview->format))
             .arg(preview->sample_rate));
-        m_ui.mux_play_button->setEnabled(true);
-        m_ui.media_seek_slider->setEnabled(true);
-        m_ui.mux_play_button->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Play"));
+        show_editor_playable_media();
     }
 
     void present_video_preview(VideoPreview video) {
@@ -3247,17 +3116,13 @@ private:
         clear_editor_preview_files();
         m_editor_preview_temp_dir = video.temporary_directory;
         ensure_editor_media_player();
-        m_editor_media_player->setVideoOutput(m_ui.mux_video_widget);
+        m_editor_media_player->setVideoOutput(m_ui.video.widget);
         m_editor_media_player->setSource(QUrl::fromLocalFile(path_to_qstring(video.playable_path)));
         m_ui.payload_table->hide();
-        m_ui.mux_preview_panel->show();
         set_editor_video_visible(true);
-        m_ui.mux_status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "%1 video preview ready")
+        m_ui.media.status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "%1 video preview ready")
             .arg(utf8_to_qstring(video.format)));
-        m_ui.mux_play_button->setEnabled(true);
-        m_ui.media_seek_slider->setEnabled(true);
-        m_ui.mux_play_button->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Play"));
-        set_preview_tabs(true, m_raw_preview_available, 0);
+        show_editor_playable_media();
     }
 
     void start_video_preview(VideoPreview video) {
@@ -3266,9 +3131,9 @@ private:
         m_ui.payload_table->hide();
         m_ui.mux_preview_panel->show();
         set_editor_video_visible(false);
-        m_ui.mux_status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Preparing video preview..."));
-        m_ui.mux_play_button->setEnabled(false);
-        set_preview_tabs(true, m_raw_preview_available, 0);
+        m_ui.media.status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Preparing video preview..."));
+        m_ui.media.play_button->setEnabled(false);
+        set_preview_tabs(true, raw_preview_available(), 0);
 
         const auto request_id = ++m_prepared_media_request_id;
         auto* watcher = new QFutureWatcher<EditorVideoPreviewResult>(this);
@@ -3314,11 +3179,11 @@ private:
         m_ui.preview_tabs->setCurrentIndex(0);
         m_ui.mux_preview_panel->show();
         set_editor_video_visible(false);
-        m_ui.mux_status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Preparing audio preview..."));
-        m_ui.mux_play_button->setEnabled(false);
+        m_ui.media.status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Preparing audio preview..."));
+        m_ui.media.play_button->setEnabled(false);
         m_ui.payload_table->hide();
         set_raw_preview(bytes, bytes.size(), std::string(document_format_id(document)));
-        set_preview_tabs(true, m_raw_preview_available, 0);
+        set_preview_tabs(true, raw_preview_available(), 0);
 
         if (m_audio_preview_watcher == nullptr) {
             m_audio_preview_watcher = new QFutureWatcher<EditorAudioPreviewResult>(this);
@@ -3359,8 +3224,7 @@ private:
 
     void preview_current_mux(int audio_choice = 0) {
         const bool is_mux = m_transform_kind == TransformKind::Usm || m_transform_kind == TransformKind::Sfd;
-        if (m_save_running || !is_mux || m_bytes.empty() ||
-            m_ui.mux_preview_panel == nullptr || m_ui.mux_video_widget == nullptr) {
+        if (save_running() || !is_mux || m_bytes.empty()) {
             return;
         }
 
@@ -3370,23 +3234,21 @@ private:
         m_ui.preview_tabs->setCurrentIndex(0);
         m_ui.mux_preview_panel->show();
         set_editor_video_visible(false);
-        m_ui.mux_status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Preparing mux preview..."));
-        m_ui.mux_play_button->setEnabled(false);
-        if (m_ui.payload_table != nullptr) {
-            m_ui.payload_table->hide();
-        }
+        m_ui.media.status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Preparing mux preview..."));
+        m_ui.media.play_button->setEnabled(false);
+        m_ui.payload_table->hide();
         QApplication::processEvents();
 
         QTemporaryDir preview_dir(QDir::tempPath() + QStringLiteral("/CriStudio-editor-mux-preview-XXXXXX"));
         if (!preview_dir.isValid()) {
-            m_ui.mux_status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Could not create a temporary preview directory."));
+            m_ui.media.status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Could not create a temporary preview directory."));
             m_ui.mux_preview_panel->show();
             return;
         }
         const auto suffix = m_transform_kind == TransformKind::Sfd ? QStringLiteral(".sfd") : QStringLiteral(".usm");
         const auto source_path = path_from_qstring(preview_dir.filePath(QStringLiteral("editor-preview") + suffix));
         if (auto saved = write_file_bytes(source_path, m_bytes); !saved) {
-            m_ui.mux_status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Could not stage editor bytes: %1").arg(saved.error()));
+            m_ui.media.status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Could not stage editor bytes: %1").arg(saved.error()));
             m_ui.mux_preview_panel->show();
             return;
         }
@@ -3394,7 +3256,7 @@ private:
         std::string reason;
         auto document = load_document_summary(source_path, reason, m_request.keys);
         if (!document) {
-            m_ui.mux_status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Could not inspect editor mux: %1").arg(utf8_to_qstring(reason)));
+            m_ui.media.status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Could not inspect editor mux: %1").arg(utf8_to_qstring(reason)));
             m_ui.mux_preview_panel->show();
             return;
         }
@@ -3412,7 +3274,7 @@ private:
                 return;
             }
             if (!result.preview) {
-                m_ui.mux_status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Preview unavailable: %1")
+                m_ui.media.status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Preview unavailable: %1")
                     .arg(utf8_to_qstring(result.preview.error())));
                 m_ui.mux_preview_panel->show();
                 return;
@@ -3420,57 +3282,52 @@ private:
             auto mux = std::move(*result.preview);
             set_raw_preview(mux.video_bytes, mux.video_bytes.size(), mux.format);
             if (mux.playable_path.empty()) {
-                m_ui.mux_status_label->setText(utf8_to_qstring(
+                m_ui.media.status_label->setText(utf8_to_qstring(
                     mux.note.empty() ? cristudio::i18n::translate_utf8("Editor.EditorDocumentWidget", "Preview preparation failed") : mux.note));
                 m_ui.mux_preview_panel->show();
                 return;
             }
             clear_editor_preview_files();
             {
-                QSignalBlocker blocker(m_ui.mux_audio_combo);
+                QSignalBlocker blocker(m_ui.media.audio_combo);
                 for (int index = 0; index < static_cast<int>(mux.audio_choices.size()); ++index) {
                     const auto& choice = mux.audio_choices[static_cast<size_t>(index)];
                     auto label = utf8_to_qstring(choice.name);
                     if (!choice.detail.empty()) {
                         label += QStringLiteral("  -  ") + utf8_to_qstring(choice.detail);
                     }
-                    m_ui.mux_audio_combo->addItem(label, index);
+                    m_ui.media.audio_combo->addItem(label, index);
                 }
-                if (mux.selected_audio >= 0 && mux.selected_audio < m_ui.mux_audio_combo->count()) {
-                    m_ui.mux_audio_combo->setCurrentIndex(mux.selected_audio);
+                if (mux.selected_audio >= 0 && mux.selected_audio < m_ui.media.audio_combo->count()) {
+                    m_ui.media.audio_combo->setCurrentIndex(mux.selected_audio);
                 }
             }
-            m_ui.mux_audio_row->setVisible(m_ui.mux_audio_combo->count() > 0);
+            m_ui.media.audio_row->setVisible(m_ui.media.audio_combo->count() > 0);
             {
-                QSignalBlocker blocker(m_ui.mux_subtitle_combo);
-                m_ui.mux_subtitle_combo->addItem(QCoreApplication::translate("Editor.EditorDocumentWidget", "Disabled"), -1);
+                QSignalBlocker blocker(m_ui.media.subtitle_combo);
+                m_ui.media.subtitle_combo->addItem(QCoreApplication::translate("Editor.EditorDocumentWidget", "Disabled"), -1);
                 for (int index = 0; index < static_cast<int>(mux.subtitle_choices.size()); ++index) {
                     const auto& choice = mux.subtitle_choices[static_cast<size_t>(index)];
                     auto label = utf8_to_qstring(choice.detail.empty() ? choice.name : choice.detail);
                     if (!choice.name.empty() && !choice.detail.empty()) {
                         label += QStringLiteral("  -  ") + utf8_to_qstring(choice.name);
                     }
-                    m_ui.mux_subtitle_combo->addItem(label, index);
+                    m_ui.media.subtitle_combo->addItem(label, index);
                 }
-                m_ui.mux_subtitle_combo->setCurrentIndex(
-                    mux.selected_subtitle >= 0 && mux.selected_subtitle + 1 < m_ui.mux_subtitle_combo->count()
+                m_ui.media.subtitle_combo->setCurrentIndex(
+                    mux.selected_subtitle >= 0 && mux.selected_subtitle + 1 < m_ui.media.subtitle_combo->count()
                         ? mux.selected_subtitle + 1
                         : 0);
             }
-            m_ui.mux_subtitle_row->setVisible(!mux.subtitle_choices.empty());
+            m_ui.media.subtitle_row->setVisible(!mux.subtitle_choices.empty());
             m_editor_preview_temp_dir = mux.temporary_directory;
             ensure_editor_media_player();
-            m_editor_media_player->setVideoOutput(m_ui.mux_video_widget);
+            m_editor_media_player->setVideoOutput(m_ui.video.widget);
             m_editor_media_player->setSource(QUrl::fromLocalFile(path_to_qstring(mux.playable_path)));
-            m_editor_media_player->setActiveSubtitleTrack(m_ui.mux_subtitle_combo->currentData().toInt());
+            m_editor_media_player->setActiveSubtitleTrack(m_ui.media.subtitle_combo->currentData().toInt());
             set_editor_video_visible(true);
-            set_preview_tabs(true, m_raw_preview_available, 0);
-            m_ui.mux_status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Editor mux preview ready"));
-            m_ui.mux_play_button->setEnabled(true);
-            m_ui.media_seek_slider->setEnabled(true);
-            m_ui.mux_play_button->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Play"));
-            m_ui.mux_preview_panel->show();
-            m_ui.preview_tabs->setCurrentIndex(0);
+            m_ui.media.status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Editor mux preview ready"));
+            show_editor_playable_media();
         });
         const auto keys = m_request.keys;
         watcher->setFuture(QtConcurrent::run([
@@ -3494,7 +3351,7 @@ private:
     }
 
     void open_adx_container_build_wizard() {
-        if (m_save_running || (m_transform_kind != TransformKind::Aax && m_transform_kind != TransformKind::Aix)) {
+        if (save_running() || (m_transform_kind != TransformKind::Aax && m_transform_kind != TransformKind::Aix)) {
             return;
         }
 
@@ -3539,7 +3396,7 @@ private:
     }
 
     void open_csb_directory_build_wizard() {
-        if (m_save_running || m_transform_kind != TransformKind::Csb) {
+        if (save_running() || m_transform_kind != TransformKind::Csb) {
             return;
         }
 
@@ -3568,7 +3425,7 @@ private:
     }
 
     void edit_transform_options() {
-        if (m_save_running) {
+        if (save_running()) {
             return;
         }
 
@@ -3592,7 +3449,7 @@ private:
     }
 
     void decode_transform_to_wav() {
-        if (m_save_running || (m_transform_kind != TransformKind::Adx && m_transform_kind != TransformKind::Hca)) {
+        if (save_running() || (m_transform_kind != TransformKind::Adx && m_transform_kind != TransformKind::Hca)) {
             return;
         }
         const auto default_name = safe_output_name(m_title, QStringLiteral(".wav"));
@@ -3614,7 +3471,7 @@ private:
     }
 
     void decrypt_transform_to_file() {
-        if (m_save_running || (m_transform_kind != TransformKind::Adx && m_transform_kind != TransformKind::Hca)) {
+        if (save_running() || (m_transform_kind != TransformKind::Adx && m_transform_kind != TransformKind::Hca)) {
             return;
         }
         const auto default_name = safe_output_name(m_title + QStringLiteral("_decrypted"), transform_default_suffix());
@@ -3636,7 +3493,7 @@ private:
     }
 
     void encrypt_transform_to_file() {
-        if (m_save_running || m_transform_kind != TransformKind::Hca) {
+        if (save_running() || m_transform_kind != TransformKind::Hca) {
             return;
         }
         const auto default_name = safe_output_name(m_title + QStringLiteral("_encrypted"), QStringLiteral(".hca"));
@@ -3657,7 +3514,7 @@ private:
     }
 
     void rebuild_transform_to_file() {
-        if (m_save_running || m_transform_kind == TransformKind::None) {
+        if (save_running() || m_transform_kind == TransformKind::None) {
             return;
         }
         const auto default_name = safe_output_name(m_title + QStringLiteral("_rebuilt"), transform_default_suffix());
@@ -3679,7 +3536,7 @@ private:
     }
 
     void extract_transform_payloads() {
-        if (m_save_running || (m_transform_kind != TransformKind::Aax && m_transform_kind != TransformKind::Aix &&
+        if (save_running() || (m_transform_kind != TransformKind::Aax && m_transform_kind != TransformKind::Aix &&
                                m_transform_kind != TransformKind::Usm && m_transform_kind != TransformKind::Sfd &&
                                m_transform_kind != TransformKind::Csb && m_transform_kind != TransformKind::Acb)) {
             return;
@@ -3759,7 +3616,7 @@ private:
     }
 
     void build_session_bytes() {
-        if (m_has_utf && m_utf) {
+        if (m_utf) {
             m_bytes = modules::utf::build_session_bytes(*m_utf);
             append_log(QCoreApplication::translate("Editor.EditorDocumentWidget", "Built UTF session bytes: %1 bytes").arg(static_cast<qulonglong>(m_bytes.size())));
             refresh_summary();
@@ -3777,19 +3634,15 @@ private:
     }
 
     void build_session() {
-        if (m_save_running) {
+        if (save_running()) {
             append_log(QCoreApplication::translate("Editor.EditorDocumentWidget", "Build skipped because another editor job is running."));
             return;
         }
-        if (m_ui.progress != nullptr) {
-            m_ui.progress->show();
-        }
+        m_ui.progress->show();
         append_log(QCoreApplication::translate("Editor.EditorDocumentWidget", "Build started."));
         build_session_bytes();
         append_log(QCoreApplication::translate("Editor.EditorDocumentWidget", "Build finished."));
-        if (m_ui.progress != nullptr) {
-            m_ui.progress->hide();
-        }
+        m_ui.progress->hide();
     }
 
     QString default_save_name() const {
@@ -3799,7 +3652,7 @@ private:
         }
         if (m_transform_kind == TransformKind::Acb) {
             default_name += QStringLiteral(".acb");
-        } else if (m_has_utf) {
+        } else if (m_utf) {
             default_name += QStringLiteral(".utf");
         } else if (m_archive_kind == ArchiveKind::Afs) {
             default_name += QStringLiteral(".afs");
@@ -3825,15 +3678,12 @@ private:
         m_active_job_log.reset();
         m_active_job_label = label;
         m_active_job_saves_document = true;
-        m_save_running = true;
-        update_header_actions();
-        if (m_ui.progress != nullptr) {
-            m_ui.progress->show();
-        }
-        append_log(QCoreApplication::translate("Editor.EditorDocumentWidget", "%1 started: %2").arg(std::move(label)).arg(path_to_qstring(m_last_save_path)));
         m_save_future = std::async(std::launch::async, [path = m_last_save_path, bytes = std::move(bytes)] {
             return write_file_bytes(path, bytes);
         });
+        update_header_actions();
+        m_ui.progress->show();
+        append_log(QCoreApplication::translate("Editor.EditorDocumentWidget", "%1 started: %2").arg(std::move(label)).arg(path_to_qstring(m_last_save_path)));
         m_poll_timer.start(50, this);
     }
 
@@ -3854,7 +3704,7 @@ private:
     }
 
     void save_as() {
-        if (m_save_running) {
+        if (save_running()) {
             return;
         }
         build_session_bytes();
@@ -3868,7 +3718,7 @@ private:
     }
 
     void save() {
-        if (m_save_running) {
+        if (save_running()) {
             return;
         }
         if (m_last_save_file_path.empty()) {
@@ -3885,7 +3735,7 @@ private:
     }
 
     void extract_copy() {
-        if (m_save_running) {
+        if (save_running()) {
             return;
         }
         build_session_bytes();
@@ -3899,13 +3749,12 @@ private:
             m_active_job_saves_document = false;
             auto bytes = m_bytes;
             const auto kind = m_archive_kind;
-            m_save_running = true;
-            update_header_actions();
-            m_ui.progress->show();
-            append_log(QCoreApplication::translate("Editor.EditorDocumentWidget", "Archive extract started: %1").arg(dir_text));
             m_save_future = std::async(std::launch::async, [kind, path = m_last_save_path, bytes = std::move(bytes)]() mutable {
                 return extract_archive_bytes(kind, std::move(bytes), path);
             });
+            update_header_actions();
+            m_ui.progress->show();
+            append_log(QCoreApplication::translate("Editor.EditorDocumentWidget", "Archive extract started: %1").arg(dir_text));
             m_poll_timer.start(50, this);
             return;
         }
@@ -3917,44 +3766,39 @@ private:
             m_active_job_saves_document = false;
             auto bytes = m_bytes;
             const auto kind = m_transform_kind;
-            m_save_running = true;
-            update_header_actions();
-            m_ui.progress->show();
-            append_log(QCoreApplication::translate("Editor.EditorDocumentWidget", "Transform extract started: %1").arg(dir_text));
             m_save_future = std::async(std::launch::async, [kind, path = m_last_save_path, bytes = std::move(bytes)]() mutable {
                 return transform_extract_all(kind, std::move(bytes), path);
             });
+            update_header_actions();
+            m_ui.progress->show();
+            append_log(QCoreApplication::translate("Editor.EditorDocumentWidget", "Transform extract started: %1").arg(dir_text));
             m_poll_timer.start(50, this);
             return;
         }
-        const auto suffix = m_has_utf ? QStringLiteral(".utf") : (m_transform_kind != TransformKind::None ? transform_default_suffix() : QStringLiteral(".bin"));
+        const auto suffix = m_utf ? QStringLiteral(".utf") : (m_transform_kind != TransformKind::None ? transform_default_suffix() : QStringLiteral(".bin"));
         const auto output_name = safe_output_name(m_title, suffix);
         m_last_save_path = path_from_qstring(dir_text) / path_from_qstring(output_name);
         m_active_job_label = QCoreApplication::translate("Editor.EditorDocumentWidget", "Editor extract");
         m_active_job_saves_document = false;
         auto bytes = m_bytes;
-        m_save_running = true;
-        update_header_actions();
-        m_ui.progress->show();
-        append_log(QCoreApplication::translate("Editor.EditorDocumentWidget", "Editor extract started: %1").arg(path_to_qstring(m_last_save_path)));
         m_save_future = std::async(std::launch::async, [path = m_last_save_path, bytes = std::move(bytes)] {
             return write_file_bytes(path, bytes);
         });
+        update_header_actions();
+        m_ui.progress->show();
+        append_log(QCoreApplication::translate("Editor.EditorDocumentWidget", "Editor extract started: %1").arg(path_to_qstring(m_last_save_path)));
         m_poll_timer.start(50, this);
     }
 
     void timerEvent(QTimerEvent* event) override {
         QWidget::timerEvent(event);
         poll_background_work();
-        if (!m_save_running) {
+        if (!save_running()) {
             m_poll_timer.stop();
         }
     }
 
     void append_log(const QString& message) {
-        if (m_ui.log == nullptr) {
-            return;
-        }
         m_ui.log->appendPlainText(QTime::currentTime().toString(QStringLiteral("HH:mm:ss  ")) + message);
         m_ui.log->moveCursor(QTextCursor::End);
     }
@@ -3974,22 +3818,10 @@ private:
             !(m_transform_kind == TransformKind::Aax && !m_aax) &&
             !(m_transform_kind == TransformKind::Aix && !m_aix) &&
             !(m_transform_kind == TransformKind::Csb && !m_csb);
-        const bool enabled = has_session_bytes && !m_save_running;
-        if (m_ui.save_button != nullptr) {
-            m_ui.save_button->setVisible(has_session_bytes);
-            m_ui.save_button->setEnabled(enabled);
-        }
-        if (m_ui.save_as_button != nullptr) {
-            m_ui.save_as_button->setVisible(has_session_bytes);
-            m_ui.save_as_button->setEnabled(enabled);
-        }
-        if (m_ui.build_button != nullptr) {
-            m_ui.build_button->setVisible(has_session_bytes);
-            m_ui.build_button->setEnabled(enabled);
-        }
-        if (m_ui.extract_button != nullptr) {
-            m_ui.extract_button->setVisible(has_session_bytes);
-            m_ui.extract_button->setEnabled(enabled);
+        const bool enabled = has_session_bytes && !save_running();
+        for (auto* button : {m_ui.save_button, m_ui.save_as_button, m_ui.build_button, m_ui.extract_button}) {
+            button->setVisible(has_session_bytes);
+            button->setEnabled(enabled);
         }
     }
 
@@ -3997,7 +3829,6 @@ private:
     QTabWidget* m_tabs = nullptr;
     QString m_title;
     std::optional<LoadedDocument> m_document = std::nullopt;
-    std::optional<EntrySummary> m_selected_entry = std::nullopt;
     std::vector<uint8_t> m_bytes;
     std::optional<cricodecs::utf::UtfTable> m_utf = std::nullopt;
     std::optional<cricodecs::afs::AfsContainer> m_afs = std::nullopt;
@@ -4021,14 +3852,10 @@ private:
     std::vector<modules::TransformDetailRow> m_usm_chunk_rows;
     std::vector<modules::TransformDetailRow> m_visible_transform_rows;
     mutable std::vector<uint8_t> m_preview_scratch;
-    bool m_has_utf = false;
-    bool m_utf_transposed = false;
-    bool m_raw_preview_available = false;
     bool m_refreshing_utf = false;
     bool m_refreshing_archive = false;
     bool m_dirty = false;
     bool m_acb_semantic_state_stale = false;
-    bool m_save_running = false;
     bool m_close_after_save = false;
     bool m_active_job_saves_document = false;
     QString m_active_job_label;

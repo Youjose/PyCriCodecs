@@ -1,5 +1,6 @@
 #include "modules/hca/hca_edit_ui.hpp"
 
+#include "editor/editor_widgets.hpp"
 #include "modules/hca/hca_common.hpp"
 #include "modules/ui_value_helpers.hpp"
 
@@ -39,12 +40,6 @@ void sync_loop_controls(const EncodeOptionsControls& controls) {
     const bool enabled = controls.loop_enabled->isEnabled() && controls.loop_enabled->isChecked();
     controls.loop_start->setEnabled(enabled);
     controls.loop_end->setEnabled(enabled);
-}
-
-QLabel* dim_label(QString text, QWidget* parent) {
-    auto* label = new QLabel(std::move(text), parent);
-    label->setObjectName(QStringLiteral("DimLabel"));
-    return label;
 }
 
 } // namespace
@@ -243,11 +238,9 @@ std::expected<std::optional<cricodecs::hca::HcaEncodeConfig>, QString> choose_re
     note->setWordWrap(true);
     layout->addWidget(note);
 
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    buttons->button(QDialogButtonBox::Ok)->setText(QCoreApplication::translate("Hca.HcaEditUi", "Rebuild Session"));
+    auto* buttons = dialog_buttons(
+        dialog, QCoreApplication::translate("Hca.HcaEditUi", "Rebuild Session"));
     layout->addWidget(buttons);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     if (dialog.exec() != QDialog::Accepted) {
         return std::optional<cricodecs::hca::HcaEncodeConfig>{};
     }

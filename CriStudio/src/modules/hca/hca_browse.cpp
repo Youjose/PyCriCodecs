@@ -4,25 +4,12 @@
 #include "modules/hca/hca_common.hpp"
 #include "shared/document_helpers.hpp"
 
-#include <iomanip>
-#include <sstream>
-
 namespace cristudio::modules::hca {
-
-namespace {
-
-std::string hex_u64(uint64_t value) {
-    std::ostringstream out;
-    out << "0x" << std::uppercase << std::hex << value;
-    return out.str();
-}
-
-} // namespace
 
 LoadedDocument summarize(const std::filesystem::path& path, const cricodecs::hca::Hca& hca) {
     auto doc = base_document(path, cristudio::i18n::translate_utf8("Hca.HcaBrowse", "HCA audio"));
     const auto& header = hca.header();
-    doc.info.push_back(translated_info_row("Hca.HcaBrowse", "Version", hex_u64(header.file.version)));
+    doc.info.push_back(translated_info_row("Hca.HcaBrowse", "Version", hex_number(header.file.version)));
     doc.info.push_back(translated_info_row("Hca.HcaBrowse", "Header size", number(header.file.header_size)));
     doc.info.push_back(translated_info_row("Hca.HcaBrowse", "Channels", number(header.fmt.channel_count)));
     doc.info.push_back(translated_info_row("Hca.HcaBrowse", "Sample rate", number(header.fmt.sample_rate)));

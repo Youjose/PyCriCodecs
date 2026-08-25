@@ -3,6 +3,7 @@
 
 #include "acb_container.hpp"
 #include "awb_container.hpp"
+#include "path_text.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -12,13 +13,6 @@
 
 namespace cristudio {
 namespace {
-
-[[nodiscard]] std::string lower_ascii(std::string text) {
-    std::ranges::transform(text, text.begin(), [](unsigned char value) {
-        return static_cast<char>(std::tolower(value));
-    });
-    return text;
-}
 
 [[nodiscard]] bool mentions_aac(std::string text) {
     text = lower_ascii(std::move(text));
@@ -118,21 +112,11 @@ bool supports_aac_key_recovery(const EntrySummary& entry) {
 }
 
 AacRecoverySource make_aac_recovery_source(const LoadedDocument& document) {
-    return AacRecoverySource{
-        .kind = AacRecoverySource::Kind::Document,
-        .path = document.path,
-        .name = document.display_name,
-        .format = std::string(document_format_id(document)),
-        .loader_tag = document.loader_tag,
-    };
+    return recovery_source(document);
 }
 
 AacRecoverySource make_aac_recovery_source(const EntrySummary& entry) {
-    return AacRecoverySource{
-        .kind = AacRecoverySource::Kind::Entry,
-        .name = entry.name,
-        .entry = entry,
-    };
+    return recovery_source(entry);
 }
 
 std::expected<AacKeyRecoveryResult, std::string> recover_aac_key(

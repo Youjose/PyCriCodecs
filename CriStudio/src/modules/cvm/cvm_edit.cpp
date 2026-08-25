@@ -2,6 +2,7 @@
 
 #include "cvm_build_script.hpp"
 #include "cvm_builder.hpp"
+#include "editor/editor_helpers.hpp"
 #include "path_text.hpp"
 
 #include <QCoreApplication>
@@ -13,31 +14,6 @@
 
 namespace cristudio::modules::cvm {
 namespace {
-
-QString hex_preview(std::span<const uint8_t> bytes, size_t max_bytes = 4096) {
-    const auto count = std::min(bytes.size(), max_bytes);
-    QString out;
-    out.reserve(static_cast<qsizetype>(count * 3 + 64));
-    for (size_t index = 0; index < count; ++index) {
-        if (index != 0) {
-            out += (index % 16 == 0) ? QLatin1Char('\n') : QLatin1Char(' ');
-        }
-        out += QStringLiteral("%1").arg(bytes[index], 2, 16, QLatin1Char('0')).toUpper();
-    }
-    if (bytes.size() > count) {
-        out += QCoreApplication::translate("Cvm.CvmEdit", "\n... %1 more bytes").arg(static_cast<qulonglong>(bytes.size() - count));
-    }
-    return out;
-}
-
-QString bytes_to_hex(std::span<const uint8_t> bytes) {
-    QString out;
-    out.reserve(static_cast<qsizetype>(bytes.size() * 2));
-    for (const auto byte : bytes) {
-        out += QStringLiteral("%1").arg(byte, 2, 16, QLatin1Char('0'));
-    }
-    return out.toUpper();
-}
 
 } // namespace
 
@@ -179,7 +155,7 @@ QString entry_preview(
     std::span<const uint8_t> bytes
 ) {
     if (index >= cvm.entry_count()) {
-        return hex_preview(bytes);
+        return compact_hex_preview(bytes, "Cvm.CvmEdit");
     }
 
     const auto& entry = cvm.entry(index);
@@ -236,7 +212,7 @@ QString entry_preview(
     lines.push_back(QCoreApplication::translate("Cvm.CvmEdit", "Logical block size: %1").arg(pv.logical_block_size));
     lines.push_back(QStringLiteral(""));
     lines.push_back(QCoreApplication::translate("Cvm.CvmEdit", "Hex preview"));
-    lines.push_back(hex_preview(bytes));
+    lines.push_back(compact_hex_preview(bytes, "Cvm.CvmEdit"));
     return lines.join(QLatin1Char('\n'));
 }
 

@@ -64,6 +64,12 @@ std::string number(uint64_t value) {
     return std::to_string(value);
 }
 
+std::string hex_number(uint64_t value) {
+    std::ostringstream out;
+    out << "0x" << std::uppercase << std::hex << value;
+    return out.str();
+}
+
 std::string byte_count(uint64_t value) {
     std::ostringstream out;
     out << value << " bytes";
@@ -176,6 +182,18 @@ LoadedDocument base_document(const std::filesystem::path& path, std::string form
     doc.file_size = std::filesystem::file_size(path, ec);
     add_source_info(doc);
     return doc;
+}
+
+EntrySummary source_entry(
+    EntrySummary entry,
+    const std::filesystem::path& source_path,
+    std::string source_format,
+    uint32_t source_index) {
+    entry.source_path = source_path;
+    entry.source_format = std::move(source_format);
+    entry.source_index = source_index;
+    entry.has_source = true;
+    return entry;
 }
 
 } // namespace cristudio

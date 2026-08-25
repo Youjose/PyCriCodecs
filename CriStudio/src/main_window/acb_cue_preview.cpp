@@ -146,13 +146,7 @@ void MainWindow::show_acb_cue(uint32_t cue_index) {
     m_acb_last_cue_index = cue_index;
     set_preview_entry_actions_visible(true);
 
-    if (m_toggle_preview_action != nullptr) {
-        m_toggle_preview_action->setChecked(true);
-    }
-    if (m_preview_panel_button != nullptr) {
-        m_preview_panel_button->setChecked(true);
-    }
-    toggle_preview_panel();
+    open_preview_panel();
     reset_audio_preview();
     m_preview_key_kind = KeyPanelKind::Cri64;
     update_key_panel(
@@ -428,7 +422,7 @@ void MainWindow::start_acb_cue_preview() {
         m_acb_cue_route_combo->currentIndex() < 0) {
         return;
     }
-    if (m_preview_running) {
+    if (preview_running()) {
         m_pending_acb_cue_preview = true;
         return;
     }
@@ -455,8 +449,7 @@ void MainWindow::start_acb_cue_preview() {
     auto keys = m_decryption_keys;
     m_pending_acb_cue_preview = false;
     reset_audio_preview();
-    m_preview_running = true;
-    show_pending_media_preview(QCoreApplication::translate(
+    show_media_preview_message(QCoreApplication::translate(
         "MainWindow.AcbCuePreview",
         "Rendering cue preview..."));
     m_nested_entry_view->setVisible(

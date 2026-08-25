@@ -1,5 +1,7 @@
 #include "modules/adx/adx_container_build_ui.hpp"
 
+#include "editor/editor_helpers.hpp"
+#include "editor/editor_widgets.hpp"
 #include "path_text.hpp"
 
 #include <QCoreApplication>
@@ -22,62 +24,6 @@
 
 namespace cristudio::modules::adx {
 namespace {
-
-QString safe_output_name(QString name, QString fallback_suffix) {
-    name = name.trimmed();
-    if (name.isEmpty()) {
-        name = QStringLiteral("editor-output");
-    }
-    for (auto& ch : name) {
-        if (ch == QLatin1Char('/') || ch == QLatin1Char('\\') || ch == QLatin1Char(':') ||
-            ch == QLatin1Char('*') || ch == QLatin1Char('?') || ch == QLatin1Char('"') ||
-            ch == QLatin1Char('<') || ch == QLatin1Char('>') || ch == QLatin1Char('|')) {
-            ch = QLatin1Char('_');
-        }
-    }
-    if (!fallback_suffix.isEmpty() && !name.endsWith(fallback_suffix, Qt::CaseInsensitive)) {
-        name += fallback_suffix;
-    }
-    return name;
-}
-
-QString build_output_base_name(const QString& title) {
-    auto base = title.trimmed();
-    const auto dot = base.lastIndexOf(QLatin1Char('.'));
-    if (dot > 0) {
-        base.truncate(dot);
-    }
-    return base.isEmpty() ? QStringLiteral("build") : base;
-}
-
-QLabel* value_label(QString text, QWidget* parent) {
-    auto* label = new QLabel(std::move(text), parent);
-    label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    return label;
-}
-
-QWidget* save_picker_row(QDialog& dialog, QLineEdit& edit) {
-    edit.setClearButtonEnabled(true);
-    auto* row = new QWidget(&dialog);
-    auto* layout = new QHBoxLayout(row);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(6);
-    layout->addWidget(&edit, 1);
-    auto* browse = new QPushButton(QCoreApplication::translate("Adx.AdxContainerBuildUi", "Browse"), row);
-    layout->addWidget(browse, 0);
-    QObject::connect(browse, &QPushButton::clicked, &dialog, [&dialog, &edit] {
-        const auto selected = QFileDialog::getSaveFileName(
-            &dialog,
-            QCoreApplication::translate("Adx.AdxContainerBuildUi", "Choose build output"),
-            edit.text(),
-            QCoreApplication::translate("Adx.AdxContainerBuildUi", "CRI ADX containers (*.aax *.aix);;All files (*)")
-        );
-        if (!selected.isEmpty()) {
-            edit.setText(selected);
-        }
-    });
-    return row;
-}
 
 std::expected<std::vector<std::vector<std::filesystem::path>>, QString> parse_sources(
     const QPlainTextEdit& sources_edit,
@@ -187,13 +133,14 @@ std::expected<std::optional<AdxContainerBuildConfig>, QString> choose_container_
 
     auto* output_edit = new QLineEdit(&dialog);
     output_edit->setText(safe_output_name(build_output_base_name(std::move(title)), aix_target ? QStringLiteral(".aix") : QStringLiteral(".aax")));
-    form->addRow(QCoreApplication::translate("Adx.AdxContainerBuildUi", "Output"), save_picker_row(dialog, *output_edit));
+    form->addRow(QCoreApplication::translate("Adx.AdxContainerBuildUi", "Output"), path_picker_row(
+        dialog, *output_edit, QCoreApplication::translate("Adx.AdxContainerBuildUi", "Browse"),
+        QCoreApplication::translate("Adx.AdxContainerBuildUi", "Choose build output"), PathPickerMode::SaveFile,
+        QCoreApplication::translate("Adx.AdxContainerBuildUi", "CRI ADX containers (*.aax *.aix);;All files (*)")));
 
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    buttons->button(QDialogButtonBox::Ok)->setText(QCoreApplication::translate("Adx.AdxContainerBuildUi", "Build"));
+    auto* buttons = dialog_buttons(
+        dialog, QCoreApplication::translate("Adx.AdxContainerBuildUi", "Build"));
     layout->addWidget(buttons);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
 
     if (dialog.exec() != QDialog::Accepted) {
         return std::optional<AdxContainerBuildConfig>{};

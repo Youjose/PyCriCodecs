@@ -4,6 +4,7 @@
 #include "../editor/hex_preview_widget.hpp"
 #include "../editor_workspace.hpp"
 #include "key_panel.hpp"
+#include "preview_helpers.hpp"
 #include "ui_helpers.hpp"
 #include "../path_text.hpp"
 #include "../shared/translation_manager.hpp"
@@ -717,13 +718,6 @@ private:
     static constexpr int edge_hover_width = 30;
 };
 
-bool is_mux_document(const LoadedDocument& document) {
-    const auto format = utf8_to_qstring(document_format_id(document)).toLower();
-    return format.contains(QStringLiteral("usm")) ||
-           format.contains(QStringLiteral("sfd")) ||
-           format.contains(QStringLiteral("sofdec"));
-}
-
 std::optional<uint64_t> resident_memory_bytes() {
 #if defined(Q_OS_WIN) || defined(_WIN32)
     PROCESS_MEMORY_COUNTERS counters = {};
@@ -812,6 +806,7 @@ void MainWindow::bind_ui_text(
     const char* context
 ) {
     if (object != nullptr) {
+        object->setProperty(property, QCoreApplication::translate(context, source));
         m_ui_text_bindings.push_back({object, property, source, context});
     }
 }
@@ -888,16 +883,13 @@ void MainWindow::retranslate_ui() {
         m_file_sort->setItemText(3, QCoreApplication::translate("MainWindow.Chrome", "Largest"));
     }
     update_entry_view_mode_labels(m_acb_cue_sheet != nullptr);
-    if (m_audio_play_button != nullptr) {
-        const bool playing = m_audio_player != nullptr &&
-            m_audio_player->playbackState() == QMediaPlayer::PlayingState;
-        const auto play_text = playing
-            ? QCoreApplication::translate("MainWindow.Chrome", "Pause")
-            : QCoreApplication::translate("MainWindow.Chrome", "Play");
-        m_audio_play_button->setText(play_text);
-    }
-    if (m_audio_status_label != nullptr && m_audio_source_path.isEmpty()) {
-        m_audio_status_label->setText(QCoreApplication::translate("MainWindow.Chrome", "No playable audio selected"));
+    const bool playing = m_audio_player != nullptr &&
+        m_audio_player->playbackState() == QMediaPlayer::PlayingState;
+    m_media.play_button->setText(playing
+        ? QCoreApplication::translate("MainWindow.Chrome", "Pause")
+        : QCoreApplication::translate("MainWindow.Chrome", "Play"));
+    if (m_audio_source_path.isEmpty()) {
+        m_media.status_label->setText(QCoreApplication::translate("MainWindow.Chrome", "No playable audio selected"));
     }
     retranslate_decryption_keys_window();
 
@@ -1325,8 +1317,8 @@ void MainWindow::build_ui() {
     m_preview_tabs->setObjectName(QStringLiteral("PreviewTabs"));
     m_preview_tabs->setDocumentMode(false);
     m_preview_tabs->hide();
-    m_preview_tab = new QWidget(m_preview_tabs);
-    auto* preview_tab_layout = new QVBoxLayout(m_preview_tab);
+    auto* preview_tab = new QWidget(m_preview_tabs);
+    auto* preview_tab_layout = new QVBoxLayout(preview_tab);
     preview_tab_layout->setContentsMargins(0, 0, 0, 0);
     preview_tab_layout->setSpacing(8);
     m_nested_image = new QLabel(m_nested_panel);
@@ -1364,140 +1356,19 @@ void MainWindow::build_ui() {
     m_nested_body->setLineWrapMode(QPlainTextEdit::NoWrap);
     m_nested_body->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     m_nested_body->setMinimumWidth(0);
-    m_video_container = new QWidget(m_nested_panel);
-    m_video_container->setObjectName(QStringLiteral("VideoFrame"));
-    m_video_container->setMinimumHeight(260);
-    m_video_container->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    m_video_container->hide();
-    auto* video_layout = new QVBoxLayout(m_video_container);
-    video_layout->setContentsMargins(0, 0, 0, 0);
-    video_layout->setSpacing(0);
-    m_video_widget = new QVideoWidget(m_video_container);
-    m_video_widget->setMinimumHeight(260);
-    m_video_widget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    m_video_widget->setAspectRatioMode(Qt::KeepAspectRatio);
-    m_video_widget->hide();
-    video_layout->addWidget(m_video_widget);
-    m_audio_panel = new QWidget(m_nested_panel);
-    m_audio_panel->setObjectName(QStringLiteral("AudioPanel"));
-    auto* audio_layout = new QVBoxLayout(m_audio_panel);
-    audio_layout->setContentsMargins(10, 8, 10, 8);
-    audio_layout->setSpacing(6);
-    m_mux_audio_row = new QWidget(m_audio_panel);
-    auto* mux_audio_layout = new QHBoxLayout(m_mux_audio_row);
-    mux_audio_layout->setContentsMargins(0, 0, 0, 0);
-    mux_audio_layout->setSpacing(8);
-    auto* mux_audio_label = make_dim_label(QCoreApplication::translate("MainWindow.Chrome", "Audio channel"), m_mux_audio_row);
-    m_mux_audio_combo = new QComboBox(m_mux_audio_row);
-    m_mux_audio_combo->setObjectName(QStringLiteral("MuxAudioCombo"));
-    m_mux_audio_combo->setToolTip(QCoreApplication::translate("MainWindow.Chrome", "Choose which stream to mux with the video preview"));
-    auto* mux_audio_button = new QToolButton(m_mux_audio_row);
-    mux_audio_button->setArrowType(Qt::DownArrow);
-    mux_audio_button->setToolTip(QCoreApplication::translate("MainWindow.Chrome", "Show mux audio choices"));
-    mux_audio_button->setAccessibleName(QCoreApplication::translate("MainWindow.Chrome", "Show mux audio choices"));
-    mux_audio_layout->addWidget(mux_audio_label, 0);
-    mux_audio_layout->addWidget(m_mux_audio_combo, 1);
-    mux_audio_layout->addWidget(mux_audio_button, 0);
-    connect(mux_audio_button, &QToolButton::clicked, m_mux_audio_combo, &QComboBox::showPopup);
-    m_mux_subtitle_row = new QWidget(m_audio_panel);
-    auto* mux_subtitle_layout = new QHBoxLayout(m_mux_subtitle_row);
-    mux_subtitle_layout->setContentsMargins(0, 0, 0, 0);
-    mux_subtitle_layout->setSpacing(8);
-    auto* mux_subtitle_label = make_dim_label(QCoreApplication::translate("MainWindow.Chrome", "Subtitles"), m_mux_subtitle_row);
-    m_mux_subtitle_combo = new QComboBox(m_mux_subtitle_row);
-    m_mux_subtitle_combo->setObjectName(QStringLiteral("MuxSubtitleCombo"));
-    m_mux_subtitle_combo->setToolTip(QCoreApplication::translate("MainWindow.Chrome", "Choose which subtitle language to display"));
-    auto* mux_subtitle_button = new QToolButton(m_mux_subtitle_row);
-    mux_subtitle_button->setArrowType(Qt::DownArrow);
-    mux_subtitle_button->setToolTip(QCoreApplication::translate("MainWindow.Chrome", "Show mux subtitle choices"));
-    mux_subtitle_button->setAccessibleName(QCoreApplication::translate("MainWindow.Chrome", "Show mux subtitle choices"));
-    mux_subtitle_layout->addWidget(mux_subtitle_label, 0);
-    mux_subtitle_layout->addWidget(m_mux_subtitle_combo, 1);
-    mux_subtitle_layout->addWidget(mux_subtitle_button, 0);
-    connect(mux_subtitle_button, &QToolButton::clicked, m_mux_subtitle_combo, &QComboBox::showPopup);
-    auto* audio_top = new QHBoxLayout();
-    audio_top->setContentsMargins(0, 0, 0, 0);
-    audio_top->setSpacing(8);
-    m_audio_play_button = new QToolButton(m_audio_panel);
-    m_audio_play_button->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
-    m_audio_play_button->setText(QCoreApplication::translate("MainWindow.Chrome", "Play"));
-    m_audio_play_button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    m_audio_play_button->setEnabled(false);
-    m_audio_status_label = new QLabel(QCoreApplication::translate("MainWindow.Chrome", "No playable audio selected"), m_audio_panel);
-    m_audio_status_label->setObjectName(QStringLiteral("AudioStatus"));
-    m_audio_status_label->setWordWrap(true);
-    m_audio_volume_label = new QLabel(m_audio_panel);
-    m_audio_volume_label->setPixmap(style()->standardIcon(QStyle::SP_MediaVolume).pixmap(16, 16));
-    m_audio_volume_label->setToolTip(QCoreApplication::translate("MainWindow.Chrome", "Volume"));
-    m_audio_volume_label->setAccessibleName(QCoreApplication::translate("MainWindow.Chrome", "Volume"));
-    m_audio_volume_slider = new QSlider(Qt::Horizontal, m_audio_panel);
-    m_audio_volume_slider->setObjectName(QStringLiteral("VolumeSlider"));
-    m_audio_volume_slider->setRange(0, 100);
-    m_audio_volume_slider->setValue(80);
-    m_audio_volume_slider->setFixedWidth(96);
-    m_audio_volume_slider->setToolTip(QCoreApplication::translate("MainWindow.Chrome", "Playback volume"));
-    m_audio_volume_slider->setAccessibleName(QCoreApplication::translate("MainWindow.Chrome", "Playback volume"));
-    audio_top->addWidget(m_audio_play_button, 0);
-    audio_top->addWidget(m_audio_status_label, 1);
-    audio_top->addWidget(m_audio_volume_label, 0, Qt::AlignVCenter);
-    audio_top->addWidget(m_audio_volume_slider, 0, Qt::AlignVCenter);
-    m_audio_loop_row = new QWidget(m_audio_panel);
-    auto* loop_layout = new QVBoxLayout(m_audio_loop_row);
-    loop_layout->setContentsMargins(0, 0, 0, 0);
-    loop_layout->setSpacing(4);
-    auto* loop_header = new QHBoxLayout();
-    loop_header->setContentsMargins(0, 0, 0, 0);
-    loop_header->setSpacing(8);
-    m_audio_loop_toggle = new QCheckBox(QCoreApplication::translate("MainWindow.Chrome", "Loop selected range"), m_audio_loop_row);
-    m_audio_loop_toggle->setEnabled(false);
-    loop_header->addWidget(m_audio_loop_toggle, 0);
-    loop_header->addStretch(1);
-    m_audio_loop_list = new QListWidget(m_audio_loop_row);
-    m_audio_loop_list->setObjectName(QStringLiteral("LoopList"));
-    m_audio_loop_list->setEnabled(false);
-    m_audio_loop_list->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_audio_loop_list->setAlternatingRowColors(false);
-    m_audio_loop_list->setUniformItemSizes(false);
-    m_audio_loop_list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_audio_loop_list->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
-    m_audio_loop_list->setMinimumHeight(42);
-    m_audio_loop_list->setMaximumHeight(96);
-    loop_layout->addLayout(loop_header);
-    loop_layout->addWidget(m_audio_loop_list);
-    auto* audio_bottom = new QHBoxLayout();
-    audio_bottom->setContentsMargins(0, 0, 0, 0);
-    audio_bottom->setSpacing(8);
-    m_audio_progress = new SeekSlider(Qt::Horizontal, m_audio_panel);
-    m_audio_progress->setRange(0, 0);
-    m_audio_progress->setEnabled(false);
-    m_audio_time_label = new QLabel(QStringLiteral("0:00 / 0:00"), m_audio_panel);
-    m_audio_time_label->setMinimumWidth(92);
-    m_audio_time_label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    audio_bottom->addWidget(m_audio_progress, 1);
-    audio_bottom->addWidget(m_audio_time_label, 0);
-    audio_layout->addWidget(m_mux_audio_row);
-    audio_layout->addWidget(m_mux_subtitle_row);
-    audio_layout->addLayout(audio_top);
-    audio_layout->addWidget(m_audio_loop_row);
-    audio_layout->addLayout(audio_bottom);
-    m_audio_loop_row->hide();
-    m_mux_audio_row->hide();
-    m_mux_subtitle_row->hide();
-    m_audio_panel->hide();
-    m_raw_body = new QPlainTextEdit(m_preview_tabs);
-    m_raw_body->setReadOnly(true);
-    m_raw_body->setLineWrapMode(QPlainTextEdit::NoWrap);
-    m_raw_body->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-    m_raw_body->setMinimumWidth(560);
-    m_raw_body->hide();
+    m_video = make_video_display(m_nested_panel);
+    m_media = make_media_controls(m_nested_panel);
+    m_media.play_button->setText(QCoreApplication::translate("MainWindow.Chrome", "Play"));
+    m_media.status_label->setText(QCoreApplication::translate("MainWindow.Chrome", "No playable audio selected"));
+    m_media.panel->hide();
     m_raw_hex = new HexPreviewWidget(m_preview_tabs);
-    preview_tab_layout->addWidget(m_video_container, 8);
-    preview_tab_layout->addWidget(m_audio_panel);
+    preview_tab_layout->addWidget(m_video.frame, 8);
+    preview_tab_layout->addWidget(m_media.panel);
     preview_tab_layout->addWidget(m_nested_entry_view, 8);
     preview_tab_layout->addWidget(m_nested_image_scroll, 8);
     preview_tab_layout->addWidget(m_nested_body, 8);
     preview_tab_layout->addStretch(1);
-    m_preview_tabs->addTab(m_preview_tab, QCoreApplication::translate("MainWindow.Chrome", "Preview"));
+    m_preview_tabs->addTab(preview_tab, QCoreApplication::translate("MainWindow.Chrome", "Preview"));
     m_preview_tabs->addTab(m_raw_hex, QCoreApplication::translate("MainWindow.Chrome", "Raw"));
     m_preview_tabs->setTabEnabled(1, false);
     nested_layout->addWidget(m_nested_title);
@@ -1518,8 +1389,8 @@ void MainWindow::build_ui() {
     nested_layout->addWidget(m_preview_key_panel);
     nested_layout->addWidget(m_preview_tabs, 8);
     nested_layout->addStretch(1);
-    m_video_container->hide();
-    m_video_widget->hide();
+    m_video.frame->hide();
+    m_video.widget->hide();
     m_nested_entry_view->hide();
     m_nested_body->hide();
     m_nested_panel->setMaximumWidth(0);
@@ -1773,7 +1644,7 @@ void MainWindow::build_ui() {
         start_aac_key_recovery(std::move(sources), label);
     });
     connect(m_preview_tabs, &QTabWidget::currentChanged, this, [this](int index) {
-        if (index == 0 && !m_current_preview_entry.has_value() && !m_preview_running &&
+        if (index == 0 && !m_current_preview_entry.has_value() && !preview_running() &&
             m_file_view != nullptr && m_file_proxy != nullptr && m_file_model != nullptr &&
             m_file_view->currentIndex().isValid()) {
             const auto source = m_file_proxy->mapToSource(m_file_view->currentIndex());
@@ -1782,7 +1653,7 @@ void MainWindow::build_ui() {
             }
             return;
         }
-        if (index != 1 || m_current_preview_entry.has_value() || m_preview_running ||
+        if (index != 1 || m_current_preview_entry.has_value() || preview_running() ||
             m_file_view == nullptr || m_file_proxy == nullptr || m_file_model == nullptr ||
             !m_file_view->currentIndex().isValid()) {
             return;
@@ -1862,7 +1733,7 @@ void MainWindow::build_ui() {
         [this] {
             start_acb_cue_preview();
         });
-    connect(m_audio_play_button, &QToolButton::clicked, this, [this] {
+    connect(m_media.play_button, &QToolButton::clicked, this, [this] {
         if (m_audio_player == nullptr || m_audio_source_path.isEmpty()) {
             return;
         }
@@ -1872,7 +1743,7 @@ void MainWindow::build_ui() {
             m_audio_player->play();
         }
     });
-    connect(m_audio_progress, &QSlider::sliderPressed, this, [this] {
+    connect(m_media.seek_slider, &QSlider::sliderPressed, this, [this] {
         m_audio_slider_dragging = true;
         m_audio_resume_after_seek = m_audio_player != nullptr &&
             m_audio_player->playbackState() == QMediaPlayer::PlayingState;
@@ -1880,10 +1751,10 @@ void MainWindow::build_ui() {
             m_audio_player->pause();
         }
     });
-    connect(m_audio_progress, &QSlider::sliderReleased, this, [this] {
+    connect(m_media.seek_slider, &QSlider::sliderReleased, this, [this] {
         m_audio_slider_dragging = false;
         if (m_audio_player != nullptr) {
-            m_audio_player->setPosition(m_audio_progress->value());
+            m_audio_player->setPosition(m_media.seek_slider->value());
             if (m_audio_resume_after_seek) {
                 m_audio_player->play();
             }
@@ -1891,21 +1762,21 @@ void MainWindow::build_ui() {
         m_audio_resume_after_seek = false;
         update_audio_time_label();
     });
-    connect(m_audio_progress, &QSlider::sliderMoved, this, [this](int) {
+    connect(m_media.seek_slider, &QSlider::sliderMoved, this, [this](int) {
         update_audio_time_label();
     });
-    connect(m_audio_volume_slider, &QSlider::valueChanged, this, [this](int value) {
+    connect(m_media.volume_slider, &QSlider::valueChanged, this, [this](int value) {
         if (m_audio_output != nullptr) {
             m_audio_output->setVolume(static_cast<float>(std::clamp(value, 0, 100)) / 100.0f);
         }
     });
-    connect(m_audio_loop_toggle, &QCheckBox::toggled, this, [this](bool enabled) {
-        if (enabled && m_audio_loop_list != nullptr && m_audio_loop_list->currentRow() < 0 && !m_audio_loops.empty()) {
-            m_audio_loop_list->setCurrentRow(0);
+    connect(m_media.loop_toggle, &QCheckBox::toggled, this, [this](bool enabled) {
+        if (enabled && m_media.loop_list->currentRow() < 0 && !m_audio_loops.empty()) {
+            m_media.loop_list->setCurrentRow(0);
         }
     });
-    connect(m_mux_audio_combo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
-        if (index < 0 || m_preview_running || m_file_view == nullptr || m_file_proxy == nullptr || m_file_model == nullptr) {
+    connect(m_media.audio_combo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
+        if (index < 0 || preview_running() || m_file_view == nullptr || m_file_proxy == nullptr || m_file_model == nullptr) {
             return;
         }
         const auto current = m_file_view->currentIndex();
@@ -1917,13 +1788,13 @@ void MainWindow::build_ui() {
         if (document == nullptr) {
             return;
         }
-        start_document_mux_preview(*document, m_mux_audio_combo->currentData().toInt());
+        start_document_mux_preview(*document, m_media.audio_combo->currentData().toInt());
     });
-    connect(m_mux_subtitle_combo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
+    connect(m_media.subtitle_combo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
         if (m_audio_player == nullptr || index < 0) {
             return;
         }
-        m_audio_player->setActiveSubtitleTrack(m_mux_subtitle_combo->currentData().toInt());
+        m_audio_player->setActiveSubtitleTrack(m_media.subtitle_combo->currentData().toInt());
     });
     connect(m_file_view->selectionModel(), &QItemSelectionModel::currentChanged, this,
         [this](const QModelIndex& current) {
@@ -2071,19 +1942,19 @@ void MainWindow::build_ui() {
     bind_ui_text(m_preview_recover_aac_key_button, "text", "Recover AAC Key");
     bind_ui_text(m_preview_recover_aac_key_button, "toolTip", "Recover the effective AAC key from this ACB/AWB M4A source");
     bind_ui_text(m_preview_recover_aac_key_button, "accessibleName", "Recover AAC key from previewed ACB or AWB source");
-    bind_ui_text(mux_audio_label, "text", "Audio channel");
-    bind_ui_text(m_mux_audio_combo, "toolTip", "Choose which stream to mux with the video preview");
-    bind_ui_text(mux_audio_button, "toolTip", "Show mux audio choices");
-    bind_ui_text(mux_audio_button, "accessibleName", "Show mux audio choices");
-    bind_ui_text(mux_subtitle_label, "text", "Subtitles");
-    bind_ui_text(m_mux_subtitle_combo, "toolTip", "Choose which subtitle language to display");
-    bind_ui_text(mux_subtitle_button, "toolTip", "Show mux subtitle choices");
-    bind_ui_text(mux_subtitle_button, "accessibleName", "Show mux subtitle choices");
-    bind_ui_text(m_audio_volume_label, "toolTip", "Volume");
-    bind_ui_text(m_audio_volume_label, "accessibleName", "Volume");
-    bind_ui_text(m_audio_volume_slider, "toolTip", "Playback volume");
-    bind_ui_text(m_audio_volume_slider, "accessibleName", "Playback volume");
-    bind_ui_text(m_audio_loop_toggle, "text", "Loop selected range");
+    bind_ui_text(m_media.audio_label, "text", "Audio channel");
+    bind_ui_text(m_media.audio_combo, "toolTip", "Choose which stream to mux with the video preview");
+    bind_ui_text(m_media.audio_popup, "toolTip", "Show mux audio choices");
+    bind_ui_text(m_media.audio_popup, "accessibleName", "Show mux audio choices");
+    bind_ui_text(m_media.subtitle_label, "text", "Subtitles");
+    bind_ui_text(m_media.subtitle_combo, "toolTip", "Choose which subtitle language to display");
+    bind_ui_text(m_media.subtitle_popup, "toolTip", "Show mux subtitle choices");
+    bind_ui_text(m_media.subtitle_popup, "accessibleName", "Show mux subtitle choices");
+    bind_ui_text(m_media.volume_label, "toolTip", "Volume");
+    bind_ui_text(m_media.volume_label, "accessibleName", "Volume");
+    bind_ui_text(m_media.volume_slider, "toolTip", "Playback volume");
+    bind_ui_text(m_media.volume_slider, "accessibleName", "Playback volume");
+    bind_ui_text(m_media.loop_toggle, "text", "Loop selected range");
     bind_ui_text(drop_label, "text", "Drop files or folders");
     bind_ui_text(m_cancel_extraction_button, "text", "Cancel");
     bind_ui_text(m_cancel_extraction_button, "toolTip", "Stop the current extraction");
@@ -2209,23 +2080,13 @@ void MainWindow::build_menus() {
     m_edit_menu->addSeparator();
     m_extract_mux_outputs_action = m_edit_menu->addAction(QCoreApplication::translate("MainWindow.Chrome", "Extract USM/SFD &Mux Outputs"));
     m_extract_mux_outputs_action->setCheckable(true);
-    m_extract_mux_outputs_action->setChecked(m_allow_mux_extract_outputs);
-    connect(m_extract_mux_outputs_action, &QAction::toggled, this, [this](bool checked) {
-        m_allow_mux_extract_outputs = checked;
-    });
+    m_extract_mux_outputs_action->setChecked(true);
     m_extract_acb_cues_action = m_edit_menu->addAction(
         QCoreApplication::translate(
             "MainWindow.Chrome",
             "Extract ACBs as &Rendered Cues"));
     m_extract_acb_cues_action->setCheckable(true);
-    m_extract_acb_cues_action->setChecked(m_extract_acb_cue_outputs);
-    connect(
-        m_extract_acb_cues_action,
-        &QAction::toggled,
-        this,
-        [this](bool checked) {
-            m_extract_acb_cue_outputs = checked;
-        });
+    m_extract_acb_cues_action->setChecked(false);
 
     auto* view_menu = menuBar()->addMenu(QCoreApplication::translate("MainWindow.Chrome", "&View"));
     auto* theme_group = new QActionGroup(this);

@@ -2,6 +2,7 @@
 
 #include "../editor_workspace.hpp"
 #include "../modules/acb/acb_cue_view.hpp"
+#include "../path_text.hpp"
 #include "../shared/document_preview_router.hpp"
 #include "ui_helpers.hpp"
 
@@ -149,6 +150,37 @@ void append_document_adx_recovery_sources(
     }
 }
 
+size_t open_entries_in_editor(
+    EditorWorkspace& workspace,
+    const EntryTableModel& model,
+    const QModelIndexList& rows,
+    const DecryptionKeys& keys
+) {
+    size_t opened = 0;
+    for (const auto& row : rows) {
+        const auto* summary = model.summary_at(row);
+        if (summary == nullptr || !summary->has_source || !supports_editor(*summary)) {
+            continue;
+        }
+        EditorOpenRequest request{
+            .source_kind = EditorOpenRequest::SourceKind::ArchiveEntry,
+            .display_name = summary->name,
+            .detected_format = summary->type.empty() ? summary->source_format : summary->type,
+            .source_archive_path = summary->source_path,
+            .source_archive_format = summary->source_format,
+            .source_index = summary->source_index,
+            .keys = keys,
+            .entry = *summary,
+        };
+        if (auto bytes = load_embedded_entry_bytes(*summary, keys)) {
+            request.source_bytes = std::move(*bytes);
+        }
+        workspace.open_request(std::move(request));
+        ++opened;
+    }
+    return opened;
+}
+
 } // namespace
 
 void MainWindow::select_first_loaded_file() {
@@ -220,7 +252,7 @@ void MainWindow::clear_loaded_files() {
     m_pending_mux_preview = std::nullopt;
     reset_audio_preview();
     m_queued_load_paths.clear();
-    if (m_load_running) {
+    if (load_running()) {
         m_drop_active_load_result = true;
     }
     m_file_filter->clear();
@@ -330,33 +362,17 @@ void MainWindow::open_selected_entries_in_editor() {
         return;
     }
 
-    size_t opened = 0;
+    QModelIndexList source_rows;
     const auto selected = m_entry_view->selectionModel()->selectedRows();
+    source_rows.reserve(selected.size());
     for (const auto& index : selected) {
         const auto source = m_entry_proxy->mapToSource(index);
-        if (!source.isValid()) {
-            continue;
+        if (source.isValid()) {
+            source_rows.push_back(source);
         }
-        const auto* summary = m_entry_model->summary_at(source);
-        if (summary == nullptr || !summary->has_source || !supports_editor(*summary)) {
-            continue;
-        }
-
-        EditorOpenRequest request;
-        request.source_kind = EditorOpenRequest::SourceKind::ArchiveEntry;
-        request.display_name = summary->name;
-        request.detected_format = summary->type.empty() ? summary->source_format : summary->type;
-        request.source_archive_path = summary->source_path;
-        request.source_archive_format = summary->source_format;
-        request.source_index = summary->source_index;
-        request.keys = m_decryption_keys;
-        request.entry = *summary;
-        if (auto bytes = load_embedded_entry_bytes(*summary, m_decryption_keys)) {
-            request.source_bytes = std::move(*bytes);
-        }
-        m_editor_workspace->open_request(std::move(request));
-        ++opened;
     }
+    const auto opened = open_entries_in_editor(
+        *m_editor_workspace, *m_entry_model, source_rows, m_decryption_keys);
 
     if (opened == 0) {
         statusBar()->showMessage(QCoreApplication::translate("MainWindow.BrowserView", "No extractable archive entries selected for Editor"), 3000);
@@ -377,32 +393,9 @@ void MainWindow::open_selected_nested_entries_in_editor() {
         return;
     }
 
-    size_t opened = 0;
     const auto selected = m_nested_entry_view->selectionModel()->selectedRows();
-    for (const auto& index : selected) {
-        if (!index.isValid()) {
-            continue;
-        }
-        const auto* summary = m_nested_entry_model->summary_at(index);
-        if (summary == nullptr || !summary->has_source || !supports_editor(*summary)) {
-            continue;
-        }
-
-        EditorOpenRequest request;
-        request.source_kind = EditorOpenRequest::SourceKind::ArchiveEntry;
-        request.display_name = summary->name;
-        request.detected_format = summary->type.empty() ? summary->source_format : summary->type;
-        request.source_archive_path = summary->source_path;
-        request.source_archive_format = summary->source_format;
-        request.source_index = summary->source_index;
-        request.keys = m_decryption_keys;
-        request.entry = *summary;
-        if (auto bytes = load_embedded_entry_bytes(*summary, m_decryption_keys)) {
-            request.source_bytes = std::move(*bytes);
-        }
-        m_editor_workspace->open_request(std::move(request));
-        ++opened;
-    }
+    const auto opened = open_entries_in_editor(
+        *m_editor_workspace, *m_nested_entry_model, selected, m_decryption_keys);
 
     if (opened == 0) {
         statusBar()->showMessage(QCoreApplication::translate("MainWindow.BrowserView", "No extractable preview entries selected for Editor"), 3000);
@@ -1058,7 +1051,7 @@ void MainWindow::show_entry_context_menu(const QPoint& position) {
     if (chosen == open_editor) {
         open_selected_entries_in_editor();
     } else if (chosen == show_in_folder && summary != nullptr) {
-        reveal_in_file_manager(to_qstring(summary->source_path));
+        reveal_in_file_manager(path_to_qstring(summary->source_path));
     } else if (chosen == extract) {
         start_extraction(selected_entry_targets(), ExtractionMode::Decoded);
     } else if (chosen == extract_raw) {
@@ -1136,7 +1129,7 @@ void MainWindow::show_nested_entry_context_menu(const QPoint& position) {
     if (chosen == open_editor) {
         open_selected_nested_entries_in_editor();
     } else if (chosen == show_in_folder && summary != nullptr) {
-        reveal_in_file_manager(to_qstring(summary->source_path));
+        reveal_in_file_manager(path_to_qstring(summary->source_path));
     } else if (chosen == extract) {
         start_extraction(selected_nested_entry_targets(), ExtractionMode::Decoded);
     } else if (chosen == extract_raw) {
@@ -1218,7 +1211,7 @@ void MainWindow::update_file_list_status() {
     if (selected == 1 && m_file_view->currentIndex().isValid()) {
         const auto source = m_file_proxy->mapToSource(m_file_view->currentIndex());
         if (const auto* document = m_file_model->document_at(source.row()); document != nullptr) {
-            const auto path = to_qstring(document->path);
+            const auto path = path_to_qstring(document->path);
             const auto elided_path = m_file_list_status->fontMetrics().elidedText(
                 path,
                 Qt::ElideMiddle,
@@ -1339,7 +1332,7 @@ void MainWindow::set_preview_entry_actions_visible(bool visible) {
     if (m_preview_recover_key_button != nullptr) {
         const bool supports_hca = expanded && !current_preview_recovery_sources().empty();
         m_preview_recover_key_button->setVisible(supports_hca);
-        m_preview_recover_key_button->setEnabled(!m_hca_key_recovery_running && !m_usm_key_recovery_running && !m_adx_key_recovery_running && !m_aac_key_recovery_running);
+        m_preview_recover_key_button->setEnabled(!key_recovery_running());
     }
     if (m_preview_recover_usm_key_button != nullptr) {
         bool supports_usm = m_current_preview_entry.has_value() &&
@@ -1356,13 +1349,12 @@ void MainWindow::set_preview_entry_actions_visible(bool visible) {
         }
         const auto expanded = m_preview_panel_button == nullptr || m_preview_panel_button->isChecked();
         m_preview_recover_usm_key_button->setVisible(expanded && supports_usm);
-        m_preview_recover_usm_key_button->setEnabled(!m_hca_key_recovery_running && !m_usm_key_recovery_running && !m_adx_key_recovery_running && !m_aac_key_recovery_running);
+        m_preview_recover_usm_key_button->setEnabled(!key_recovery_running());
     }
     if (m_preview_recover_adx_key_button != nullptr) {
         const auto kind = current_preview_adx_recovery_kind();
         m_preview_recover_adx_key_button->setVisible(expanded && kind.has_value());
-        m_preview_recover_adx_key_button->setEnabled(
-            !m_hca_key_recovery_running && !m_usm_key_recovery_running && !m_adx_key_recovery_running && !m_aac_key_recovery_running);
+        m_preview_recover_adx_key_button->setEnabled(!key_recovery_running());
         if (kind) {
             const auto name = *kind == AdxRecoveryKind::Ahx ? QStringLiteral("AHX") : QStringLiteral("ADX");
             m_preview_recover_adx_key_button->setText(QCoreApplication::translate("MainWindow.BrowserView", "Recover %1 Key").arg(name));
@@ -1380,9 +1372,7 @@ void MainWindow::set_preview_entry_actions_visible(bool visible) {
             supports_aac = document != nullptr && supports_aac_key_recovery(*document);
         }
         m_preview_recover_aac_key_button->setVisible(expanded && supports_aac);
-        m_preview_recover_aac_key_button->setEnabled(
-            !m_hca_key_recovery_running && !m_usm_key_recovery_running &&
-            !m_adx_key_recovery_running && !m_aac_key_recovery_running);
+        m_preview_recover_aac_key_button->setEnabled(!key_recovery_running());
     }
 }
 
@@ -1443,15 +1433,10 @@ void MainWindow::fit_entry_columns(QTreeView* view, bool custom_columns) const {
 }
 
 std::optional<int> MainWindow::current_mux_audio_choice() const {
-    if (
-        m_mux_audio_row == nullptr ||
-        m_mux_audio_combo == nullptr ||
-        !m_mux_audio_row->isVisible() ||
-        m_mux_audio_combo->currentIndex() < 0
-    ) {
+    if (!m_media.audio_row->isVisible() || m_media.audio_combo->currentIndex() < 0) {
         return std::nullopt;
     }
-    return m_mux_audio_combo->currentData().toInt();
+    return m_media.audio_combo->currentData().toInt();
 }
 
 

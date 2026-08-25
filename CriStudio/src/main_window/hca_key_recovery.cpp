@@ -21,22 +21,6 @@
 namespace cristudio {
 namespace {
 
-[[nodiscard]] QString key_text(uint64_t key) {
-    return QStringLiteral("0x%1").arg(
-        QString::number(static_cast<qulonglong>(key), 16).toUpper().rightJustified(14, QLatin1Char('0'))
-    );
-}
-
-[[nodiscard]] QString source_label(const HcaRecoverySource& source) {
-    if (!source.name.empty()) {
-        return utf8_to_qstring(source.name);
-    }
-    if (!source.path.empty()) {
-        return to_qstring(source.path.filename());
-    }
-    return QCoreApplication::translate("MainWindow.HcaKeyRecovery", "Selected entry");
-}
-
 } // namespace
 
 void MainWindow::start_hca_key_recovery(
@@ -47,8 +31,7 @@ void MainWindow::start_hca_key_recovery(
         statusBar()->showMessage(QCoreApplication::translate("MainWindow.HcaKeyRecovery", "No files selected for HCA key recovery"), 3000);
         return;
     }
-    if (m_hca_key_recovery_running || m_usm_key_recovery_running ||
-        m_adx_key_recovery_running || m_aac_key_recovery_running) {
+    if (key_recovery_running()) {
         statusBar()->showMessage(QCoreApplication::translate("MainWindow.HcaKeyRecovery", "Key recovery is already running"), 3000);
         return;
     }
@@ -58,7 +41,6 @@ void MainWindow::start_hca_key_recovery(
         return;
     }
 
-    m_hca_key_recovery_running = true;
     const auto request_id = ++m_hca_key_recovery_request_id;
     m_hca_key_recovery_stop_source = std::stop_source{};
     const auto stop_token = m_hca_key_recovery_stop_source.get_token();
@@ -68,7 +50,7 @@ void MainWindow::start_hca_key_recovery(
             QCoreApplication::translate("MainWindow.HcaKeyRecovery", "HCA key recovery"),
             sources.size(),
             [this, request_id] {
-                if (m_hca_key_recovery_running && request_id == m_hca_key_recovery_request_id) {
+                if (m_hca_key_recovery_watcher->isRunning() && request_id == m_hca_key_recovery_request_id) {
                     m_hca_key_recovery_stop_source.request_stop();
                     statusBar()->showMessage(QCoreApplication::translate("MainWindow.HcaKeyRecovery", "Canceling HCA key recovery..."));
                 }
@@ -120,7 +102,7 @@ void MainWindow::start_hca_key_recovery(
                     if (!show_key_recovery_candidate(candidate.score, best_score)) continue;
                     displayed.push_back(KeyRecoveryCandidate{
                         .identity = candidate.key,
-                        .key = key_text(candidate.key),
+                        .key = recovery_key_text(candidate.key, 14),
                         .score = candidate.score,
                         .file = target.source,
                     });
@@ -204,7 +186,8 @@ void MainWindow::start_hca_key_recovery(
                             }
                             const auto& source = sources[index];
                             auto& result = results[index];
-                            result.label = source_label(source);
+                            result.label = recovery_source_label(
+                                source.name, source.path, "MainWindow.HcaKeyRecovery");
                             cricodecs::hca::KeyRecoveryOptions options;
                             options.mode = mode;
                             options.worker_count = 1;
@@ -229,7 +212,7 @@ void MainWindow::start_hca_key_recovery(
                                         if (!show_key_recovery_candidate(candidate.score, best_score)) continue;
                                         displayed.push_back(KeyRecoveryCandidate{
                                             .identity = candidate.key,
-                                            .key = key_text(candidate.key),
+                                            .key = recovery_key_text(candidate.key, 14),
                                             .score = candidate.score,
                                             .file = result.label,
                                         });
@@ -276,7 +259,6 @@ void MainWindow::start_hca_key_recovery(
 
 void MainWindow::consume_hca_key_recovery_result() {
     auto task = m_hca_key_recovery_watcher->future().takeResult();
-    m_hca_key_recovery_running = false;
     if (m_preview_recover_key_button != nullptr) {
         m_preview_recover_key_button->setEnabled(true);
     }
@@ -328,7 +310,7 @@ void MainWindow::consume_hca_key_recovery_result() {
             : target.recovered.recovery.candidates.front().score;
         for (const auto& recovered : target.recovered.recovery.candidates) {
             if (!show_key_recovery_candidate(recovered.score, best_score)) continue;
-            const auto key = key_text(recovered.key);
+            const auto key = recovery_key_text(recovered.key, 14);
             const auto score = QString::number(recovered.score, 'f', 6);
             candidates.push_back(KeyRecoveryCandidate{
                 .identity = recovered.key,

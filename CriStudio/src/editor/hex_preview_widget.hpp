@@ -6,6 +6,7 @@
 #include <QRect>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -21,12 +22,24 @@ namespace cristudio {
 
 class HexPreviewWidget final : public QAbstractScrollArea {
 public:
+    static constexpr size_t buffered_byte_limit = 256u * 1024u;
+
     explicit HexPreviewWidget(QWidget* parent = nullptr);
 
-    void set_bytes(std::span<const uint8_t> bytes, uint64_t total_size = 0);
-    void set_reader(const cricodecs::io::reader* reader);
-    void set_lazy_format(std::string_view format);
-    void set_patterns(HexPatternSet patterns);
+    void set_source(
+        std::span<const uint8_t> bytes,
+        uint64_t total_size,
+        std::string_view format = {});
+    void set_source(
+        std::span<const uint8_t> bytes,
+        uint64_t total_size,
+        const EntrySummary& entry);
+    void set_source(
+        const cricodecs::io::reader& reader,
+        std::string_view format = {});
+    void set_source(
+        const cricodecs::io::reader& reader,
+        const LoadedDocument& document);
     void set_patterns_enabled(bool enabled);
     [[nodiscard]] bool patterns_enabled() const noexcept { return m_patterns_enabled; }
     void clear_bytes();
@@ -64,6 +77,9 @@ private:
     [[nodiscard]] bool has_pattern_source() const;
     [[nodiscard]] size_t source_size() const;
     [[nodiscard]] size_t read_source(size_t offset, std::span<uint8_t> output) const;
+    [[nodiscard]] std::vector<uint8_t> read_pattern_prefix() const;
+    void set_storage(std::span<const uint8_t> bytes, uint64_t total_size);
+    void set_storage(const cricodecs::io::reader& reader);
     [[nodiscard]] std::optional<size_t> byte_at(const QPoint& pos, Lane* lane = nullptr) const;
     [[nodiscard]] bool selected(size_t index) const;
     [[nodiscard]] bool has_selection() const;
@@ -104,11 +120,6 @@ private:
     [[nodiscard]] std::optional<ActivePattern> lazy_sbt_pattern_at(size_t index) const;
     [[nodiscard]] std::optional<ActivePattern> lazy_chunk_pattern_at(size_t index) const;
     [[nodiscard]] std::optional<ActivePattern> lazy_cvm_pattern_at(size_t index) const;
-    void add_lazy_usm_patterns_for_row(
-        size_t row_start,
-        size_t row_end,
-        std::array<std::optional<ActivePattern>, 16>& row_patterns
-    ) const;
     void ensure_lazy_usm_chunks_until(uint64_t target_end) const;
     void ensure_lazy_sbt_cues_until(uint64_t target_end) const;
     void ensure_lazy_chunks_until(uint64_t target_end) const;
@@ -121,6 +132,9 @@ private:
     void copy_selection(Lane lane);
     void jump_to_offset(size_t offset);
     void show_go_to_offset_dialog();
+    void configure_source(std::string_view format, HexPatternSet patterns);
+    void reset_lazy_state();
+    void apply_patterns(HexPatternSet patterns);
     void set_pattern_status(QString text);
     void update_scrollbar();
     [[nodiscard]] int row_height() const;

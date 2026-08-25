@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -68,5 +69,7 @@ struct HexPatternSet {
     uint64_t total_size,
     std::span<const uint8_t> prefix
 );
+
+[[nodiscard]] std::string entry_hex_format(const EntrySummary& entry);
 
 } // namespace cristudio

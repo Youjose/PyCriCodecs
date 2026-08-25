@@ -30,6 +30,26 @@
 #include <utility>
 
 namespace cristudio {
+namespace {
+
+[[nodiscard]] ArchiveItemEditResult edit_failure(QString title, QString error) {
+    return {
+        .handled = true,
+        .warning_title = std::move(title),
+        .error = std::move(error),
+    };
+}
+
+[[nodiscard]] ArchiveItemEditResult edit_success(QString message, int selected_row = -1) {
+    return {
+        .handled = true,
+        .changed = true,
+        .change_message = std::move(message),
+        .selected_row = selected_row,
+    };
+}
+
+} // namespace
 
 int validated_archive_index(const ArchiveSessionView& view, int row) {
     if (row < 0) {
@@ -74,11 +94,9 @@ ArchiveItemEditResult edit_archive_table_item(
         } else if (column == 8) {
             auto bytes = modules::utf::parse_hex_bytes(text, 12);
             if (!bytes) {
-                return {
-                    .handled = true,
-                    .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "AFS metadata edit failed"),
-                    .error = bytes.error()
-                };
+                return edit_failure(
+                    QCoreApplication::translate("Editor.ArchiveEditorHelpers", "AFS metadata edit failed"),
+                    bytes.error());
             }
             std::array<uint8_t, 12> metadata{};
             std::copy(bytes->begin(), bytes->end(), metadata.begin());
@@ -87,42 +105,30 @@ ArchiveItemEditResult edit_archive_table_item(
             return {};
         }
         if (!result) {
-            return {
-                .handled = true,
-                .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "AFS edit failed"),
-                .error = utf8_to_qstring(result.error())
-            };
+            return edit_failure(
+                QCoreApplication::translate("Editor.ArchiveEditorHelpers", "AFS edit failed"),
+                utf8_to_qstring(result.error()));
         }
-        return {
-            .handled = true,
-            .changed = true,
-            .change_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Changed AFS entry %1.").arg(row)
-        };
+        return edit_success(QCoreApplication::translate(
+            "Editor.ArchiveEditorHelpers", "Changed AFS entry %1.").arg(row));
     }
 
     if (view.kind == ArchiveKind::Awb && view.awb != nullptr && column == 1) {
         bool ok = false;
         const auto wave_id = text.toULongLong(&ok, 0);
         if (!ok) {
-            return {
-                .handled = true,
-                .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "AWB edit failed"),
-                .error = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Wave ID must be an unsigned integer.")
-            };
+            return edit_failure(
+                QCoreApplication::translate("Editor.ArchiveEditorHelpers", "AWB edit failed"),
+                QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Wave ID must be an unsigned integer."));
         }
         auto result = modules::awb::set_wave_id(*view.awb, static_cast<uint32_t>(row), wave_id);
         if (!result) {
-            return {
-                .handled = true,
-                .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "AWB edit failed"),
-                .error = utf8_to_qstring(result.error())
-            };
+            return edit_failure(
+                QCoreApplication::translate("Editor.ArchiveEditorHelpers", "AWB edit failed"),
+                utf8_to_qstring(result.error()));
         }
-        return {
-            .handled = true,
-            .changed = true,
-            .change_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Changed AWB wave ID at index %1.").arg(row)
-        };
+        return edit_success(QCoreApplication::translate(
+            "Editor.ArchiveEditorHelpers", "Changed AWB wave ID at index %1.").arg(row));
     }
 
     if (view.kind == ArchiveKind::Cpk && view.cpk != nullptr) {
@@ -138,11 +144,9 @@ ArchiveItemEditResult edit_archive_table_item(
             bool ok = false;
             const auto id = text.toUInt(&ok, 0);
             if (!ok) {
-                return {
-                    .handled = true,
-                    .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CPK edit failed"),
-                    .error = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "ID must be an unsigned integer.")
-                };
+                return edit_failure(
+                    QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CPK edit failed"),
+                    QCoreApplication::translate("Editor.ArchiveEditorHelpers", "ID must be an unsigned integer."));
             }
             result = modules::cpk::set_entry_id(*view.cpk, index, id);
         } else if (column == 12) {
@@ -152,157 +156,80 @@ ArchiveItemEditResult edit_archive_table_item(
             } else if (normalized == QStringLiteral("no") || normalized == QStringLiteral("false") || normalized == QStringLiteral("0")) {
                 result = modules::cpk::set_request_compress(*view.cpk, index, false);
             } else {
-                return {
-                    .handled = true,
-                    .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CPK edit failed"),
-                    .error = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Compress On Save must be yes or no.")
-                };
+                return edit_failure(
+                    QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CPK edit failed"),
+                    QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Compress On Save must be yes or no."));
             }
         } else if (column == 13) {
-            result = modules::cpk::set_group(*view.cpk, index, qstring_to_utf8(text));
-        } else if (column == 14) {
-            result = modules::cpk::set_attribute(*view.cpk, index, qstring_to_utf8(text));
-        } else if (column == 15) {
             result = modules::cpk::set_user_string(*view.cpk, index, qstring_to_utf8(text));
-        } else if (column == 16) {
-            bool ok = false;
-            const auto update_time = text.toULongLong(&ok, 0);
-            if (!ok) {
-                return {
-                    .handled = true,
-                    .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CPK edit failed"),
-                    .error = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Update Date must be an unsigned integer.")
-                };
-            }
-            result = modules::cpk::set_update_date_time(*view.cpk, index, update_time);
         } else {
             return {};
         }
         if (!result) {
-            return {
-                .handled = true,
-                .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CPK edit failed"),
-                .error = utf8_to_qstring(result.error())
-            };
+            return edit_failure(
+                QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CPK edit failed"),
+                utf8_to_qstring(result.error()));
         }
-        return {
-            .handled = true,
-            .changed = true,
-            .change_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Changed CPK entry %1.").arg(row)
-        };
+        return edit_success(QCoreApplication::translate(
+            "Editor.ArchiveEditorHelpers", "Changed CPK entry %1.").arg(row));
     }
 
     if (view.kind == ArchiveKind::Cvm && view.cvm != nullptr && column == 1) {
         auto result = modules::cvm::rename_file(*view.cvm, static_cast<uint32_t>(row), path_from_qstring(text.trimmed()));
         if (!result) {
-            return {
-                .handled = true,
-                .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CVM rename failed"),
-                .error = utf8_to_qstring(result.error())
-            };
+            return edit_failure(
+                QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CVM rename failed"),
+                utf8_to_qstring(result.error()));
         }
-        return {
-            .handled = true,
-            .changed = true,
-            .change_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Renamed CVM entry %1.").arg(row)
-        };
+        return edit_success(QCoreApplication::translate(
+            "Editor.ArchiveEditorHelpers", "Renamed CVM entry %1.").arg(row));
     }
 
     return {};
 }
 
-ArchiveBuildResult build_archive_session_bytes(
+EditorBuildResult build_archive_session_bytes(
     const MutableArchiveSessionView& view
 ) {
     if (view.kind == ArchiveKind::Afs && view.afs != nullptr) {
-        auto built = modules::afs::build_session_bytes(*view.afs);
-        if (!built) {
-            return {
-                .handled = true,
-                .log_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "AFS build failed: %1").arg(utf8_to_qstring(built.error())),
-                .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Build failed"),
-                .error = utf8_to_qstring(built.error())
-            };
-        }
-        const auto byte_count = built->size();
-        return {
-            .handled = true,
-            .bytes = std::move(*built),
-            .log_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Built AFS session bytes: %1 bytes").arg(static_cast<qulonglong>(byte_count))
-        };
+        return finish_editor_build(
+            modules::afs::build_session_bytes(*view.afs),
+            "Editor.ArchiveEditorHelpers",
+            "AFS build failed: %1",
+            "Built AFS session bytes: %1 bytes");
     }
 
     if (view.kind == ArchiveKind::Awb && view.awb != nullptr) {
-        auto built = modules::awb::build_session_bytes(*view.awb);
-        if (!built) {
-            return {
-                .handled = true,
-                .log_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "AWB build failed: %1").arg(utf8_to_qstring(built.error())),
-                .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Build failed"),
-                .error = utf8_to_qstring(built.error())
-            };
-        }
-        const auto byte_count = built->size();
-        return {
-            .handled = true,
-            .bytes = std::move(*built),
-            .log_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Built AWB session bytes: %1 bytes").arg(static_cast<qulonglong>(byte_count))
-        };
+        return finish_editor_build(
+            modules::awb::build_session_bytes(*view.awb),
+            "Editor.ArchiveEditorHelpers",
+            "AWB build failed: %1",
+            "Built AWB session bytes: %1 bytes");
     }
 
     if (view.kind == ArchiveKind::Acx && view.acx != nullptr) {
-        auto built = modules::acx::rebuild_session_bytes(*view.acx);
-        if (!built) {
-            return {
-                .handled = true,
-                .log_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "ACX rebuild failed: %1").arg(utf8_to_qstring(built.error())),
-                .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Build failed"),
-                .error = utf8_to_qstring(built.error())
-            };
-        }
-        const auto byte_count = built->size();
-        return {
-            .handled = true,
-            .bytes = std::move(*built),
-            .log_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Rebuilt ACX session bytes: %1 bytes").arg(static_cast<qulonglong>(byte_count))
-        };
+        return finish_editor_build(
+            modules::acx::rebuild_session_bytes(*view.acx),
+            "Editor.ArchiveEditorHelpers",
+            "ACX rebuild failed: %1",
+            "Rebuilt ACX session bytes: %1 bytes");
     }
 
     if (view.kind == ArchiveKind::Cpk && view.cpk != nullptr) {
         const bool obfuscate_utf = view.cpk_obfuscate_utf != nullptr && *view.cpk_obfuscate_utf;
-        auto built = modules::cpk::build_session_bytes(*view.cpk, obfuscate_utf);
-        if (!built) {
-            return {
-                .handled = true,
-                .log_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CPK save failed: %1").arg(utf8_to_qstring(built.error())),
-                .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Build failed"),
-                .error = utf8_to_qstring(built.error())
-            };
-        }
-        const auto byte_count = built->size();
-        return {
-            .handled = true,
-            .bytes = std::move(*built),
-            .log_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Built CPK session bytes: %1 bytes").arg(static_cast<qulonglong>(byte_count))
-        };
+        return finish_editor_build(
+            modules::cpk::build_session_bytes(*view.cpk, obfuscate_utf),
+            "Editor.ArchiveEditorHelpers",
+            "CPK save failed: %1",
+            "Built CPK session bytes: %1 bytes");
     }
 
     if (view.kind == ArchiveKind::Cvm && view.cvm != nullptr) {
-        auto built = modules::cvm::save_session_bytes(*view.cvm);
-        if (!built) {
-            return {
-                .handled = true,
-                .log_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CVM save failed: %1").arg(utf8_to_qstring(built.error())),
-                .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Build failed"),
-                .error = utf8_to_qstring(built.error())
-            };
-        }
-        const auto byte_count = built->size();
-        return {
-            .handled = true,
-            .bytes = std::move(*built),
-            .log_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Built CVM session bytes: %1 bytes").arg(static_cast<qulonglong>(byte_count))
-        };
+        return finish_editor_build(
+            modules::cvm::save_session_bytes(*view.cvm),
+            "Editor.ArchiveEditorHelpers",
+            "CVM save failed: %1",
+            "Built CVM session bytes: %1 bytes");
     }
 
     return {};
@@ -326,11 +253,9 @@ ArchiveItemEditResult edit_archive_entry_properties(
 
         auto selected = modules::cpk::choose_entry_properties(parent, *entry);
         if (!selected) {
-            return {
-                .handled = true,
-                .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CPK edit failed"),
-                .error = selected.error()
-            };
+            return edit_failure(
+                QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CPK edit failed"),
+                selected.error());
         }
         if (!*selected) {
             return {.handled = true};
@@ -342,41 +267,27 @@ ArchiveItemEditResult edit_archive_entry_properties(
         if (options.full_path != original_full_path) {
             auto renamed = modules::cpk::rename_file(*view.cpk, index, options.full_path);
             if (!renamed) {
-                return {
-                    .handled = true,
-                    .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CPK rename failed"),
-                    .error = utf8_to_qstring(renamed.error())
-                };
+                return edit_failure(
+                    QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CPK rename failed"),
+                    utf8_to_qstring(renamed.error()));
             }
         }
         if (options.dirname != original_dirname) {
             if (auto result = modules::cpk::set_dirname(*view.cpk, index, options.dirname); !result) {
-                return {.handled = true, .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CPK edit failed"), .error = utf8_to_qstring(result.error())};
+                return edit_failure(QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CPK edit failed"), utf8_to_qstring(result.error()));
             }
         }
         if (auto result = modules::cpk::set_entry_id(*view.cpk, index, options.id); !result) {
-            return {.handled = true, .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CPK edit failed"), .error = utf8_to_qstring(result.error())};
+            return edit_failure(QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CPK edit failed"), utf8_to_qstring(result.error()));
         }
         if (auto result = modules::cpk::set_request_compress(*view.cpk, index, options.request_compress); !result) {
-            return {.handled = true, .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CPK edit failed"), .error = utf8_to_qstring(result.error())};
-        }
-        if (auto result = modules::cpk::set_group(*view.cpk, index, options.group); !result) {
-            return {.handled = true, .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CPK edit failed"), .error = utf8_to_qstring(result.error())};
-        }
-        if (auto result = modules::cpk::set_attribute(*view.cpk, index, options.attribute); !result) {
-            return {.handled = true, .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CPK edit failed"), .error = utf8_to_qstring(result.error())};
+            return edit_failure(QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CPK edit failed"), utf8_to_qstring(result.error()));
         }
         if (auto result = modules::cpk::set_user_string(*view.cpk, index, options.user_string); !result) {
-            return {.handled = true, .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CPK edit failed"), .error = utf8_to_qstring(result.error())};
+            return edit_failure(QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CPK edit failed"), utf8_to_qstring(result.error()));
         }
-        if (auto result = modules::cpk::set_update_date_time(*view.cpk, index, options.update_date_time); !result) {
-            return {.handled = true, .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CPK edit failed"), .error = utf8_to_qstring(result.error())};
-        }
-        return {
-            .handled = true,
-            .changed = true,
-            .change_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Updated CPK entry %1 properties.").arg(row)
-        };
+        return edit_success(QCoreApplication::translate(
+            "Editor.ArchiveEditorHelpers", "Updated CPK entry %1 properties.").arg(row));
     }
 
     if (view.kind == ArchiveKind::Cvm && view.cvm != nullptr) {
@@ -386,17 +297,12 @@ ArchiveItemEditResult edit_archive_entry_properties(
         }
         auto result = modules::cvm::rename_file(*view.cvm, static_cast<uint32_t>(row), *path);
         if (!result) {
-            return {
-                .handled = true,
-                .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CVM rename failed"),
-                .error = utf8_to_qstring(result.error())
-            };
+            return edit_failure(
+                QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CVM rename failed"),
+                utf8_to_qstring(result.error()));
         }
-        return {
-            .handled = true,
-            .changed = true,
-            .change_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Renamed CVM entry %1.").arg(row)
-        };
+        return edit_success(QCoreApplication::translate(
+            "Editor.ArchiveEditorHelpers", "Renamed CVM entry %1.").arg(row));
     }
 
     return {};
@@ -418,13 +324,11 @@ ArchiveItemEditResult edit_archive_options(
             options->first_payload_offset
         );
         if (!result) {
-            return {
-                .handled = true,
-                .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "AFS options failed"),
-                .error = utf8_to_qstring(result.error())
-            };
+            return edit_failure(
+                QCoreApplication::translate("Editor.ArchiveEditorHelpers", "AFS options failed"),
+                utf8_to_qstring(result.error()));
         }
-        return {.handled = true, .changed = true, .change_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Updated AFS build options.")};
+        return edit_success(QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Updated AFS build options."));
     }
 
     if (view.kind == ArchiveKind::Awb && view.awb != nullptr) {
@@ -441,13 +345,11 @@ ArchiveItemEditResult edit_archive_options(
             options->offset_size
         );
         if (!result) {
-            return {
-                .handled = true,
-                .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "AWB options failed"),
-                .error = utf8_to_qstring(result.error())
-            };
+            return edit_failure(
+                QCoreApplication::translate("Editor.ArchiveEditorHelpers", "AWB options failed"),
+                utf8_to_qstring(result.error()));
         }
-        return {.handled = true, .changed = true, .change_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Updated AWB build options.")};
+        return edit_success(QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Updated AWB build options."));
     }
 
     if (view.kind == ArchiveKind::Cpk && view.cpk != nullptr) {
@@ -462,7 +364,7 @@ ArchiveItemEditResult edit_archive_options(
         if (view.cpk_obfuscate_utf != nullptr) {
             *view.cpk_obfuscate_utf = selection->obfuscate_utf;
         }
-        return {.handled = true, .changed = true, .change_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Updated CPK build options.")};
+        return edit_success(QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Updated CPK build options."));
     }
 
     if (view.kind == ArchiveKind::Cvm && view.cvm != nullptr) {
@@ -472,13 +374,11 @@ ArchiveItemEditResult edit_archive_options(
         }
         auto result = modules::cvm::set_metadata_options(*view.cvm, *options);
         if (!result) {
-            return {
-                .handled = true,
-                .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CVM metadata failed"),
-                .error = utf8_to_qstring(result.error())
-            };
+            return edit_failure(
+                QCoreApplication::translate("Editor.ArchiveEditorHelpers", "CVM metadata failed"),
+                utf8_to_qstring(result.error()));
         }
-        return {.handled = true, .changed = true, .change_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Updated CVM metadata options.")};
+        return edit_success(QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Updated CVM metadata options."));
     }
 
     return {};
@@ -526,25 +426,20 @@ ArchiveItemEditResult add_archive_file(QWidget* parent, const MutableArchiveSess
         }
 
         if (!added) {
-            return {.handled = true, .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Add failed"), .error = utf8_to_qstring(added.error())};
+            return edit_failure(
+                QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Add failed"),
+                utf8_to_qstring(added.error()));
         }
         if (*added == 0) {
-            return {
-                .handled = true,
-                .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Nothing added"),
-                .error = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "The selected folder contains no regular files.")
-            };
+            return edit_failure(
+                QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Nothing added"),
+                QCoreApplication::translate("Editor.ArchiveEditorHelpers", "The selected folder contains no regular files."));
         }
-        return {
-            .handled = true,
-            .changed = true,
-            .change_message = QCoreApplication::translate(
-                "Editor.ArchiveEditorHelpers",
-                "Added %n CPK file(s).",
-                nullptr,
-                static_cast<int>(*added)),
-            .selected_row = static_cast<int>(original_count)
-        };
+        return edit_success(
+            QCoreApplication::translate(
+                "Editor.ArchiveEditorHelpers", "Added %n CPK file(s).",
+                nullptr, static_cast<int>(*added)),
+            static_cast<int>(original_count));
     }
 
     const auto path_text = QFileDialog::getOpenFileName(parent, QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Choose file to add"));
@@ -553,7 +448,9 @@ ArchiveItemEditResult add_archive_file(QWidget* parent, const MutableArchiveSess
     }
     auto bytes = read_file_bytes(path_from_qstring(path_text));
     if (!bytes) {
-        return {.handled = true, .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Add failed"), .error = bytes.error()};
+        return edit_failure(
+            QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Add failed"),
+            bytes.error());
     }
 
     if (view.kind == ArchiveKind::Afs && view.afs != nullptr) {
@@ -570,30 +467,28 @@ ArchiveItemEditResult add_archive_file(QWidget* parent, const MutableArchiveSess
             std::move(options->header_source_name)
         );
         if (!result) {
-            return {.handled = true, .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Add failed"), .error = utf8_to_qstring(result.error())};
+            return edit_failure(
+                QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Add failed"),
+                utf8_to_qstring(result.error()));
         }
-        return {
-            .handled = true,
-            .changed = true,
-            .change_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Added AFS file %1 at file ID %2.").arg(path_text).arg(options->file_id)
-        };
+        return edit_success(QCoreApplication::translate(
+            "Editor.ArchiveEditorHelpers", "Added AFS file %1 at file ID %2.")
+                .arg(path_text).arg(options->file_id));
     }
 
     if (view.kind == ArchiveKind::Awb && view.awb != nullptr) {
         const auto wave_id = modules::awb::add_file(*view.awb, *bytes);
-        return {
-            .handled = true,
-            .changed = true,
-            .change_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Added AWB file %1 as wave ID %2.").arg(path_text).arg(static_cast<qulonglong>(wave_id))
-        };
+        return edit_success(QCoreApplication::translate(
+            "Editor.ArchiveEditorHelpers", "Added AWB file %1 as wave ID %2.")
+                .arg(path_text).arg(static_cast<qulonglong>(wave_id)));
     }
 
     if (view.kind == ArchiveKind::Acx && view.acx != nullptr) {
         auto result = modules::acx::add_file(*view.acx, *bytes);
         if (!result) {
-            return {.handled = true, .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Add failed"), .error = utf8_to_qstring(result.error())};
+            return edit_failure(QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Add failed"), utf8_to_qstring(result.error()));
         }
-        return {.handled = true, .changed = true, .change_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Added ACX file %1.").arg(path_text)};
+        return edit_success(QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Added ACX file %1.").arg(path_text));
     }
 
     if (view.kind == ArchiveKind::Cvm && view.cvm != nullptr) {
@@ -612,9 +507,9 @@ ArchiveItemEditResult add_archive_file(QWidget* parent, const MutableArchiveSess
         }
         auto result = modules::cvm::add_bytes(*view.cvm, *bytes, path_from_qstring(archive_path.trimmed()));
         if (!result) {
-            return {.handled = true, .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Add failed"), .error = utf8_to_qstring(result.error())};
+            return edit_failure(QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Add failed"), utf8_to_qstring(result.error()));
         }
-        return {.handled = true, .changed = true, .change_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Added CVM file %1.").arg(archive_path)};
+        return edit_success(QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Added CVM file %1.").arg(archive_path));
     }
 
     return {};
@@ -630,7 +525,7 @@ ArchiveItemEditResult replace_archive_file(QWidget* parent, const MutableArchive
     }
     auto bytes = read_file_bytes(path_from_qstring(path_text));
     if (!bytes) {
-        return {.handled = true, .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Replacement failed"), .error = bytes.error()};
+        return edit_failure(QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Replacement failed"), bytes.error());
     }
 
     std::expected<void, std::string> result{};
@@ -648,14 +543,12 @@ ArchiveItemEditResult replace_archive_file(QWidget* parent, const MutableArchive
         return {};
     }
     if (!result) {
-        return {.handled = true, .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Replacement failed"), .error = utf8_to_qstring(result.error())};
+        return edit_failure(QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Replacement failed"), utf8_to_qstring(result.error()));
     }
-    return {
-        .handled = true,
-        .changed = true,
-        .change_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Replaced archive entry %1 from %2.").arg(index).arg(path_text),
-        .selected_row = index
-    };
+    return edit_success(
+        QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Replaced archive entry %1 from %2.")
+            .arg(index).arg(path_text),
+        index);
 }
 
 ArchiveItemEditResult remove_archive_file(QWidget* parent, const MutableArchiveSessionView& view, int index) {
@@ -681,9 +574,9 @@ ArchiveItemEditResult remove_archive_file(QWidget* parent, const MutableArchiveS
         return {};
     }
     if (!result) {
-        return {.handled = true, .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Remove failed"), .error = utf8_to_qstring(result.error())};
+        return edit_failure(QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Remove failed"), utf8_to_qstring(result.error()));
     }
-    return {.handled = true, .changed = true, .change_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Removed archive entry %1.").arg(index)};
+    return edit_success(QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Removed archive entry %1.").arg(index));
 }
 
 ArchiveItemEditResult move_archive_entry(const MutableArchiveSessionView& view, int index, int delta) {
@@ -715,14 +608,12 @@ ArchiveItemEditResult move_archive_entry(const MutableArchiveSessionView& view, 
         return {};
     }
     if (!result) {
-        return {.handled = true, .warning_title = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Move failed"), .error = utf8_to_qstring(result.error())};
+        return edit_failure(QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Move failed"), utf8_to_qstring(result.error()));
     }
-    return {
-        .handled = true,
-        .changed = true,
-        .change_message = QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Moved archive entry %1 to %2.").arg(index).arg(target),
-        .selected_row = target
-    };
+    return edit_success(
+        QCoreApplication::translate("Editor.ArchiveEditorHelpers", "Moved archive entry %1 to %2.")
+            .arg(index).arg(target),
+        target);
 }
 
 QString archive_entry_default_name(const ArchiveSessionView& view, uint32_t index) {

@@ -57,14 +57,6 @@ struct ArchiveItemEditResult {
     int selected_row = -1;
 };
 
-struct ArchiveBuildResult {
-    bool handled = false;
-    std::vector<uint8_t> bytes;
-    QString log_message;
-    QString warning_title;
-    QString error;
-};
-
 [[nodiscard]] int validated_archive_index(const ArchiveSessionView& view, int row);
 [[nodiscard]] ArchiveItemEditResult edit_archive_table_item(
     const MutableArchiveSessionView& view,
@@ -72,7 +64,7 @@ struct ArchiveBuildResult {
     int column,
     const QString& text
 );
-[[nodiscard]] ArchiveBuildResult build_archive_session_bytes(
+[[nodiscard]] EditorBuildResult build_archive_session_bytes(
     const MutableArchiveSessionView& view
 );
 [[nodiscard]] ArchiveItemEditResult edit_archive_entry_properties(

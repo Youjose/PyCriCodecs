@@ -24,7 +24,6 @@
 #include <QFrame>
 #include <QLabel>
 #include <QLocale>
-#include <QMouseEvent>
 #include <QHBoxLayout>
 #include <QPainter>
 #include <QPalette>
@@ -58,47 +57,6 @@
 
 namespace cristudio {
 
-void SeekSlider::mousePressEvent(QMouseEvent* event) {
-    if (event->button() != Qt::LeftButton) {
-        QSlider::mousePressEvent(event);
-        return;
-    }
-    event->accept();
-    set_value_from_position(event->position().x());
-    emit sliderPressed();
-    emit sliderMoved(value());
-}
-
-void SeekSlider::mouseMoveEvent(QMouseEvent* event) {
-    if (!(event->buttons() & Qt::LeftButton)) {
-        QSlider::mouseMoveEvent(event);
-        return;
-    }
-    event->accept();
-    set_value_from_position(event->position().x());
-    emit sliderMoved(value());
-}
-
-void SeekSlider::mouseReleaseEvent(QMouseEvent* event) {
-    if (event->button() != Qt::LeftButton) {
-        QSlider::mouseReleaseEvent(event);
-        return;
-    }
-    event->accept();
-    set_value_from_position(event->position().x());
-    emit sliderReleased();
-}
-
-void SeekSlider::set_value_from_position(qreal x) {
-    const auto bounded_x = std::clamp(x, 0.0, static_cast<double>(width()));
-    setValue(QStyle::sliderValueFromPosition(
-        minimum(), maximum(), static_cast<int>(bounded_x), (std::max)(1, width()), invertedAppearance()));
-}
-
-QString to_qstring(const std::filesystem::path& path) {
-    return path_to_qstring(path);
-}
-
 QString archive_basename(QString text) {
     text.replace(QLatin1Char('\\'), QLatin1Char('/'));
     while (text.endsWith(QLatin1Char('/'))) {
@@ -114,6 +72,24 @@ QString strip_mux_prefix(QString text) {
     return text.startsWith(QLatin1String(prefix))
         ? text.mid(static_cast<int>(std::char_traits<char>::length(prefix)))
         : text;
+}
+
+QString recovery_key_text(uint64_t key, int digits) {
+    return QStringLiteral("0x%1").arg(
+        QString::number(static_cast<qulonglong>(key), 16).toUpper().rightJustified(digits, QLatin1Char('0')));
+}
+
+QString recovery_source_label(
+    std::string_view name,
+    const std::filesystem::path& path,
+    const char* translation_context) {
+    if (!name.empty()) {
+        return utf8_to_qstring(name);
+    }
+    if (!path.empty()) {
+        return path_to_qstring(path.filename());
+    }
+    return QCoreApplication::translate(translation_context, "Selected entry");
 }
 
 void reveal_in_file_manager(const QString& path) {
@@ -778,21 +754,6 @@ QString visual_stylesheet(bool dark) {
 }
 
 
-QLabel* make_dim_label(QString text, QWidget* parent) {
-    auto* label = new QLabel(std::move(text), parent);
-    label->setObjectName(QStringLiteral("DimLabel"));
-    label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    return label;
-}
-
-QLabel* make_value_label(QString text, QWidget* parent) {
-    auto* label = new QLabel(std::move(text), parent);
-    label->setObjectName(QStringLiteral("ValueLabel"));
-    label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    label->setWordWrap(true);
-    return label;
-}
-
 QIcon make_sidebar_icon(bool panel_on_left) {
     QPixmap pixmap(18, 18);
     pixmap.fill(Qt::transparent);
@@ -983,7 +944,7 @@ std::optional<cricodecs::KeyRecoveryMode> choose_key_recovery_mode(
     auto* independent = new QRadioButton(QCoreApplication::translate("MainWindow.UiHelpers", "Recover each file independently"), &dialog);
     independent->setChecked(true);
     layout->addWidget(independent);
-    auto* independent_help = make_dim_label(
+    auto* independent_help = dim_label(
         QCoreApplication::translate("MainWindow.UiHelpers", "Use this when the selection may contain unrelated banks or containers with different keys."),
         &dialog);
     independent_help->setWordWrap(true);
@@ -992,24 +953,22 @@ std::optional<cricodecs::KeyRecoveryMode> choose_key_recovery_mode(
 
     auto* shared = new QRadioButton(QCoreApplication::translate("MainWindow.UiHelpers", "Treat all files as one shared base-key set"), &dialog);
     layout->addWidget(shared);
-    auto* shared_help = make_dim_label(
+    auto* shared_help = dim_label(
         QCoreApplication::translate("MainWindow.UiHelpers", "Combine evidence across files. Choose this only when they are expected to share one base key; AWB subkeys are handled automatically."),
         &dialog);
     shared_help->setWordWrap(true);
     shared_help->setContentsMargins(24, 0, 0, 4);
     layout->addWidget(shared_help);
 
-    auto* note = make_dim_label(
+    auto* note = dim_label(
         QCoreApplication::translate("MainWindow.UiHelpers", "Files without a supported encrypted stream are skipped and reported."),
         &dialog);
     note->setWordWrap(true);
     layout->addWidget(note);
 
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    buttons->button(QDialogButtonBox::Ok)->setText(QCoreApplication::translate("MainWindow.UiHelpers", "Recover"));
+    auto* buttons = dialog_buttons(
+        dialog, QCoreApplication::translate("MainWindow.UiHelpers", "Recover"));
     layout->addWidget(buttons);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     if (dialog.exec() != QDialog::Accepted) return std::nullopt;
     return shared->isChecked()
         ? cricodecs::KeyRecoveryMode::SharedBaseKey

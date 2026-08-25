@@ -263,66 +263,36 @@ void append_transform_info_rows(
     append_detail_info_rows(rows, transform_detail_rows(kind, view), max_rows);
 }
 
-TransformBuildResult build_transform_session_bytes(
+EditorBuildResult build_transform_session_bytes(
     TransformKind kind,
     const TransformSessionView& view
 ) {
     switch (kind) {
     case TransformKind::Adx:
         if (view.adx != nullptr) {
-            auto built = modules::adx::build_session_bytes(*view.adx);
-            if (!built) {
-                return {
-                    .handled = true,
-                    .log_message = QCoreApplication::translate("Editor.TransformEditorHelpers", "ADX/AHX save failed: %1").arg(utf8_to_qstring(built.error())),
-                    .warning_title = QCoreApplication::translate("Editor.TransformEditorHelpers", "Build failed"),
-                    .error = utf8_to_qstring(built.error())
-                };
-            }
-            const auto byte_count = built->size();
-            return {
-                .handled = true,
-                .bytes = std::move(*built),
-                .log_message = QCoreApplication::translate("Editor.TransformEditorHelpers", "Rebuilt ADX/AHX session bytes: %1 bytes").arg(static_cast<qulonglong>(byte_count))
-            };
+            return finish_editor_build(
+                modules::adx::build_session_bytes(*view.adx),
+                "Editor.TransformEditorHelpers",
+                "ADX/AHX save failed: %1",
+                "Rebuilt ADX/AHX session bytes: %1 bytes");
         }
         break;
     case TransformKind::Hca:
         if (view.hca != nullptr) {
-            auto built = modules::hca::build_session_bytes(*view.hca);
-            if (!built) {
-                return {
-                    .handled = true,
-                    .log_message = QCoreApplication::translate("Editor.TransformEditorHelpers", "HCA save failed: %1").arg(utf8_to_qstring(built.error())),
-                    .warning_title = QCoreApplication::translate("Editor.TransformEditorHelpers", "Build failed"),
-                    .error = utf8_to_qstring(built.error())
-                };
-            }
-            const auto byte_count = built->size();
-            return {
-                .handled = true,
-                .bytes = std::move(*built),
-                .log_message = QCoreApplication::translate("Editor.TransformEditorHelpers", "Rebuilt HCA session bytes: %1 bytes").arg(static_cast<qulonglong>(byte_count))
-            };
+            return finish_editor_build(
+                modules::hca::build_session_bytes(*view.hca),
+                "Editor.TransformEditorHelpers",
+                "HCA save failed: %1",
+                "Rebuilt HCA session bytes: %1 bytes");
         }
         break;
     case TransformKind::Aax:
         if (view.aax != nullptr) {
-            auto built = modules::aax::build_session_bytes(*view.aax);
-            if (!built) {
-            return {
-                .handled = true,
-                .log_message = QCoreApplication::translate("Editor.TransformEditorHelpers", "AAX save failed: %1").arg(utf8_to_qstring(built.error())),
-                .warning_title = QCoreApplication::translate("Editor.TransformEditorHelpers", "Build failed"),
-                .error = utf8_to_qstring(built.error())
-            };
-            }
-            const auto byte_count = built->size();
-            return {
-                .handled = true,
-                .bytes = std::move(*built),
-                .log_message = QCoreApplication::translate("Editor.TransformEditorHelpers", "Rebuilt AAX session bytes: %1 bytes").arg(static_cast<qulonglong>(byte_count))
-            };
+            return finish_editor_build(
+                modules::aax::build_session_bytes(*view.aax),
+                "Editor.TransformEditorHelpers",
+                "AAX save failed: %1",
+                "Rebuilt AAX session bytes: %1 bytes");
         }
         break;
     case TransformKind::Aix:
@@ -364,40 +334,20 @@ TransformBuildResult build_transform_session_bytes(
         break;
     case TransformKind::Sfd:
         if (view.sfd != nullptr) {
-            auto built = modules::sfd::build_session_bytes(*view.sfd);
-            if (!built) {
-            return {
-                .handled = true,
-                .log_message = QCoreApplication::translate("Editor.TransformEditorHelpers", "SFD save failed: %1").arg(utf8_to_qstring(built.error())),
-                .warning_title = QCoreApplication::translate("Editor.TransformEditorHelpers", "Build failed"),
-                .error = utf8_to_qstring(built.error())
-            };
-            }
-            const auto byte_count = built->size();
-            return {
-                .handled = true,
-                .bytes = std::move(*built),
-                .log_message = QCoreApplication::translate("Editor.TransformEditorHelpers", "Rebuilt SFD session bytes: %1 bytes").arg(static_cast<qulonglong>(byte_count))
-            };
+            return finish_editor_build(
+                modules::sfd::build_session_bytes(*view.sfd),
+                "Editor.TransformEditorHelpers",
+                "SFD save failed: %1",
+                "Rebuilt SFD session bytes: %1 bytes");
         }
         break;
     case TransformKind::Csb:
         if (view.csb != nullptr) {
-            auto built = modules::csb::build_session_bytes(*view.csb);
-            if (!built) {
-            return {
-                .handled = true,
-                .log_message = QCoreApplication::translate("Editor.TransformEditorHelpers", "CSB save failed: %1").arg(utf8_to_qstring(built.error())),
-                .warning_title = QCoreApplication::translate("Editor.TransformEditorHelpers", "Build failed"),
-                .error = utf8_to_qstring(built.error())
-            };
-            }
-            const auto byte_count = built->size();
-            return {
-                .handled = true,
-                .bytes = std::move(*built),
-                .log_message = QCoreApplication::translate("Editor.TransformEditorHelpers", "Rebuilt CSB session bytes: %1 bytes").arg(static_cast<qulonglong>(byte_count))
-            };
+            return finish_editor_build(
+                modules::csb::build_session_bytes(*view.csb),
+                "Editor.TransformEditorHelpers",
+                "CSB save failed: %1",
+                "Rebuilt CSB session bytes: %1 bytes");
         }
         break;
     case TransformKind::Acb:
@@ -416,7 +366,7 @@ TransformBuildResult build_transform_session_bytes(
     return {};
 }
 
-TransformBuildResult edit_transform_options(
+EditorBuildResult edit_transform_options(
     QWidget* parent,
     TransformKind kind,
     const TransformSessionView& view

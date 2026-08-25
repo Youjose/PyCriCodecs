@@ -1,5 +1,6 @@
 #include "modules/cpk/cpk_edit_ui.hpp"
 
+#include "editor/editor_helpers.hpp"
 #include "editor/editor_widgets.hpp"
 #include "editor/table_item_helpers.hpp"
 #include "modules/ui_value_helpers.hpp"
@@ -97,31 +98,6 @@ public:
     }
 };
 
-std::string qstring_to_utf8(const QString& text) {
-    const auto utf8 = text.toUtf8();
-    return std::string(utf8.constData(), static_cast<size_t>(utf8.size()));
-}
-
-QLabel* dim_label(QString text, QWidget* parent) {
-    auto* label = new QLabel(std::move(text), parent);
-    label->setObjectName(QStringLiteral("DimLabel"));
-    label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    return label;
-}
-
-QString preset_name(cricodecs::cpk::CpkPreset preset) {
-    switch (preset) {
-    case cricodecs::cpk::CpkPreset::Custom: return QStringLiteral("Custom");
-    case cricodecs::cpk::CpkPreset::Id: return QStringLiteral("ID");
-    case cricodecs::cpk::CpkPreset::Filename: return QCoreApplication::translate("Cpk.CpkEditUi", "Filename");
-    case cricodecs::cpk::CpkPreset::FilenameId: return QCoreApplication::translate("Cpk.CpkEditUi", "Filename + ID");
-    case cricodecs::cpk::CpkPreset::FilenameGroup: return QCoreApplication::translate("Cpk.CpkEditUi", "Filename + Group");
-    case cricodecs::cpk::CpkPreset::IdGroup: return QCoreApplication::translate("Cpk.CpkEditUi", "ID + Group");
-    case cricodecs::cpk::CpkPreset::FilenameIdGroup: return QCoreApplication::translate("Cpk.CpkEditUi", "Filename + ID + Group");
-    }
-    return QStringLiteral("Custom");
-}
-
 int optional_bool_index(const std::optional<bool>& value) {
     if (!value.has_value()) {
         return 0;
@@ -175,7 +151,7 @@ void populate_editor_archive_table(QTableWidget* table, const cricodecs::cpk::Cp
     table->setSortingEnabled(false);
     table->setUpdatesEnabled(false);
     table->clear();
-    table->setColumnCount(17);
+    table->setColumnCount(14);
     table->setHorizontalHeaderLabels({
         QCoreApplication::translate("Cpk.CpkEditUi", "Index"),
         QCoreApplication::translate("Cpk.CpkEditUi", "Full Path"),
@@ -190,10 +166,7 @@ void populate_editor_archive_table(QTableWidget* table, const cricodecs::cpk::Cp
         QCoreApplication::translate("Cpk.CpkEditUi", "Extract Size"),
         QStringLiteral("Compressed"),
         QCoreApplication::translate("Cpk.CpkEditUi", "Compress On Save"),
-        QCoreApplication::translate("Cpk.CpkEditUi", "Group"),
-        QCoreApplication::translate("Cpk.CpkEditUi", "Attribute"),
-        QCoreApplication::translate("Cpk.CpkEditUi", "User String"),
-        QCoreApplication::translate("Cpk.CpkEditUi", "Update Date")
+        QCoreApplication::translate("Cpk.CpkEditUi", "User String")
     });
     table->setRowCount(static_cast<int>(cpk.file_count()));
     for (size_t index = 0; index < cpk.files().size(); ++index) {
@@ -218,10 +191,7 @@ void populate_editor_archive_table(QTableWidget* table, const cricodecs::cpk::Cp
         compress_item->setTextAlignment(Qt::AlignCenter);
         compress_item->setToolTip(QCoreApplication::translate("Cpk.CpkEditUi", "Compress this entry with CRILAYLA on save when compression reduces its size."));
         table->setItem(row, 12, compress_item);
-        set_table_item(table, row, 13, utf8_to_qstring(entry.group), true);
-        set_table_item(table, row, 14, utf8_to_qstring(entry.attribute), true);
-        set_table_item(table, row, 15, utf8_to_qstring(entry.user_string), true);
-        set_table_item(table, row, 16, QString::number(static_cast<qulonglong>(entry.update_date_time)), true);
+        set_table_item(table, row, 13, utf8_to_qstring(entry.user_string), true);
     }
     table->setSortingEnabled(sorting_enabled);
     table->setUpdatesEnabled(updates_enabled);
@@ -251,27 +221,18 @@ std::expected<std::optional<EntryProperties>, QString> choose_entry_properties(
         &dialog);
     compress_switch->setAccessibleName(QCoreApplication::translate("Cpk.CpkEditUi", "Compress this CPK entry on save"));
     compress_switch->setChecked(entry.request_compress);
-    auto* group_edit = new QLineEdit(utf8_to_qstring(entry.group), &dialog);
-    auto* attribute_edit = new QLineEdit(utf8_to_qstring(entry.attribute), &dialog);
     auto* user_string_edit = new QLineEdit(utf8_to_qstring(entry.user_string), &dialog);
-    auto* update_date_edit = make_unsigned_integer_edit(
-        entry.update_date_time, 0, std::numeric_limits<uint64_t>::max(), &dialog, QCoreApplication::translate("Cpk.CpkEditUi", "Update date value"));
 
     form->addRow(QCoreApplication::translate("Cpk.CpkEditUi", "Full path"), path_edit);
     form->addRow(QCoreApplication::translate("Cpk.CpkEditUi", "DirName"), dirname_edit);
     form->addRow(QCoreApplication::translate("Cpk.CpkEditUi", "FileName"), filename_edit);
     form->addRow(QStringLiteral("ID"), id_edit);
     form->addRow(QCoreApplication::translate("Cpk.CpkEditUi", "Compression"), compression_row);
-    form->addRow(QCoreApplication::translate("Cpk.CpkEditUi", "Group"), group_edit);
-    form->addRow(QCoreApplication::translate("Cpk.CpkEditUi", "Attribute"), attribute_edit);
     form->addRow(QCoreApplication::translate("Cpk.CpkEditUi", "User string"), user_string_edit);
-    form->addRow(QCoreApplication::translate("Cpk.CpkEditUi", "Update date"), update_date_edit);
     layout->addLayout(form);
 
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    auto* buttons = dialog_buttons(dialog);
     layout->addWidget(buttons);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     if (dialog.exec() != QDialog::Accepted) {
         return std::optional<EntryProperties>{};
     }
@@ -281,12 +242,6 @@ std::expected<std::optional<EntryProperties>, QString> choose_entry_properties(
     if (!id) {
         return std::unexpected(id.error());
     }
-    const auto update_date = unsigned_integer_value(
-        update_date_edit, 0, std::numeric_limits<uint64_t>::max(), QCoreApplication::translate("Cpk.CpkEditUi", "Update date"));
-    if (!update_date) {
-        return std::unexpected(update_date.error());
-    }
-
     auto dirname = dirname_edit->text().trimmed();
     auto filename = filename_edit->text().trimmed();
     if (filename.isEmpty() || filename.contains(QLatin1Char('/')) || filename.contains(QLatin1Char('\\'))) {
@@ -307,10 +262,7 @@ std::expected<std::optional<EntryProperties>, QString> choose_entry_properties(
         .filename = qstring_to_utf8(filename),
         .id = static_cast<uint32_t>(*id),
         .request_compress = compress_switch->isChecked(),
-        .group = qstring_to_utf8(group_edit->text()),
-        .attribute = qstring_to_utf8(attribute_edit->text()),
-        .user_string = qstring_to_utf8(user_string_edit->text()),
-        .update_date_time = *update_date
+        .user_string = qstring_to_utf8(user_string_edit->text())
     };
 }
 
@@ -338,7 +290,7 @@ std::optional<BuildOptionsSelection> choose_build_options(
     };
     int preset_index = 0;
     for (const auto preset : presets) {
-        preset_combo->addItem(preset_name(preset), static_cast<int>(preset));
+        preset_combo->addItem(cpk_preset_name(preset), static_cast<int>(preset));
         if (preset == options.preset) {
             preset_index = preset_combo->count() - 1;
         }
@@ -410,10 +362,8 @@ std::optional<BuildOptionsSelection> choose_build_options(
     note->setWordWrap(true);
     layout->addWidget(note);
 
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    auto* buttons = dialog_buttons(dialog);
     layout->addWidget(buttons);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     if (dialog.exec() != QDialog::Accepted) {
         return std::nullopt;
     }

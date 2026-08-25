@@ -2,6 +2,7 @@
 
 #include <QString>
 
+#include <cctype>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -31,6 +32,19 @@ inline QString path_to_qstring(const std::filesystem::path& path) {
 
 inline QString utf8_to_qstring(std::string_view text) {
     return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size()));
+}
+
+inline std::string lower_ascii(std::string_view text) {
+    std::string lowered(text);
+    for (auto& ch : lowered) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    return lowered;
+}
+
+inline std::string qstring_to_utf8(const QString& text) {
+    const auto utf8 = text.toUtf8();
+    return {utf8.constData(), static_cast<size_t>(utf8.size())};
 }
 
 inline std::filesystem::path path_from_qstring(const QString& text) {

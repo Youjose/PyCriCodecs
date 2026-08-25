@@ -1,6 +1,7 @@
 #include "shared/i18n.hpp"
 #include "modules/cpk/cpk_browse.hpp"
 
+#include "editor/editor_helpers.hpp"
 #include "path_text.hpp"
 #include "shared/document_helpers.hpp"
 
@@ -15,29 +16,6 @@
 
 namespace cristudio::modules::cpk {
 namespace {
-
-std::string preset_name(cricodecs::cpk::CpkPreset preset) {
-    switch (preset) {
-    case cricodecs::cpk::CpkPreset::Custom: return "Custom";
-    case cricodecs::cpk::CpkPreset::Id: return "ID";
-    case cricodecs::cpk::CpkPreset::IdGroup: return cristudio::i18n::translate_utf8("Cpk.CpkBrowse", "ID + group");
-    case cricodecs::cpk::CpkPreset::Filename: return "Filename";
-    case cricodecs::cpk::CpkPreset::FilenameGroup: return cristudio::i18n::translate_utf8("Cpk.CpkBrowse", "Filename + group");
-    case cricodecs::cpk::CpkPreset::FilenameId: return cristudio::i18n::translate_utf8("Cpk.CpkBrowse", "Filename + ID");
-    case cricodecs::cpk::CpkPreset::FilenameIdGroup: return cristudio::i18n::translate_utf8("Cpk.CpkBrowse", "Filename + ID + group");
-    }
-    return "Unknown";
-}
-
-std::string mode_name(cricodecs::cpk::CpkMode mode) {
-    switch (mode) {
-    case cricodecs::cpk::CpkMode::Mode0: return cristudio::i18n::translate_utf8("Cpk.CpkBrowse", "Mode 0 / ITOC");
-    case cricodecs::cpk::CpkMode::Mode1: return cristudio::i18n::translate_utf8("Cpk.CpkBrowse", "Mode 1 / TOC");
-    case cricodecs::cpk::CpkMode::Mode2: return cristudio::i18n::translate_utf8("Cpk.CpkBrowse", "Mode 2 / TOC + ITOC");
-    case cricodecs::cpk::CpkMode::Mode3: return cristudio::i18n::translate_utf8("Cpk.CpkBrowse", "Mode 3 / TOC + ITOC + GTOC");
-    }
-    return "Unknown";
-}
 
 std::optional<uint64_t> header_u64(const cricodecs::cpk::Cpk& cpk, std::string_view field) {
     const auto& header = cpk.cpk_header();
@@ -90,27 +68,14 @@ void add_chunk_location(LoadedDocument& doc, const cricodecs::cpk::Cpk& cpk, std
     ));
 }
 
-EntrySummary sourced_entry(
-    EntrySummary entry,
-    const std::filesystem::path& source_path,
-    std::string source_format,
-    uint32_t source_index
-) {
-    entry.source_path = source_path;
-    entry.source_format = std::move(source_format);
-    entry.source_index = source_index;
-    entry.has_source = true;
-    return entry;
-}
-
 } // namespace
 
 LoadedDocument summarize(const std::filesystem::path& path, const cricodecs::cpk::Cpk& cpk) {
     auto doc = base_document(path, cristudio::i18n::translate_utf8("Cpk.CpkBrowse", "CPK archive"));
     doc.info.push_back(translated_info_row("Cpk.CpkBrowse", "Entries", number(cpk.file_count())));
-    doc.info.push_back(translated_info_row("Cpk.CpkBrowse", "Mode", mode_name(cpk.mode())));
-    doc.info.push_back(translated_info_row("Cpk.CpkBrowse", "Preset", preset_name(cpk.preset())));
-    doc.info.push_back(translated_info_row("Cpk.CpkBrowse", "Declared preset", cpk.has_declared_preset() ? preset_name(cpk.declared_preset()) : "-"));
+    doc.info.push_back(translated_info_row("Cpk.CpkBrowse", "Mode", qstring_to_utf8(cpk_mode_name(cpk.mode()))));
+    doc.info.push_back(translated_info_row("Cpk.CpkBrowse", "Preset", qstring_to_utf8(cpk_preset_name(cpk.preset()))));
+    doc.info.push_back(translated_info_row("Cpk.CpkBrowse", "Declared preset", cpk.has_declared_preset() ? qstring_to_utf8(cpk_preset_name(cpk.declared_preset())) : "-"));
     doc.info.push_back(translated_info_row("Cpk.CpkBrowse", "Alignment", number(cpk.alignment())));
     doc.info.push_back(translated_info_row("Cpk.CpkBrowse", "Content offset", number(cpk.content_offset())));
     doc.info.push_back({"TOC", bool_text(cpk.has_toc())});
@@ -131,7 +96,7 @@ LoadedDocument summarize(const std::filesystem::path& path, const cricodecs::cpk
     for (uint32_t i = 0; i < cpk.files().size(); ++i) {
         const auto& file = cpk.files()[i];
         auto type = file.is_compressed ? std::string("compressed") : std::string("data");
-        auto entry = sourced_entry({
+        auto entry = source_entry({
             archive_display_path(file.full_path().generic_string()),
             type,
             byte_count(file.extract_size != 0 ? file.extract_size : file.file_size),

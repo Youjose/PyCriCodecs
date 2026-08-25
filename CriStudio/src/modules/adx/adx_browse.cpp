@@ -4,24 +4,11 @@
 #include "shared/document_helpers.hpp"
 
 #include <cstdint>
-#include <iomanip>
-#include <sstream>
-
 namespace cristudio::modules::adx {
-namespace {
-
-std::string hex_u64(uint64_t value) {
-    std::ostringstream out;
-    out << "0x" << std::uppercase << std::hex << value;
-    return out.str();
-}
-
-} // namespace
-
 LoadedDocument summarize(const std::filesystem::path& path, const cricodecs::adx::Adx& adx) {
     auto doc = base_document(path, adx.is_ahx() ? cristudio::i18n::translate_utf8("Adx.AdxBrowse", "AHX audio") : cristudio::i18n::translate_utf8("Adx.AdxBrowse", "ADX audio"));
     const auto& header = adx.header();
-    doc.info.push_back(translated_info_row("Adx.AdxBrowse", "Signature", hex_u64(header.signature)));
+    doc.info.push_back(translated_info_row("Adx.AdxBrowse", "Signature", hex_number(header.signature)));
     doc.info.push_back(translated_info_row("Adx.AdxBrowse", "Data offset", number(header.data_offset)));
     doc.info.push_back(translated_info_row("Adx.AdxBrowse", "Encoding mode", number(header.encoding_mode)));
     doc.info.push_back(translated_info_row("Adx.AdxBrowse", "Block size", number(header.block_size)));
@@ -31,7 +18,7 @@ LoadedDocument summarize(const std::filesystem::path& path, const cricodecs::adx
     doc.info.push_back(translated_info_row("Adx.AdxBrowse", "Samples", number(header.sample_count)));
     doc.info.push_back(translated_info_row("Adx.AdxBrowse", "Highpass", number(header.highpass_freq)));
     doc.info.push_back(translated_info_row("Adx.AdxBrowse", "Version", number(header.version)));
-    doc.info.push_back(translated_info_row("Adx.AdxBrowse", "Flags", hex_u64(header.flags)));
+    doc.info.push_back(translated_info_row("Adx.AdxBrowse", "Flags", hex_number(header.flags)));
     doc.info.push_back(translated_info_row("Adx.AdxBrowse", "Encrypted", bool_text(adx.is_encrypted()), "Encrypted"));
     doc.info.push_back(translated_info_row("Adx.AdxBrowse", "AHX routed", bool_text(adx.is_ahx()), "AHX routed"));
     doc.info.push_back(translated_info_row("Adx.AdxBrowse", "Loop count", number(adx.loops().size())));

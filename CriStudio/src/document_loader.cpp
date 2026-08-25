@@ -897,7 +897,6 @@ EmbeddedPreview load_embedded_entry_preview(const EntrySummary& entry, const Dec
     }
 
     constexpr size_t max_hex_preview_bytes = 256u * 1024u;
-    preview.hex_dump = hex_dump(*bytes, max_hex_preview_bytes, preview.hex_truncated);
     preview.raw_total_size = bytes->size();
     const auto retain_bounded_raw_preview = [&] {
         preview.raw_preview_bytes.assign(
@@ -919,7 +918,6 @@ EmbeddedPreview load_embedded_entry_preview(const EntrySummary& entry, const Dec
         }
         if (doc->format.find("SBT") != std::string::npos && doc->format.find("subtitle") != std::string::npos) {
             preview.raw_preview_bytes = std::move(*bytes);
-            preview.hex_truncated = false;
         } else {
             retain_bounded_raw_preview();
         }

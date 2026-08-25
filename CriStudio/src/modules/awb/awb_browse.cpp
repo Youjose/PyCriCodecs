@@ -7,23 +7,6 @@
 #include <utility>
 
 namespace cristudio::modules::awb {
-namespace {
-
-EntrySummary sourced_entry(
-    EntrySummary entry,
-    const std::filesystem::path& source_path,
-    std::string source_format,
-    uint32_t source_index
-) {
-    entry.source_path = source_path;
-    entry.source_format = std::move(source_format);
-    entry.source_index = source_index;
-    entry.has_source = true;
-    return entry;
-}
-
-} // namespace
-
 LoadedDocument summarize(const std::filesystem::path& path, const cricodecs::awb::AwbContainer& awb) {
     auto doc = base_document(path, cristudio::i18n::translate_utf8("Awb.AwbBrowse", "AWB audio bank"));
     doc.info.push_back(translated_info_row("Awb.AwbBrowse", "Entries", number(awb.file_count())));
@@ -39,7 +22,7 @@ LoadedDocument summarize(const std::filesystem::path& path, const cricodecs::awb
         const auto extension = codec
             ? cricodecs::awb::entry_codec_extension(*codec)
             : std::string_view{".bin"};
-        auto summary = sourced_entry({
+        auto summary = source_entry({
             "wave_" + number(entry.wave_id) + std::string(extension),
             codec ? std::string(cricodecs::awb::entry_codec_name(*codec)) : "audio",
             byte_count(entry.size),

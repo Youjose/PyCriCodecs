@@ -2,6 +2,7 @@
 #include "modules/acb/acb_edit.hpp"
 
 #include "awb_container.hpp"
+#include "editor/editor_helpers.hpp"
 #include "io_reader.hpp"
 #include "modules/utf/utf_edit_ui.hpp"
 #include "path_text.hpp"
@@ -78,22 +79,6 @@ QString safe_awb_output_name(QString name) {
         name += QStringLiteral(".awb");
     }
     return name;
-}
-
-QString hex_preview(std::span<const uint8_t> bytes, size_t max_bytes = 4096) {
-    const auto count = std::min(bytes.size(), max_bytes);
-    QString out;
-    out.reserve(static_cast<qsizetype>(count * 3 + 64));
-    for (size_t index = 0; index < count; ++index) {
-        if (index != 0) {
-            out += (index % 16 == 0) ? QLatin1Char('\n') : QLatin1Char(' ');
-        }
-        out += QStringLiteral("%1").arg(bytes[index], 2, 16, QLatin1Char('0')).toUpper();
-    }
-    if (bytes.size() > count) {
-        out += QCoreApplication::translate("Acb.AcbEdit", "\n... %1 more bytes").arg(static_cast<qulonglong>(bytes.size() - count));
-    }
-    return out;
 }
 
 } // namespace
@@ -252,7 +237,7 @@ std::expected<QString, QString> payload_preview(
         if (!data) {
             return std::unexpected(QCoreApplication::translate("Acb.AcbEdit", "ACB waveform preview failed: %1").arg(utf8_to_qstring(data.error())));
         }
-        return hex_preview(std::span<const uint8_t>(data->data(), data->size()));
+        return compact_hex_preview(std::span<const uint8_t>(data->data(), data->size()), "Acb.AcbEdit");
     }
 
     if (payload_kind == 7) {

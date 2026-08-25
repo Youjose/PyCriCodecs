@@ -1,5 +1,7 @@
 #include "modules/afs/afs_edit_ui.hpp"
 
+#include "editor/editor_helpers.hpp"
+#include "editor/editor_widgets.hpp"
 #include "editor/table_item_helpers.hpp"
 #include "modules/ui_value_helpers.hpp"
 #include "path_text.hpp"
@@ -36,18 +38,6 @@
 
 namespace cristudio::modules::afs {
 namespace {
-
-std::string qstring_to_utf8(const QString& text) {
-    const auto utf8 = text.toUtf8();
-    return std::string(utf8.constData(), static_cast<size_t>(utf8.size()));
-}
-
-QLabel* dim_label(QString text, QWidget* parent) {
-    auto* label = new QLabel(std::move(text), parent);
-    label->setObjectName(QStringLiteral("DimLabel"));
-    label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    return label;
-}
 
 uint32_t clamp_spin_value(uint32_t value) {
     return std::min<uint32_t>(value, static_cast<uint32_t>(std::numeric_limits<int>::max()));
@@ -88,39 +78,6 @@ QString timestamp_text(const cricodecs::afs::AfsEntry& entry) {
         .arg(timestamp->hour, 2, 10, QLatin1Char('0'))
         .arg(timestamp->minute, 2, 10, QLatin1Char('0'))
         .arg(timestamp->second, 2, 10, QLatin1Char('0'));
-}
-
-QString bytes_to_hex(std::span<const uint8_t> bytes) {
-    QString out;
-    out.reserve(static_cast<qsizetype>(bytes.size() * 2));
-    for (const auto byte : bytes) {
-        out += QStringLiteral("%1").arg(byte, 2, 16, QLatin1Char('0'));
-    }
-    return out.toUpper();
-}
-
-QString safe_output_name(QString name, QString fallback_suffix) {
-    name = name.trimmed();
-    if (name.isEmpty()) {
-        name = QStringLiteral("editor-output");
-    }
-    for (auto& ch : name) {
-        if (ch == QLatin1Char('/') || ch == QLatin1Char('\\') || ch == QLatin1Char(':') ||
-            ch == QLatin1Char('*') || ch == QLatin1Char('?') || ch == QLatin1Char('"') ||
-            ch == QLatin1Char('<') || ch == QLatin1Char('>') || ch == QLatin1Char('|')) {
-            ch = QLatin1Char('_');
-        }
-    }
-    if (!fallback_suffix.isEmpty() && !name.endsWith(fallback_suffix, Qt::CaseInsensitive)) {
-        name += fallback_suffix;
-    }
-    return name;
-}
-
-void bind_valid_input(QPushButton* accept, QLineEdit* edit) {
-    const auto refresh = [accept, edit] { accept->setEnabled(edit->hasAcceptableInput()); };
-    QObject::connect(edit, &QLineEdit::textChanged, accept, [refresh](const QString&) { refresh(); });
-    refresh();
 }
 
 } // namespace
@@ -198,12 +155,10 @@ std::optional<AddFileOptions> choose_add_file_options(
     note->setWordWrap(true);
     layout->addWidget(note);
 
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    buttons->button(QDialogButtonBox::Ok)->setText(QCoreApplication::translate("Afs.AfsEditUi", "Add"));
-    bind_valid_input(buttons->button(QDialogButtonBox::Ok), id_edit);
+    auto* buttons = dialog_buttons(
+        dialog, QCoreApplication::translate("Afs.AfsEditUi", "Add"));
+    bind_valid_inputs(*buttons->button(QDialogButtonBox::Ok), {id_edit});
     layout->addWidget(buttons);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     if (dialog.exec() != QDialog::Accepted) {
         return std::nullopt;
     }
@@ -257,12 +212,10 @@ std::optional<uint32_t> choose_reserve_file_id(QWidget* parent, const cricodecs:
     note->setWordWrap(true);
     layout->addWidget(note);
 
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    buttons->button(QDialogButtonBox::Ok)->setText(QCoreApplication::translate("Afs.AfsEditUi", "Reserve"));
-    bind_valid_input(buttons->button(QDialogButtonBox::Ok), id_edit);
+    auto* buttons = dialog_buttons(
+        dialog, QCoreApplication::translate("Afs.AfsEditUi", "Reserve"));
+    bind_valid_inputs(*buttons->button(QDialogButtonBox::Ok), {id_edit});
     layout->addWidget(buttons);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     if (dialog.exec() != QDialog::Accepted) {
         return std::nullopt;
     }
@@ -314,10 +267,8 @@ std::optional<std::optional<cricodecs::afs::AfsDirectoryTimestamp>> choose_direc
     note->setWordWrap(true);
     layout->addWidget(note);
 
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    auto* buttons = dialog_buttons(dialog);
     layout->addWidget(buttons);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     if (dialog.exec() != QDialog::Accepted) {
         return std::nullopt;
     }
@@ -377,10 +328,8 @@ std::optional<BuildOptions> choose_build_options(QWidget* parent, const cricodec
     note->setWordWrap(true);
     layout->addWidget(note);
 
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    auto* buttons = dialog_buttons(dialog);
     layout->addWidget(buttons);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     if (dialog.exec() != QDialog::Accepted) {
         return std::nullopt;
     }
@@ -451,11 +400,9 @@ std::optional<AlsImportOptions> choose_als_import_options(
     note->setWordWrap(true);
     layout->addWidget(note);
 
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    buttons->button(QDialogButtonBox::Ok)->setText(QCoreApplication::translate("Afs.AfsEditUi", "Import"));
+    auto* buttons = dialog_buttons(
+        dialog, QCoreApplication::translate("Afs.AfsEditUi", "Import"));
     layout->addWidget(buttons);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     if (dialog.exec() != QDialog::Accepted) {
         return std::nullopt;
     }
@@ -527,11 +474,9 @@ std::expected<std::optional<std::filesystem::path>, QString> export_file_id_head
     QObject::connect(mode_combo, &QComboBox::currentTextChanged, &dialog, [&refresh_preview](const QString&) { refresh_preview(); });
     refresh_preview();
 
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    buttons->button(QDialogButtonBox::Ok)->setText(QCoreApplication::translate("Afs.AfsEditUi", "Export"));
+    auto* buttons = dialog_buttons(
+        dialog, QCoreApplication::translate("Afs.AfsEditUi", "Export"));
     layout->addWidget(buttons);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     if (dialog.exec() != QDialog::Accepted) {
         return std::optional<std::filesystem::path>{};
     }

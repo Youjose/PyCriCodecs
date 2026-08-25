@@ -43,14 +43,6 @@ struct TransformSessionView {
     const DecryptionKeys* keys = nullptr;
 };
 
-struct TransformBuildResult {
-    bool handled = false;
-    std::vector<uint8_t> bytes;
-    QString log_message;
-    QString warning_title;
-    QString error;
-};
-
 [[nodiscard]] QString transform_payload_preview_text(
     const TransformSessionView& view,
     TransformPayloadSelection selection,
@@ -74,12 +66,12 @@ void append_transform_info_rows(
     size_t max_rows = 16
 );
 
-[[nodiscard]] TransformBuildResult build_transform_session_bytes(
+[[nodiscard]] EditorBuildResult build_transform_session_bytes(
     TransformKind kind,
     const TransformSessionView& view
 );
 
-[[nodiscard]] TransformBuildResult edit_transform_options(
+[[nodiscard]] EditorBuildResult edit_transform_options(
     QWidget* parent,
     TransformKind kind,
     const TransformSessionView& view

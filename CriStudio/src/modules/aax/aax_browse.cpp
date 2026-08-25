@@ -9,19 +9,6 @@
 namespace cristudio::modules::aax {
 namespace {
 
-EntrySummary sourced_entry(
-    EntrySummary entry,
-    const std::filesystem::path& source_path,
-    std::string source_format,
-    uint32_t source_index
-) {
-    entry.source_path = source_path;
-    entry.source_format = std::move(source_format);
-    entry.source_index = source_index;
-    entry.has_source = true;
-    return entry;
-}
-
 uint64_t aax_data_base(const cricodecs::aax::AaxContainer& aax) {
     return aax.table().data_offset();
 }
@@ -53,7 +40,7 @@ LoadedDocument summarize(const std::filesystem::path& path, const cricodecs::aax
 
     doc.entries.reserve(aax.segments().size());
     for (const auto& segment : aax.segments()) {
-        auto entry = sourced_entry({
+        auto entry = source_entry({
             "segment " + number(segment.row_index),
             "ADX",
             byte_count(segment.data_size),

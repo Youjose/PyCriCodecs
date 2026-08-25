@@ -2,30 +2,27 @@
 
 #include "document/document_types.hpp"
 #include "editor/editor_helpers.hpp"
+#include "editor/editor_widgets.hpp"
 #include "modules/transform_detail.hpp"
 
 #include <cstdint>
 #include <cstddef>
 #include <span>
 
-class QCheckBox;
 class QAction;
 class QLabel;
 class QComboBox;
 class QGridLayout;
 class QLineEdit;
-class QListWidget;
 class QPlainTextEdit;
 class QProgressBar;
 class QPushButton;
-class QSlider;
 class QSpinBox;
 class QTableWidget;
 class QTableView;
 class QTabWidget;
 class QToolButton;
 class QTreeView;
-class QVideoWidget;
 class QValidator;
 class QWidget;
 
@@ -45,7 +42,6 @@ struct InfoRow;
 struct EditorDocumentInfoView {
     const EditorOpenRequest* request = nullptr;
     size_t byte_count = 0;
-    bool has_utf = false;
     const cricodecs::utf::UtfTable* utf = nullptr;
     ArchiveSessionView* archive = nullptr;
     TransformKind transform_kind = TransformKind::None;
@@ -158,24 +154,8 @@ struct EditorDocumentUi {
     QPushButton* replace_binary_button = nullptr;
     QTabWidget* preview_tabs = nullptr;
     QWidget* mux_preview_panel = nullptr;
-    QWidget* mux_video_frame = nullptr;
-    QWidget* media_controls_panel = nullptr;
-    QVideoWidget* mux_video_widget = nullptr;
-    QWidget* mux_audio_row = nullptr;
-    QLabel* mux_audio_label = nullptr;
-    QComboBox* mux_audio_combo = nullptr;
-    QWidget* mux_subtitle_row = nullptr;
-    QLabel* mux_subtitle_label = nullptr;
-    QComboBox* mux_subtitle_combo = nullptr;
-    QToolButton* mux_play_button = nullptr;
-    QLabel* mux_status_label = nullptr;
-    QSlider* media_seek_slider = nullptr;
-    QLabel* media_time_label = nullptr;
-    QSlider* media_volume_slider = nullptr;
-    QLabel* media_volume_label = nullptr;
-    QWidget* media_loop_row = nullptr;
-    QCheckBox* media_loop_toggle = nullptr;
-    QListWidget* media_loop_list = nullptr;
+    VideoDisplay video;
+    MediaControls media;
     QToolButton* log_toggle_button = nullptr;
     QPlainTextEdit* log = nullptr;
     QProgressBar* progress = nullptr;
@@ -186,16 +166,14 @@ void retranslate_editor_document_ui(EditorDocumentUi& ui);
 void refresh_archive_document_ui(
     EditorDocumentUi& ui,
     const ArchiveSessionView& view,
-    const DecryptionKeys& keys,
-    std::span<const uint8_t> bytes
+    const DecryptionKeys& keys
 );
 void refresh_transform_document_ui(
     EditorDocumentUi& ui,
     TransformKind kind,
     const TransformSessionView& view,
     const std::vector<modules::TransformDetailRow>& rows,
-    QString filter_text,
-    std::span<const uint8_t> bytes
+    QString filter_text
 );
 void refresh_document_info_ui(EditorDocumentUi& ui, QWidget* parent, const EditorDocumentInfoView& view);
 

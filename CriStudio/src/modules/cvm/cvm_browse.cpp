@@ -3,34 +3,9 @@
 
 #include "shared/document_helpers.hpp"
 
-#include <iomanip>
-#include <sstream>
 #include <utility>
 
 namespace cristudio::modules::cvm {
-namespace {
-
-std::string hex_u64(uint64_t value) {
-    std::ostringstream out;
-    out << "0x" << std::uppercase << std::hex << value;
-    return out.str();
-}
-
-EntrySummary sourced_entry(
-    EntrySummary entry,
-    const std::filesystem::path& source_path,
-    std::string source_format,
-    uint32_t source_index
-) {
-    entry.source_path = source_path;
-    entry.source_format = std::move(source_format);
-    entry.source_index = source_index;
-    entry.has_source = true;
-    return entry;
-}
-
-} // namespace
-
 LoadedDocument summarize(const std::filesystem::path& path, const cricodecs::cvm::CvmContainer& cvm) {
     auto doc = base_document(path, cristudio::i18n::translate_utf8("Cvm.CvmBrowse", "CVM/ROFS image"));
     const auto& header = cvm.header();
@@ -51,7 +26,7 @@ LoadedDocument summarize(const std::filesystem::path& path, const cricodecs::cvm
             "Key",
             "required for TOC"));
     }
-    doc.info.push_back(translated_info_row("Cvm.CvmBrowse", "Flags", hex_u64(header.flags)));
+    doc.info.push_back(translated_info_row("Cvm.CvmBrowse", "Flags", hex_number(header.flags)));
     doc.info.push_back(translated_info_row("Cvm.CvmBrowse", "Filesystem", header.filesystem_id));
     doc.info.push_back(translated_info_row("Cvm.CvmBrowse", "Maker", header.maker_id));
     doc.info.push_back(translated_info_row("Cvm.CvmBrowse", "Zone sector", number(zone.zone_sector)));
@@ -67,7 +42,7 @@ LoadedDocument summarize(const std::filesystem::path& path, const cricodecs::cvm
 
     doc.entries.reserve(cvm.entries().size());
     for (const auto& entry : cvm.entries()) {
-        doc.entries.push_back(sourced_entry({
+        doc.entries.push_back(source_entry({
             archive_display_path(entry.path.generic_string()),
             "file",
             byte_count(entry.size),

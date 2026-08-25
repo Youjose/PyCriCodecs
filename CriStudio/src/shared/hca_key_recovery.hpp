@@ -1,6 +1,6 @@
 #pragma once
 
-#include "document/document_types.hpp"
+#include "shared/key_recovery_source.hpp"
 #include <hca_key_recovery.hpp>
 
 #include <cstddef>
@@ -11,19 +11,7 @@
 
 namespace cristudio {
 
-struct HcaRecoverySource {
-    enum class Kind : uint8_t {
-        Document,
-        Entry,
-    };
-
-    Kind kind = Kind::Document;
-    std::filesystem::path path;
-    std::string name;
-    std::string format;
-    std::string loader_tag;
-    EntrySummary entry;
-};
+using HcaRecoverySource = KeyRecoverySource;
 
 struct HcaKeyRecoveryResult {
     cricodecs::hca::KeyRecoveryResult recovery;

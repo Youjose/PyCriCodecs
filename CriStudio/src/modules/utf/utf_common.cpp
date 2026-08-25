@@ -13,12 +13,6 @@
 namespace cristudio::modules::utf {
 namespace {
 
-std::string hex_u64(uint64_t value) {
-    std::ostringstream out;
-    out << "0x" << std::uppercase << std::hex << value;
-    return out.str();
-}
-
 bool starts_with(std::span<const uint8_t> bytes, std::string_view magic) {
     if (bytes.size() < magic.size()) {
         return false;
@@ -129,7 +123,7 @@ std::string value_text(const cricodecs::utf::UtfTable& utf, uint32_t row, uint32
         } else if constexpr (std::is_same_v<T, cricodecs::utf::DataRef>) {
             auto data = utf.get_data(row, col);
             const auto suffix = data ? ", " + data_probe_text(*data) : std::string{};
-            return byte_count(item.size) + " at " + hex_u64(item.offset) + suffix;
+            return byte_count(item.size) + " at " + hex_number(item.offset) + suffix;
         } else if constexpr (std::is_same_v<T, cricodecs::utf::GUID>) {
             return guid_text(item);
         } else if constexpr (std::is_floating_point_v<T>) {
@@ -139,9 +133,9 @@ std::string value_text(const cricodecs::utf::UtfTable& utf, uint32_t row, uint32
         } else if constexpr (std::is_integral_v<T>) {
             const auto unsigned_value = static_cast<uint64_t>(item);
             if constexpr (std::is_signed_v<T>) {
-                return std::to_string(static_cast<int64_t>(item)) + " (" + hex_u64(unsigned_value) + ")";
+                return std::to_string(static_cast<int64_t>(item)) + " (" + hex_number(unsigned_value) + ")";
             } else {
-                return std::to_string(unsigned_value) + " (" + hex_u64(unsigned_value) + ")";
+                return std::to_string(unsigned_value) + " (" + hex_number(unsigned_value) + ")";
             }
         } else {
             return {};

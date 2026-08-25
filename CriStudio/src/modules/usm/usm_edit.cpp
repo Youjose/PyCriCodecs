@@ -1,6 +1,7 @@
 #include <QCoreApplication>
 #include "modules/usm/usm_edit.hpp"
 
+#include "editor/editor_helpers.hpp"
 #include "modules/utf/utf_edit_ui.hpp"
 #include "path_text.hpp"
 
@@ -62,31 +63,6 @@ QString compact_stream_summary(const cricodecs::usm::UsmStreamInfo& stream) {
         .arg(name)
         .arg(size_text(stream.filesize))
         .arg(stream.avbps);
-}
-
-QString hex_preview(std::span<const uint8_t> bytes, size_t max_bytes = 4096) {
-    const auto count = std::min(bytes.size(), max_bytes);
-    QString out;
-    out.reserve(static_cast<qsizetype>(count * 5 + 128));
-    for (size_t offset = 0; offset < count; offset += 16) {
-        const auto row_end = std::min(offset + 16, count);
-        out += QStringLiteral("%1  |  ").arg(static_cast<qulonglong>(offset), 8, 16, QLatin1Char('0')).toUpper();
-        for (size_t index = offset; index < offset + 16; ++index) {
-            out += index < row_end
-                ? QStringLiteral("%1 ").arg(bytes[index], 2, 16, QLatin1Char('0')).toUpper()
-                : QStringLiteral("   ");
-        }
-        out += QStringLiteral(" | ");
-        for (size_t index = offset; index < row_end; ++index) {
-            const auto ch = bytes[index];
-            out += (ch >= 0x20 && ch <= 0x7E) ? QLatin1Char(static_cast<char>(ch)) : QLatin1Char('.');
-        }
-        out += QLatin1Char('\n');
-    }
-    if (bytes.size() > count) {
-        out += QCoreApplication::translate("Usm.UsmEdit", "\n... %1 more bytes").arg(static_cast<qulonglong>(bytes.size() - count));
-    }
-    return out;
 }
 
 QString compact_chunk_summary(const cricodecs::usm::UsmChunk& chunk, uint64_t file_offset) {

@@ -1,5 +1,7 @@
 #include "modules/usm/media_build_ui.hpp"
 
+#include "editor/editor_helpers.hpp"
+#include "editor/editor_widgets.hpp"
 #include "main_window/preview_helpers.hpp"
 #include "path_text.hpp"
 
@@ -29,34 +31,6 @@
 namespace cristudio::modules::usm {
 namespace {
 
-QString safe_output_name(QString name, QString fallback_suffix) {
-    name = name.trimmed();
-    if (name.isEmpty()) {
-        name = QStringLiteral("editor-output");
-    }
-    for (qsizetype index = 0; index < name.size(); ++index) {
-        auto ch = name[index];
-        if (ch == QLatin1Char('/') || ch == QLatin1Char('\\') || ch == QLatin1Char(':') ||
-            ch == QLatin1Char('*') || ch == QLatin1Char('?') || ch == QLatin1Char('"') ||
-            ch == QLatin1Char('<') || ch == QLatin1Char('>') || ch == QLatin1Char('|')) {
-            name[index] = QLatin1Char('_');
-        }
-    }
-    if (!fallback_suffix.isEmpty() && !name.endsWith(fallback_suffix, Qt::CaseInsensitive)) {
-        name += fallback_suffix;
-    }
-    return name;
-}
-
-QString build_output_base_name(const QString& title) {
-    auto base = title.trimmed();
-    const auto dot = base.lastIndexOf(QLatin1Char('.'));
-    if (dot > 0) {
-        base.truncate(dot);
-    }
-    return base.isEmpty() ? QStringLiteral("build") : base;
-}
-
 QString audio_source_filter() {
     return QCoreApplication::translate(
         "Usm.MediaBuildUi",
@@ -66,11 +40,6 @@ QString audio_source_filter() {
 
 QString key_display(uint64_t key) {
     return QStringLiteral("%1").arg(key, 16, 16, QLatin1Char('0')).toUpper();
-}
-
-std::string utf8_string(const QString& text) {
-    const auto utf8 = text.toUtf8();
-    return std::string(utf8.constData(), static_cast<size_t>(utf8.size()));
 }
 
 std::optional<QString> apply_cri_key_text(DecryptionKeys& keys, QString text, int base) {
@@ -97,35 +66,6 @@ std::optional<QString> apply_cri_key_text(DecryptionKeys& keys, QString text, in
     keys.has_cri_key = true;
     keys.cri_key = value;
     return std::nullopt;
-}
-
-QLabel* value_label(QString text, QWidget* parent) {
-    auto* label = new QLabel(std::move(text), parent);
-    label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    return label;
-}
-
-QWidget* path_picker_row(QDialog& dialog, QLineEdit& edit, const QString& title, bool save_path, const QString& filter = QString{}) {
-    edit.setClearButtonEnabled(true);
-    auto* row = new QWidget(&dialog);
-    auto* layout = new QHBoxLayout(row);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(6);
-    layout->addWidget(&edit, 1);
-    auto* browse = new QPushButton(QCoreApplication::translate("Usm.MediaBuildUi", "Browse"), row);
-    layout->addWidget(browse, 0);
-    QObject::connect(browse, &QPushButton::clicked, &dialog, [&dialog, &edit, title, save_path, filter] {
-        QString selected;
-        if (save_path) {
-            selected = QFileDialog::getSaveFileName(&dialog, title, edit.text(), filter);
-        } else {
-            selected = QFileDialog::getOpenFileName(&dialog, title, edit.text(), filter);
-        }
-        if (!selected.isEmpty()) {
-            edit.setText(selected);
-        }
-    });
-    return row;
 }
 
 QWidget* replacement_picker_row(QDialog& dialog, QLineEdit& edit, const QString& title, const QString& filter) {
@@ -355,7 +295,9 @@ std::expected<std::optional<MediaBuildConfig>, QString> choose_media_build_confi
     form->addRow(QCoreApplication::translate("Usm.MediaBuildUi", "Audio encryption"), encrypt_audio_check);
 
     auto* video_edit = new QLineEdit(&dialog);
-    form->addRow(QCoreApplication::translate("Usm.MediaBuildUi", "Video"), path_picker_row(dialog, *video_edit, QCoreApplication::translate("Usm.MediaBuildUi", "Choose video source"), false));
+    form->addRow(QCoreApplication::translate("Usm.MediaBuildUi", "Video"), path_picker_row(
+        dialog, *video_edit, QCoreApplication::translate("Usm.MediaBuildUi", "Browse"),
+        QCoreApplication::translate("Usm.MediaBuildUi", "Choose video source"), PathPickerMode::OpenFile));
     auto* video_filename_edit = new QLineEdit(&dialog);
     video_filename_edit->setPlaceholderText(QCoreApplication::translate("Usm.MediaBuildUi", "Source filename (converted extension when needed)"));
     video_filename_edit->setClearButtonEnabled(true);
@@ -381,8 +323,9 @@ std::expected<std::optional<MediaBuildConfig>, QString> choose_media_build_confi
     form->addRow(QCoreApplication::translate("Usm.MediaBuildUi", "Alpha video"), path_picker_row(
         dialog,
         *alpha_edit,
+        QCoreApplication::translate("Usm.MediaBuildUi", "Browse"),
         QCoreApplication::translate("Usm.MediaBuildUi", "Choose alpha-video source"),
-        false,
+        PathPickerMode::OpenFile,
         QCoreApplication::translate("Usm.MediaBuildUi", "Video streams (*.ivf *.264 *.h264 *.m1v *.m2v *.mpg *.mpeg);;All files (*)")
     ));
     auto* alpha_filename_edit = new QLineEdit(&dialog);
@@ -427,8 +370,9 @@ std::expected<std::optional<MediaBuildConfig>, QString> choose_media_build_confi
         row_layout->addWidget(path_picker_row(
             dialog,
             *controls.source,
+            QCoreApplication::translate("Usm.MediaBuildUi", "Browse"),
             QCoreApplication::translate("Usm.MediaBuildUi", "Choose audio source"),
-            false,
+            PathPickerMode::OpenFile,
             audio_source_filter()
         ), 0, 0, 1, 5);
         row_layout->addWidget(new QLabel(QCoreApplication::translate("Usm.MediaBuildUi", "Stream name"), controls.row), 1, 0);
@@ -494,8 +438,9 @@ std::expected<std::optional<MediaBuildConfig>, QString> choose_media_build_confi
         row_layout->addWidget(path_picker_row(
             dialog,
             *controls.source,
+            QCoreApplication::translate("Usm.MediaBuildUi", "Browse"),
             QCoreApplication::translate("Usm.MediaBuildUi", "Choose subtitle source"),
-            false,
+            PathPickerMode::OpenFile,
             QCoreApplication::translate("Usm.MediaBuildUi", "Subtitles (*.srt *.ass *.ssa *.sbt *.txt);;All files (*)")
         ), 0, 0, 1, 7);
         row_layout->addWidget(new QLabel(QCoreApplication::translate("Usm.MediaBuildUi", "Stream name"), controls.row), 1, 0);
@@ -563,7 +508,10 @@ std::expected<std::optional<MediaBuildConfig>, QString> choose_media_build_confi
 
     auto* output_edit = new QLineEdit(&dialog);
     output_edit->setText(safe_output_name(build_output_base_name(std::move(title)), prefer_sfd ? QStringLiteral(".sfd") : QStringLiteral(".usm")));
-    form->addRow(QCoreApplication::translate("Usm.MediaBuildUi", "Output"), path_picker_row(dialog, *output_edit, QCoreApplication::translate("Usm.MediaBuildUi", "Choose build output"), true, QCoreApplication::translate("Usm.MediaBuildUi", "CRI movie (*.usm *.sfd);;All files (*)")));
+    form->addRow(QCoreApplication::translate("Usm.MediaBuildUi", "Output"), path_picker_row(
+        dialog, *output_edit, QCoreApplication::translate("Usm.MediaBuildUi", "Browse"),
+        QCoreApplication::translate("Usm.MediaBuildUi", "Choose build output"), PathPickerMode::SaveFile,
+        QCoreApplication::translate("Usm.MediaBuildUi", "CRI movie (*.usm *.sfd);;All files (*)")));
 
     std::vector<ExistingTrackControls> existing_controls;
     QCheckBox* apply_to_editor_check = nullptr;
@@ -690,8 +638,8 @@ std::expected<std::optional<MediaBuildConfig>, QString> choose_media_build_confi
         config.sfd_profile = static_cast<cricodecs::sfd::SfdBuildProfile>(sfd_profile_combo->currentData().toInt());
         config.video_source = path_from_qstring(video_edit->text().trimmed());
         config.alpha_source = path_from_qstring(alpha_edit->text().trimmed());
-        config.video_filename = utf8_string(video_filename_edit->text().trimmed());
-        config.alpha_filename = utf8_string(alpha_filename_edit->text().trimmed());
+        config.video_filename = qstring_to_utf8(video_filename_edit->text().trimmed());
+        config.alpha_filename = qstring_to_utf8(alpha_filename_edit->text().trimmed());
         config.output_path = path_from_qstring(output_edit->text().trimmed());
         config.ffmpeg_path = path_from_qstring(ffmpeg_exe);
         config.keys = keys;
@@ -712,7 +660,7 @@ std::expected<std::optional<MediaBuildConfig>, QString> choose_media_build_confi
                 .source = source,
                 .prep = audio_prep_for_source(source, audio_target),
                 .channel_no = optional_channel(*controls.channel),
-                .filename = utf8_string(controls.filename->text().trimmed()),
+                .filename = qstring_to_utf8(controls.filename->text().trimmed()),
             });
         }
         if (config.target == MediaBuildTarget::Usm) {
@@ -726,7 +674,7 @@ std::expected<std::optional<MediaBuildConfig>, QString> choose_media_build_confi
                     .format = static_cast<cricodecs::usm::UsmSubtitleFormat>(controls.format->currentData().toInt()),
                     .language_id = static_cast<uint32_t>(controls.language->value()),
                     .channel_no = optional_channel(*controls.channel),
-                    .filename = utf8_string(controls.filename->text().trimmed()),
+                    .filename = qstring_to_utf8(controls.filename->text().trimmed()),
                 });
             }
         }
@@ -742,7 +690,7 @@ std::expected<std::optional<MediaBuildConfig>, QString> choose_media_build_confi
                 track.enabled = controls.enabled == nullptr || controls.enabled->isChecked();
                 track.filename = controls.filename == nullptr
                     ? track.filename
-                    : utf8_string(controls.filename->text().trimmed());
+                    : qstring_to_utf8(controls.filename->text().trimmed());
                 track.replacement_source = controls.replacement == nullptr
                     ? std::filesystem::path{}
                     : path_from_qstring(controls.replacement->text().trimmed());

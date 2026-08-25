@@ -20,7 +20,6 @@
 #include "modules/cpk/cpk_edit_ui.hpp"
 #include "modules/cvm/cvm_edit.hpp"
 #include "modules/cvm/cvm_edit_ui.hpp"
-#include "main_window/ui_helpers.hpp"
 #include "path_text.hpp"
 #include "acb_container.hpp"
 #include "utf_table.hpp"
@@ -36,7 +35,6 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
-#include <QListWidget>
 #include <QMenu>
 #include <QPlainTextEdit>
 #include <QProgressBar>
@@ -44,15 +42,12 @@
 #include <QRegularExpression>
 #include <QRegularExpressionValidator>
 #include <QScrollBar>
-#include <QSlider>
 #include <QSpinBox>
-#include <QStyle>
 #include <QSplitter>
 #include <QTableWidget>
 #include <QTableView>
 #include <QToolButton>
 #include <QTreeView>
-#include <QVideoWidget>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -185,9 +180,9 @@ std::vector<InfoRow> document_info_rows(const EditorDocumentInfoView& view) {
     if (!view.request->source_archive_format.empty()) {
         rows.push_back({cristudio::i18n::translate_utf8("Editor.EditorDocumentUi", "Archive format"), view.request->source_archive_format});
     }
-    rows.push_back({cristudio::i18n::translate_utf8("Editor.EditorDocumentUi", "Validation"), view.has_utf ? cristudio::i18n::translate_utf8("Editor.EditorDocumentUi", "UTF native build path available") : cristudio::i18n::translate_utf8("Editor.EditorDocumentUi", "Inspection/Save As copy path")});
+    rows.push_back({cristudio::i18n::translate_utf8("Editor.EditorDocumentUi", "Validation"), view.utf != nullptr ? cristudio::i18n::translate_utf8("Editor.EditorDocumentUi", "UTF native build path available") : cristudio::i18n::translate_utf8("Editor.EditorDocumentUi", "Inspection/Save As copy path")});
 
-    if (view.has_utf && view.utf != nullptr) {
+    if (view.utf != nullptr) {
         rows.push_back({cristudio::i18n::translate_utf8("Editor.EditorDocumentUi", "Table"), std::string(view.utf->table_name())});
         rows.push_back({cristudio::i18n::translate_utf8("Editor.EditorDocumentUi", "Version"), std::to_string(view.utf->version())});
         rows.push_back({cristudio::i18n::translate_utf8("Editor.EditorDocumentUi", "Rows"), std::to_string(view.utf->row_count())});
@@ -558,109 +553,11 @@ EditorDocumentUi build_editor_document_ui(QWidget* parent) {
     mux_preview_layout->setContentsMargins(6, 6, 6, 6);
     mux_preview_layout->setSpacing(8);
 
-    ui.mux_video_frame = new QWidget(ui.mux_preview_panel);
-    ui.mux_video_frame->setObjectName(QStringLiteral("VideoFrame"));
-    ui.mux_video_frame->setMinimumHeight(260);
-    ui.mux_video_frame->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    auto* video_layout = new QVBoxLayout(ui.mux_video_frame);
-    video_layout->setContentsMargins(0, 0, 0, 0);
-    video_layout->setSpacing(0);
-    ui.mux_video_widget = new QVideoWidget(ui.mux_video_frame);
-    ui.mux_video_widget->setMinimumHeight(260);
-    ui.mux_video_widget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    ui.mux_video_widget->setAspectRatioMode(Qt::KeepAspectRatio);
-    video_layout->addWidget(ui.mux_video_widget);
-    ui.mux_video_frame->hide();
-    mux_preview_layout->addWidget(ui.mux_video_frame, 8);
+    ui.video = make_video_display(ui.mux_preview_panel);
+    mux_preview_layout->addWidget(ui.video.frame, 8);
 
-    ui.media_controls_panel = new QWidget(ui.mux_preview_panel);
-    ui.media_controls_panel->setObjectName(QStringLiteral("AudioPanel"));
-    ui.media_controls_panel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
-    auto* media_controls_layout = new QVBoxLayout(ui.media_controls_panel);
-    media_controls_layout->setContentsMargins(10, 8, 10, 8);
-    media_controls_layout->setSpacing(6);
-
-    ui.mux_audio_row = new QWidget(ui.media_controls_panel);
-    auto* mux_audio_layout = new QHBoxLayout(ui.mux_audio_row);
-    mux_audio_layout->setContentsMargins(0, 0, 0, 0);
-    mux_audio_layout->setSpacing(8);
-    ui.mux_audio_label = dim_label(QCoreApplication::translate("Editor.EditorDocumentUi", "Audio channel"), ui.mux_audio_row);
-    mux_audio_layout->addWidget(ui.mux_audio_label, 0);
-    ui.mux_audio_combo = new QComboBox(ui.mux_audio_row);
-    ui.mux_audio_combo->setObjectName(QStringLiteral("MuxAudioCombo"));
-    ui.mux_audio_combo->setToolTip(QCoreApplication::translate("Editor.EditorDocumentUi", "Choose which audio stream to preview with the video."));
-    mux_audio_layout->addWidget(ui.mux_audio_combo, 1);
-    ui.mux_audio_row->hide();
-    media_controls_layout->addWidget(ui.mux_audio_row);
-    ui.mux_subtitle_row = new QWidget(ui.media_controls_panel);
-    auto* mux_subtitle_layout = new QHBoxLayout(ui.mux_subtitle_row);
-    mux_subtitle_layout->setContentsMargins(0, 0, 0, 0);
-    mux_subtitle_layout->setSpacing(8);
-    ui.mux_subtitle_label = dim_label(QCoreApplication::translate("Editor.EditorDocumentUi", "Subtitles"), ui.mux_subtitle_row);
-    mux_subtitle_layout->addWidget(ui.mux_subtitle_label, 0);
-    ui.mux_subtitle_combo = new QComboBox(ui.mux_subtitle_row);
-    ui.mux_subtitle_combo->setObjectName(QStringLiteral("MuxSubtitleCombo"));
-    ui.mux_subtitle_combo->setToolTip(QCoreApplication::translate("Editor.EditorDocumentUi", "Choose which subtitle track to display."));
-    mux_subtitle_layout->addWidget(ui.mux_subtitle_combo, 1);
-    ui.mux_subtitle_row->hide();
-    media_controls_layout->addWidget(ui.mux_subtitle_row);
-    auto* mux_controls = new QHBoxLayout();
-    mux_controls->setContentsMargins(0, 0, 0, 0);
-    mux_controls->setSpacing(8);
-    ui.mux_play_button = new QToolButton(ui.media_controls_panel);
-    ui.mux_play_button->setIcon(ui.media_controls_panel->style()->standardIcon(QStyle::SP_MediaPlay));
-    ui.mux_play_button->setText(QCoreApplication::translate("Editor.EditorDocumentUi", "Play"));
-    ui.mux_play_button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    ui.mux_play_button->setEnabled(false);
-    ui.mux_status_label = new QLabel(QCoreApplication::translate("Editor.EditorDocumentUi", "No playable media selected"), ui.media_controls_panel);
-    ui.mux_status_label->setObjectName(QStringLiteral("AudioStatus"));
-    ui.mux_status_label->setWordWrap(true);
-    ui.media_volume_label = new QLabel(ui.media_controls_panel);
-    ui.media_volume_label->setPixmap(ui.media_controls_panel->style()->standardIcon(QStyle::SP_MediaVolume).pixmap(16, 16));
-    ui.media_volume_label->setToolTip(QCoreApplication::translate("Editor.EditorDocumentUi", "Volume"));
-    ui.media_volume_label->setAccessibleName(QCoreApplication::translate("Editor.EditorDocumentUi", "Volume"));
-    ui.media_volume_slider = new QSlider(Qt::Horizontal, ui.media_controls_panel);
-    ui.media_volume_slider->setObjectName(QStringLiteral("VolumeSlider"));
-    ui.media_volume_slider->setRange(0, 100);
-    ui.media_volume_slider->setValue(80);
-    ui.media_volume_slider->setFixedWidth(96);
-    ui.media_volume_slider->setToolTip(QCoreApplication::translate("Editor.EditorDocumentUi", "Playback volume"));
-    mux_controls->addWidget(ui.mux_play_button, 0);
-    mux_controls->addWidget(ui.mux_status_label, 1);
-    mux_controls->addWidget(ui.media_volume_label, 0, Qt::AlignVCenter);
-    mux_controls->addWidget(ui.media_volume_slider, 0, Qt::AlignVCenter);
-    media_controls_layout->addLayout(mux_controls);
-    ui.media_loop_row = new QWidget(ui.media_controls_panel);
-    auto* loop_layout = new QVBoxLayout(ui.media_loop_row);
-    loop_layout->setContentsMargins(0, 0, 0, 0);
-    loop_layout->setSpacing(4);
-    ui.media_loop_toggle = new QCheckBox(QCoreApplication::translate("Editor.EditorDocumentUi", "Loop selected range"), ui.media_loop_row);
-    ui.media_loop_list = new QListWidget(ui.media_loop_row);
-    ui.media_loop_list->setObjectName(QStringLiteral("LoopList"));
-    ui.media_loop_list->setSelectionMode(QAbstractItemView::SingleSelection);
-    ui.media_loop_list->setAlternatingRowColors(false);
-    ui.media_loop_list->setUniformItemSizes(false);
-    ui.media_loop_list->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
-    ui.media_loop_list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    ui.media_loop_list->setMinimumHeight(42);
-    ui.media_loop_list->setMaximumHeight(96);
-    loop_layout->addWidget(ui.media_loop_toggle);
-    loop_layout->addWidget(ui.media_loop_list);
-    ui.media_loop_row->hide();
-    media_controls_layout->addWidget(ui.media_loop_row);
-    auto* seek_controls = new QHBoxLayout();
-    seek_controls->setContentsMargins(0, 0, 0, 0);
-    seek_controls->setSpacing(8);
-    ui.media_seek_slider = new SeekSlider(Qt::Horizontal, ui.media_controls_panel);
-    ui.media_seek_slider->setRange(0, 0);
-    ui.media_seek_slider->setEnabled(false);
-    ui.media_time_label = new QLabel(QStringLiteral("0:00 / 0:00"), ui.media_controls_panel);
-    ui.media_time_label->setMinimumWidth(92);
-    ui.media_time_label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    seek_controls->addWidget(ui.media_seek_slider, 1);
-    seek_controls->addWidget(ui.media_time_label, 0);
-    media_controls_layout->addLayout(seek_controls);
-    mux_preview_layout->addWidget(ui.media_controls_panel, 0, Qt::AlignTop);
+    ui.media = make_media_controls(ui.mux_preview_panel);
+    mux_preview_layout->addWidget(ui.media.panel, 0, Qt::AlignTop);
     ui.mux_preview_panel->hide();
     preview_layout->addWidget(ui.mux_preview_panel, 8);
 
@@ -772,6 +669,7 @@ EditorDocumentUi build_editor_document_ui(QWidget* parent) {
     ui.progress->hide();
     outer->addWidget(ui.progress);
 
+    retranslate_editor_document_ui(ui);
     return ui;
 }
 
@@ -867,18 +765,23 @@ void retranslate_editor_document_ui(EditorDocumentUi& ui) {
 
     ui.log_toggle_button->setText(tr("Log"));
     ui.log_toggle_button->setToolTip(tr("Show or hide editor session log."));
-    ui.mux_audio_label->setText(tr("Audio channel"));
-    ui.mux_audio_combo->setToolTip(tr("Choose which audio stream to preview with the video."));
-    ui.mux_subtitle_label->setText(tr("Subtitles"));
-    ui.mux_subtitle_combo->setToolTip(tr("Choose which subtitle track to display."));
-    ui.mux_play_button->setText(tr("Play"));
-    if (!ui.mux_play_button->isEnabled()) {
-        ui.mux_status_label->setText(tr("No playable media selected"));
+    ui.media.audio_label->setText(tr("Audio channel"));
+    ui.media.audio_combo->setToolTip(tr("Choose which audio stream to preview with the video."));
+    ui.media.audio_popup->setToolTip(tr("Show mux audio choices"));
+    ui.media.audio_popup->setAccessibleName(tr("Show mux audio choices"));
+    ui.media.subtitle_label->setText(tr("Subtitles"));
+    ui.media.subtitle_combo->setToolTip(tr("Choose which subtitle track to display."));
+    ui.media.subtitle_popup->setToolTip(tr("Show mux subtitle choices"));
+    ui.media.subtitle_popup->setAccessibleName(tr("Show mux subtitle choices"));
+    ui.media.play_button->setText(tr("Play"));
+    if (!ui.media.play_button->isEnabled()) {
+        ui.media.status_label->setText(tr("No playable media selected"));
     }
-    ui.media_volume_label->setToolTip(tr("Volume"));
-    ui.media_volume_label->setAccessibleName(tr("Volume"));
-    ui.media_volume_slider->setToolTip(tr("Playback volume"));
-    ui.media_loop_toggle->setText(tr("Loop selected range"));
+    ui.media.volume_label->setToolTip(tr("Volume"));
+    ui.media.volume_label->setAccessibleName(tr("Volume"));
+    ui.media.volume_slider->setToolTip(tr("Playback volume"));
+    ui.media.volume_slider->setAccessibleName(tr("Playback volume"));
+    ui.media.loop_toggle->setText(tr("Loop selected range"));
 
     ui.schema_table->setHorizontalHeaderLabels({
         tr("Column"),
@@ -902,8 +805,7 @@ void retranslate_editor_document_ui(EditorDocumentUi& ui) {
 void refresh_archive_document_ui(
     EditorDocumentUi& ui,
     const ArchiveSessionView& view,
-    const DecryptionKeys& keys,
-    std::span<const uint8_t> bytes
+    const DecryptionKeys& keys
 ) {
     ui.table->hide();
     ui.field_table->hide();
@@ -965,12 +867,6 @@ void refresh_archive_document_ui(
     for (int col = 0; col < ui.archive_table->columnCount(); ++col) {
         ui.archive_table->resizeColumnToContents(col);
     }
-    if (ui.hex_preview != nullptr) {
-        constexpr size_t max_preview = 4096;
-        const auto count = (std::min)(bytes.size(), max_preview);
-        ui.hex_preview->set_bytes(bytes.first(count), bytes.size());
-        ui.hex_preview->show();
-    }
     if (ui.archive_table->currentRow() < 0 && ui.archive_table->rowCount() > 0) {
         ui.archive_table->setCurrentCell(0, 0);
     }
@@ -981,8 +877,7 @@ void refresh_transform_document_ui(
     TransformKind kind,
     const TransformSessionView& view,
     const std::vector<modules::TransformDetailRow>& rows,
-    QString filter_text,
-    std::span<const uint8_t> bytes
+    QString filter_text
 ) {
     ui.table->hide();
     ui.field_table->hide();
@@ -1073,12 +968,6 @@ void refresh_transform_document_ui(
     ui.transform_model->set_rows(std::move(filtered_rows));
     if (ui.transform_table->horizontalScrollBar() != nullptr) {
         ui.transform_table->horizontalScrollBar()->setValue(0);
-    }
-    if (ui.hex_preview != nullptr) {
-        constexpr size_t max_preview = 4096;
-        const auto count = (std::min)(bytes.size(), max_preview);
-        ui.hex_preview->set_bytes(bytes.first(count), bytes.size());
-        ui.hex_preview->show();
     }
     if (!ui.transform_table->currentIndex().isValid() && ui.transform_model->rowCount() > 0) {
         ui.transform_table->setCurrentIndex(ui.transform_model->index(0, 0));

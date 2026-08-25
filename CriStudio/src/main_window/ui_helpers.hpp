@@ -1,10 +1,11 @@
 #pragma once
 
+#include "editor/editor_widgets.hpp"
+
 #include <QCoreApplication>
 #include <QIcon>
 #include <QElapsedTimer>
 #include <QPalette>
-#include <QSlider>
 #include <QString>
 #include <QStringList>
 
@@ -14,29 +15,16 @@
 #include <functional>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include <key_recovery.hpp>
 
 class QLabel;
-class QMouseEvent;
 class QToolButton;
 class QWidget;
 
 namespace cristudio {
-
-class SeekSlider final : public QSlider {
-public:
-    using QSlider::QSlider;
-
-protected:
-    void mousePressEvent(QMouseEvent* event) override;
-    void mouseMoveEvent(QMouseEvent* event) override;
-    void mouseReleaseEvent(QMouseEvent* event) override;
-
-private:
-    void set_value_from_position(qreal x);
-};
 
 inline constexpr size_t MaxInterimKeyRecoveryGroups = 64;
 
@@ -80,18 +68,20 @@ enum class ActionGlyph {
     MuxPreview,
 };
 
-QString to_qstring(const std::filesystem::path& path);
 QString archive_basename(QString text);
 void reveal_in_file_manager(const QString& path);
 QString strip_mux_prefix(QString text);
+[[nodiscard]] QString recovery_key_text(uint64_t key, int digits);
+[[nodiscard]] QString recovery_source_label(
+    std::string_view name,
+    const std::filesystem::path& path,
+    const char* translation_context);
 
 QPalette dark_palette();
 QPalette light_palette();
 QString visual_stylesheet(bool dark);
 QString app_title();
 
-QLabel* make_dim_label(QString text, QWidget* parent = nullptr);
-QLabel* make_value_label(QString text, QWidget* parent = nullptr);
 QIcon make_sidebar_icon(bool panel_on_left);
 QIcon make_action_icon(ActionGlyph glyph);
 QToolButton* make_panel_button(const QIcon& icon, const QString& tooltip, QWidget* parent);

@@ -7,20 +7,12 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
-#include <iomanip>
 #include <limits>
-#include <sstream>
 #include <string_view>
 #include <variant>
 
 namespace cristudio::modules::utf {
 namespace {
-
-std::string hex_u64(uint64_t value) {
-    std::ostringstream out;
-    out << "0x" << std::uppercase << std::hex << value;
-    return out.str();
-}
 
 std::string column_key(std::string_view name) {
     std::string key;
@@ -199,7 +191,7 @@ LoadedDocument summarize(const std::filesystem::path& path, const cricodecs::utf
                 }
                 if (value && std::holds_alternative<cricodecs::utf::DataRef>(*value)) {
                     const auto ref = std::get<cricodecs::utf::DataRef>(*value);
-                    field.offset = hex_u64(static_cast<uint64_t>(utf.data_offset()) + ref.offset);
+                    field.offset = hex_number(static_cast<uint64_t>(utf.data_offset()) + ref.offset);
                 }
             }
 

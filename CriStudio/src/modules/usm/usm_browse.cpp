@@ -11,19 +11,6 @@
 namespace cristudio::modules::usm {
 namespace {
 
-EntrySummary sourced_entry(
-    EntrySummary entry,
-    const std::filesystem::path& source_path,
-    std::string source_format,
-    uint32_t source_index
-) {
-    entry.source_path = source_path;
-    entry.source_format = std::move(source_format);
-    entry.source_index = source_index;
-    entry.has_source = true;
-    return entry;
-}
-
 std::string stream_family_type(cricodecs::usm::UsmChunkType type) {
     switch (type) {
     case cricodecs::usm::UsmChunkType::SFV:
@@ -209,7 +196,7 @@ LoadedDocument summarize(
         const auto stream_name = stream.filename.empty()
             ? archive_display_path(usm.describe_stream(stream.id()))
             : archive_display_path(stream.filename);
-        auto entry = sourced_entry({
+        auto entry = source_entry({
             stream_name,
             stream_type(usm, i, stream, video_format_probe),
             stream.filesize == 0 ? std::string{} : byte_count(stream.filesize),

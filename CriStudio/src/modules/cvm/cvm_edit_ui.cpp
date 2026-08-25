@@ -1,5 +1,7 @@
 #include "modules/cvm/cvm_edit_ui.hpp"
 
+#include "editor/editor_helpers.hpp"
+#include "editor/editor_widgets.hpp"
 #include "editor/table_item_helpers.hpp"
 #include "path_text.hpp"
 
@@ -26,36 +28,6 @@
 
 namespace cristudio::modules::cvm {
 namespace {
-
-std::string qstring_to_utf8(const QString& text) {
-    const auto utf8 = text.toUtf8();
-    return std::string(utf8.constData(), static_cast<size_t>(utf8.size()));
-}
-
-QLabel* dim_label(QString text, QWidget* parent) {
-    auto* label = new QLabel(std::move(text), parent);
-    label->setObjectName(QStringLiteral("DimLabel"));
-    label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    return label;
-}
-
-QString safe_output_name(QString name, QString fallback_suffix) {
-    name = name.trimmed();
-    if (name.isEmpty()) {
-        name = QStringLiteral("editor-output");
-    }
-    for (auto& ch : name) {
-        if (ch == QLatin1Char('/') || ch == QLatin1Char('\\') || ch == QLatin1Char(':') ||
-            ch == QLatin1Char('*') || ch == QLatin1Char('?') || ch == QLatin1Char('"') ||
-            ch == QLatin1Char('<') || ch == QLatin1Char('>') || ch == QLatin1Char('|')) {
-            ch = QLatin1Char('_');
-        }
-    }
-    if (!fallback_suffix.isEmpty() && !name.endsWith(fallback_suffix, Qt::CaseInsensitive)) {
-        name += fallback_suffix;
-    }
-    return name;
-}
 
 struct ParsedRecordingDate {
     QDateTime date_time;
@@ -213,10 +185,8 @@ std::optional<MetadataOptions> choose_metadata_options(QWidget* parent, const cr
     note->setWordWrap(true);
     layout->addWidget(note);
 
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    auto* buttons = dialog_buttons(dialog);
     layout->addWidget(buttons);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     if (dialog.exec() != QDialog::Accepted) {
         return std::nullopt;
     }

@@ -3,7 +3,6 @@
 #include "modules/aax/aax_edit.hpp"
 
 #include "aax_container.hpp"
-#include "io_reader.hpp"
 #include "modules/adx/adx_common.hpp"
 #include "path_text.hpp"
 
@@ -18,14 +17,6 @@ void push_log(const BuildLogCallback& log, QString message) {
     if (log) {
         log(std::move(message));
     }
-}
-
-std::expected<std::vector<uint8_t>, QString> read_adx_source(const std::filesystem::path& path) {
-    auto bytes = cricodecs::io::read_file_bytes(path, cristudio::i18n::translate_utf8("Aax.AaxEdit", "AAX build failed"));
-    if (!bytes) {
-        return std::unexpected(utf8_to_qstring(bytes.error()));
-    }
-    return std::move(*bytes);
 }
 
 } // namespace
@@ -45,7 +36,9 @@ std::expected<void, QString> build_from_adx_segments(BuildConfig config, BuildLo
         push_log(log, QCoreApplication::translate("Aax.AaxEdit", "Reading AAX segment %1: %2")
             .arg(i)
             .arg(path_to_qstring(segment_path)));
-        auto bytes = read_adx_source(segment_path);
+        auto bytes = ::cristudio::modules::adx::read_adx_source(
+            segment_path,
+            cristudio::i18n::translate_utf8("Aax.AaxEdit", "AAX build failed"));
         if (!bytes) {
             return std::unexpected(bytes.error());
         }

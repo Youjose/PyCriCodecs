@@ -517,7 +517,7 @@ void MainWindow::build_decryption_keys_window() {
         input->setPlaceholderText(QStringLiteral("0000"));
         triplet_layout->addWidget(input, 1);
     }
-    m_adx_triplet_status = make_dim_label(QString{}, adx_group);
+    m_adx_triplet_status = dim_label(QString{}, adx_group);
     adx_form->addRow(QCoreApplication::translate("MainWindow.KeyPanel", "Key mode"), mode_row);
     adx_form->addRow(QCoreApplication::translate("MainWindow.KeyPanel", "String key"), m_adx_string_input);
     adx_form->addRow(QCoreApplication::translate("MainWindow.KeyPanel", "64-bit key"), adx_number_row);

@@ -1,6 +1,7 @@
 #include "shared/i18n.hpp"
 #include "shared/usm_key_recovery.hpp"
 
+#include "path_text.hpp"
 #include "shared/embedded_entry_extractor.hpp"
 
 #include "usm_container.hpp"
@@ -16,13 +17,6 @@
 
 namespace cristudio {
 namespace {
-
-[[nodiscard]] std::string lower_ascii(std::string text) {
-    std::ranges::transform(text, text.begin(), [](unsigned char value) {
-        return static_cast<char>(std::tolower(value));
-    });
-    return text;
-}
 
 [[nodiscard]] bool is_usm(std::span<const uint8_t> bytes) {
     constexpr std::string_view crid = "CRID";
@@ -105,32 +99,11 @@ void append_bytes(
 } // namespace
 
 UsmRecoverySource make_usm_recovery_source(const LoadedDocument& document) {
-    return UsmRecoverySource{
-        .kind = UsmRecoverySource::Kind::Document,
-        .path = document.path,
-        .name = document.display_name,
-        .format = std::string(document_format_id(document)),
-        .loader_tag = document.loader_tag,
-    };
+    return recovery_source(document);
 }
 
 UsmRecoverySource make_usm_recovery_source(const EntrySummary& entry) {
-    EntrySummary compact{
-        .name = entry.name,
-        .source_path = entry.source_path,
-        .source_format = entry.source_format,
-        .source_index = entry.source_index,
-        .has_source = entry.has_source,
-        .nested_source_format = entry.nested_source_format,
-        .nested_source_index = entry.nested_source_index,
-        .has_nested_source = entry.has_nested_source,
-        .hca_subkey = entry.hca_subkey,
-    };
-    return UsmRecoverySource{
-        .kind = UsmRecoverySource::Kind::Entry,
-        .name = entry.name,
-        .entry = std::move(compact),
-    };
+    return recovery_source(compact_recovery_entry(entry));
 }
 
 std::expected<UsmKeyRecoveryReport, std::string> recover_usm_keys(

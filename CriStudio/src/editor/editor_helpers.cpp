@@ -7,6 +7,7 @@
 #include "modules/hca/hca_edit.hpp"
 #include "path_text.hpp"
 
+#include "io_reader.hpp"
 #include "aax_container.hpp"
 #include "acb_container.hpp"
 #include "acx_container.hpp"
@@ -19,12 +20,12 @@
 #include "usm_container.hpp"
 
 #include <QCoreApplication>
+#include <QByteArray>
 #include <QDir>
 #include <QFileInfo>
 #include <QSaveFile>
 
 #include <algorithm>
-#include <fstream>
 #include <limits>
 #include <system_error>
 #include <utility>
@@ -153,68 +154,76 @@ QString ensure_output_suffix(QString text, QString suffix) {
 }
 
 QString build_output_base_name(const QString& title) {
-    auto base = QFileInfo(title.trimmed()).completeBaseName().trimmed();
-    if (base.isEmpty()) {
-        base = title.trimmed();
+    auto base = title.trimmed();
+    const auto dot = base.lastIndexOf(QLatin1Char('.'));
+    if (dot > 0) {
+        base.truncate(dot);
     }
-    if (base.isEmpty()) {
-        base = QStringLiteral("movie");
-    }
-    return base + QStringLiteral("_built");
+    return base.isEmpty() ? QStringLiteral("build") : base;
 }
 
-QString hex_preview(std::span<const uint8_t> bytes, size_t max_bytes) {
+QString bytes_to_hex(std::span<const uint8_t> bytes) {
     if (bytes.empty()) {
-        return QCoreApplication::translate("Editor.EditorHelpers", "(no bytes)");
+        return {};
     }
+    const auto view = QByteArray::fromRawData(
+        reinterpret_cast<const char*>(bytes.data()),
+        static_cast<qsizetype>(bytes.size()));
+    return QString::fromLatin1(view.toHex().toUpper());
+}
 
-    const auto shown = std::min(bytes.size(), max_bytes);
+QString compact_hex_preview(
+    std::span<const uint8_t> bytes,
+    const char* translation_context,
+    size_t max_bytes
+) {
+    const auto count = std::min(bytes.size(), max_bytes);
     QString out;
-    out.reserve(static_cast<qsizetype>(shown * 5 + 128));
-    for (size_t offset = 0; offset < shown; offset += 16) {
-        const auto row_end = std::min(offset + 16, shown);
-        out += QStringLiteral("%1  |  ").arg(static_cast<qulonglong>(offset), 8, 16, QLatin1Char('0')).toUpper();
-        for (size_t i = offset; i < offset + 16; ++i) {
-            out += i < row_end
-                ? QStringLiteral("%1 ").arg(bytes[i], 2, 16, QLatin1Char('0')).toUpper()
-                : QStringLiteral("   ");
+    out.reserve(static_cast<qsizetype>(count * 3 + 64));
+    for (size_t index = 0; index < count; ++index) {
+        if (index != 0) {
+            out += (index % 16 == 0) ? QLatin1Char('\n') : QLatin1Char(' ');
         }
-        out += QStringLiteral(" | ");
-        for (size_t i = offset; i < row_end; ++i) {
-            const auto ch = bytes[i];
-            out += (ch >= 0x20 && ch <= 0x7E) ? QLatin1Char(static_cast<char>(ch)) : QLatin1Char('.');
-        }
-        out += QLatin1Char('\n');
+        out += QStringLiteral("%1").arg(bytes[index], 2, 16, QLatin1Char('0')).toUpper();
     }
-    if (bytes.size() > shown) {
-        out += QCoreApplication::translate("Editor.EditorHelpers", "... truncated, %1 total bytes ...\n").arg(static_cast<qulonglong>(bytes.size()));
+    if (bytes.size() > count) {
+        out += QCoreApplication::translate(translation_context, "\n... %1 more bytes")
+            .arg(static_cast<qulonglong>(bytes.size() - count));
     }
     return out;
 }
 
-std::string qstring_to_utf8(const QString& text) {
-    const auto utf8 = text.toUtf8();
-    return std::string(utf8.constData(), static_cast<size_t>(utf8.size()));
+EditorBuildResult finish_editor_build(
+    std::expected<std::vector<uint8_t>, std::string> built,
+    const char* translation_context,
+    const char* failure_message,
+    const char* success_message) {
+    if (!built) {
+        const auto error = utf8_to_qstring(built.error());
+        return {
+            .handled = true,
+            .log_message = QCoreApplication::translate(translation_context, failure_message).arg(error),
+            .warning_title = QCoreApplication::translate(translation_context, "Build failed"),
+            .error = error,
+        };
+    }
+    const auto size = built->size();
+    return {
+        .handled = true,
+        .bytes = std::move(*built),
+        .log_message = QCoreApplication::translate(translation_context, success_message)
+            .arg(static_cast<qulonglong>(size)),
+    };
 }
 
 std::expected<std::vector<uint8_t>, QString> read_file_bytes(const std::filesystem::path& path) {
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
-    if (!file) {
-        return std::unexpected(QCoreApplication::translate("Editor.EditorHelpers", "could not open file"));
+    auto bytes = cricodecs::io::read_file_bytes(
+        path,
+        qstring_to_utf8(QCoreApplication::translate("Editor.EditorHelpers", "Editor file read failed")));
+    if (!bytes) {
+        return std::unexpected(utf8_to_qstring(bytes.error()));
     }
-    const auto size = file.tellg();
-    if (size < 0) {
-        return std::unexpected(QCoreApplication::translate("Editor.EditorHelpers", "could not determine file size"));
-    }
-    file.seekg(0, std::ios::beg);
-    std::vector<uint8_t> bytes(static_cast<size_t>(size));
-    if (!bytes.empty()) {
-        file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-        if (!file) {
-            return std::unexpected(QCoreApplication::translate("Editor.EditorHelpers", "could not read file bytes"));
-        }
-    }
-    return bytes;
+    return std::move(*bytes);
 }
 
 std::expected<void, QString> write_file_bytes(const std::filesystem::path& path, std::span<const uint8_t> bytes) {
@@ -293,6 +302,16 @@ QString cpk_preset_name(cricodecs::cpk::CpkPreset preset) {
     case cricodecs::cpk::CpkPreset::FilenameGroup: return QCoreApplication::translate("Editor.EditorHelpers", "Filename + Group");
     case cricodecs::cpk::CpkPreset::IdGroup: return QCoreApplication::translate("Editor.EditorHelpers", "ID + Group");
     case cricodecs::cpk::CpkPreset::FilenameIdGroup: return QCoreApplication::translate("Editor.EditorHelpers", "Filename + ID + Group");
+    }
+    return QStringLiteral("Unknown");
+}
+
+QString cpk_mode_name(cricodecs::cpk::CpkMode mode) {
+    switch (mode) {
+    case cricodecs::cpk::CpkMode::Mode0: return QCoreApplication::translate("Editor.EditorHelpers", "Mode 0 / ITOC");
+    case cricodecs::cpk::CpkMode::Mode1: return QCoreApplication::translate("Editor.EditorHelpers", "Mode 1 / TOC");
+    case cricodecs::cpk::CpkMode::Mode2: return QCoreApplication::translate("Editor.EditorHelpers", "Mode 2 / TOC + ITOC");
+    case cricodecs::cpk::CpkMode::Mode3: return QCoreApplication::translate("Editor.EditorHelpers", "Mode 3 / TOC + ITOC + GTOC");
     }
     return QStringLiteral("Unknown");
 }

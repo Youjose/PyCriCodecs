@@ -37,91 +37,94 @@ LoadedDocument failed_cvm_script_document(
     };
 }
 
+ScratchEditorSession build_job_session(
+    TransformKind kind,
+    std::string display_name,
+    std::string format,
+    std::vector<InfoRow> info,
+    QString log_message
+) {
+    ScratchEditorSession session;
+    session.transform_kind = kind;
+    session.document = LoadedDocument{
+        .display_name = std::move(display_name),
+        .format = std::move(format),
+        .info = std::move(info),
+    };
+    push_log(session, std::move(log_message));
+    return session;
+}
+
 } // namespace
 
 ScratchEditorSession create_scratch_editor_session(const EditorOpenRequest& request) {
     ScratchEditorSession session;
 
     if (request.scratch_kind == EditorOpenRequest::ScratchKind::AudioEncode) {
-        session.transform_kind = TransformKind::AudioEncode;
-        session.document = LoadedDocument{
-            .display_name = "EncodeAudio",
-            .format = cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "Audio encode job"),
-            .file_size = 0,
-            .info = {
+        return build_job_session(
+            TransformKind::AudioEncode,
+            "EncodeAudio",
+            cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "Audio encode job"),
+            {
                 {"Source", cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "Scratch audio encode job")},
                 {"Targets", cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "ADX, AHX, HCA")},
                 {"Input", "WAV"}
-            }
-        };
-        push_log(session, QCoreApplication::translate("Editor.ScratchEditorSession", "Created scratch audio encode job."));
-        return session;
+            },
+            QCoreApplication::translate("Editor.ScratchEditorSession", "Created scratch audio encode job."));
     }
 
     if (request.scratch_kind == EditorOpenRequest::ScratchKind::MediaBuild) {
-        session.transform_kind = TransformKind::MediaBuild;
-        session.document = LoadedDocument{
-            .display_name = "BuildMovie",
-            .format = cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "USM/SFD build job"),
-            .file_size = 0,
-            .info = {
+        return build_job_session(
+            TransformKind::MediaBuild,
+            "BuildMovie",
+            cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "USM/SFD build job"),
+            {
                 {"Source", cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "Scratch USM/SFD build job")},
                 {"Targets", cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "USM, SFD")},
                 {cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "Video prep"), cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "prepared, FFmpeg VP9, H.264, or MPEG")},
                 {cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "Audio prep"), cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "no tracks, or ADX/HCA from prepared or FFmpeg-supported audio")}
-            }
-        };
-        push_log(session, QCoreApplication::translate("Editor.ScratchEditorSession", "Created scratch USM/SFD build job."));
-        return session;
+            },
+            QCoreApplication::translate("Editor.ScratchEditorSession", "Created scratch USM/SFD build job."));
     }
 
     if (request.scratch_kind == EditorOpenRequest::ScratchKind::AaxBuild) {
-        session.transform_kind = TransformKind::Aax;
-        session.document = LoadedDocument{
-            .display_name = "BuildAax",
-            .format = cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "AAX ADX build job"),
-            .file_size = 0,
-            .info = {
+        return build_job_session(
+            TransformKind::Aax,
+            "BuildAax",
+            cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "AAX ADX build job"),
+            {
                 {"Source", cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "Scratch AAX build job")},
                 {"Input", cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "one ADX/AHX file per segment")},
                 {"Output", cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "AAX UTF wrapper")},
                 {"Loop", cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "optional last-segment loop marker")}
-            }
-        };
-        push_log(session, QCoreApplication::translate("Editor.ScratchEditorSession", "Created scratch AAX ADX build job."));
-        return session;
+            },
+            QCoreApplication::translate("Editor.ScratchEditorSession", "Created scratch AAX ADX build job."));
     }
 
     if (request.scratch_kind == EditorOpenRequest::ScratchKind::AixBuild) {
-        session.transform_kind = TransformKind::Aix;
-        session.document = LoadedDocument{
-            .display_name = "BuildAix",
-            .format = cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "AIX ADX build job"),
-            .file_size = 0,
-            .info = {
+        return build_job_session(
+            TransformKind::Aix,
+            "BuildAix",
+            cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "AIX ADX build job"),
+            {
                 {"Source", cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "Scratch AIX build job")},
                 {"Input", cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "one line per segment, semicolon-separated ADX/AHX layers")},
                 {"Output", cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "AIX layered ADX container")}
-            }
-        };
-        push_log(session, QCoreApplication::translate("Editor.ScratchEditorSession", "Created scratch AIX ADX build job."));
-        return session;
+            },
+            QCoreApplication::translate("Editor.ScratchEditorSession", "Created scratch AIX ADX build job."));
     }
 
     if (request.scratch_kind == EditorOpenRequest::ScratchKind::CsbBuild) {
-        session.transform_kind = TransformKind::Csb;
-        session.document = LoadedDocument{
-            .display_name = "BuildCsb",
-            .format = cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "CSB folder build job"),
-            .file_size = 0,
-            .info = {
+        return build_job_session(
+            TransformKind::Csb,
+            "BuildCsb",
+            cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "CSB folder build job"),
+            {
                 {"Source", cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "Scratch CSB folder build job")},
                 {"Input", cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "folder tree of CSB payload files")},
                 {"Output", cristudio::i18n::translate_utf8("Editor.ScratchEditorSession", "CSB cue/archive")}
-            }
-        };
-        push_log(session, QCoreApplication::translate("Editor.ScratchEditorSession", "Created scratch CSB folder build job."));
-        return session;
+            },
+            QCoreApplication::translate("Editor.ScratchEditorSession", "Created scratch CSB folder build job."));
     }
 
     if (request.scratch_kind == EditorOpenRequest::ScratchKind::Afs) {
@@ -318,7 +321,6 @@ ScratchEditorSession create_scratch_editor_session(const EditorOpenRequest& requ
 
     auto scratch = modules::utf::create_scratch_table_session();
     session.utf = std::move(scratch.table);
-    session.has_utf = true;
     session.bytes = std::move(scratch.bytes);
     session.document = std::move(scratch.document);
     push_log(session, QCoreApplication::translate("Editor.ScratchEditorSession", "Created scratch UTF table."));

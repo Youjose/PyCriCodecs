@@ -35,16 +35,6 @@ namespace {
         (static_cast<uint64_t>(mult) << 16u) | add;
 }
 
-[[nodiscard]] QString source_label(const AdxRecoverySource& source) {
-    if (!source.name.empty()) {
-        return utf8_to_qstring(source.name);
-    }
-    if (!source.path.empty()) {
-        return to_qstring(source.path.filename());
-    }
-    return QCoreApplication::translate("MainWindow.AdxKeyRecovery", "Selected entry");
-}
-
 [[nodiscard]] QString frames_text(const std::vector<uint64_t>& frames) {
     QStringList parts;
     parts.reserve(static_cast<qsizetype>(frames.size()));
@@ -66,8 +56,7 @@ void MainWindow::start_adx_key_recovery(
         statusBar()->showMessage(QCoreApplication::translate("MainWindow.AdxKeyRecovery", "No files selected for %1 key recovery").arg(name), 3000);
         return;
     }
-    if (m_adx_key_recovery_running || m_hca_key_recovery_running ||
-        m_usm_key_recovery_running || m_aac_key_recovery_running) {
+    if (key_recovery_running()) {
         statusBar()->showMessage(QCoreApplication::translate("MainWindow.AdxKeyRecovery", "Key recovery is already running"), 3000);
         return;
     }
@@ -92,7 +81,6 @@ void MainWindow::start_adx_key_recovery(
     }
 
     statusBar()->showMessage(QCoreApplication::translate("MainWindow.AdxKeyRecovery", "Recovering %1 keys...").arg(name));
-    m_adx_key_recovery_running = true;
     const auto request_id = ++m_adx_key_recovery_request_id;
     auto keys = m_decryption_keys;
     m_adx_key_recovery_watcher->setFuture(QtConcurrent::run(
@@ -149,7 +137,8 @@ void MainWindow::start_adx_key_recovery(
             } else {
                 task.recovered.reserve(sources.size());
                 for (const auto& source : sources) {
-                    const auto label = source_label(source);
+                    const auto label = recovery_source_label(
+                        source.name, source.path, "MainWindow.AdxKeyRecovery");
                     auto recovered = recover_adx_key(
                         std::span<const AdxRecoverySource>(&source, 1), kind, keys);
                     if (recovered) {
@@ -168,7 +157,6 @@ void MainWindow::start_adx_key_recovery(
 
 void MainWindow::consume_adx_key_recovery_result() {
     auto task = m_adx_key_recovery_watcher->future().takeResult();
-    m_adx_key_recovery_running = false;
     if (m_preview_recover_key_button != nullptr) {
         m_preview_recover_key_button->setEnabled(true);
     }

@@ -17,22 +17,6 @@
 namespace cristudio {
 namespace {
 
-[[nodiscard]] QString key_text(uint64_t key) {
-    return QStringLiteral("0x%1").arg(
-        QString::number(static_cast<qulonglong>(key), 16).toUpper().rightJustified(13, QLatin1Char('0'))
-    );
-}
-
-[[nodiscard]] QString source_label(const AacRecoverySource& source) {
-    if (!source.name.empty()) {
-        return utf8_to_qstring(source.name);
-    }
-    if (!source.path.empty()) {
-        return to_qstring(source.path.filename());
-    }
-    return QCoreApplication::translate("MainWindow.AacKeyRecovery", "Selected entry");
-}
-
 } // namespace
 
 void MainWindow::start_aac_key_recovery(
@@ -43,8 +27,7 @@ void MainWindow::start_aac_key_recovery(
         statusBar()->showMessage(QCoreApplication::translate("MainWindow.AacKeyRecovery", "No AAC/M4A sources selected for key recovery"), 3000);
         return;
     }
-    if (m_aac_key_recovery_running || m_hca_key_recovery_running ||
-        m_usm_key_recovery_running || m_adx_key_recovery_running) {
+    if (key_recovery_running()) {
         statusBar()->showMessage(QCoreApplication::translate("MainWindow.AacKeyRecovery", "Key recovery is already running"), 3000);
         return;
     }
@@ -61,7 +44,6 @@ void MainWindow::start_aac_key_recovery(
     if (m_preview_recover_aac_key_button != nullptr) m_preview_recover_aac_key_button->setEnabled(false);
 
     statusBar()->showMessage(QCoreApplication::translate("MainWindow.AacKeyRecovery", "Recovering AAC key..."));
-    m_aac_key_recovery_running = true;
     const auto request_id = ++m_aac_key_recovery_request_id;
     m_aac_key_recovery_watcher->setFuture(QtConcurrent::run(
         [sources = std::move(sources), target_label = std::move(target_label), request_id,
@@ -94,7 +76,7 @@ void MainWindow::start_aac_key_recovery(
                     if (!show_key_recovery_candidate(candidate.score, best_score)) continue;
                     displayed.push_back(KeyRecoveryCandidate{
                         .identity = candidate.key,
-                        .key = key_text(candidate.key),
+                        .key = recovery_key_text(candidate.key, 13),
                         .score = candidate.score,
                         .file = label,
                     });
@@ -115,7 +97,8 @@ void MainWindow::start_aac_key_recovery(
             } else {
                 task.recovered.reserve(sources.size());
                 for (const auto& source : sources) {
-                    const auto label = source_label(source);
+                    const auto label = recovery_source_label(
+                        source.name, source.path, "MainWindow.AacKeyRecovery");
                     auto recovered = recover_aac_key(std::span<const AacRecoverySource>(&source, 1));
                     if (recovered) {
                         append_recovered(std::move(*recovered), label);
@@ -133,7 +116,6 @@ void MainWindow::start_aac_key_recovery(
 
 void MainWindow::consume_aac_key_recovery_result() {
     auto task = m_aac_key_recovery_watcher->future().takeResult();
-    m_aac_key_recovery_running = false;
     if (m_preview_recover_key_button != nullptr) m_preview_recover_key_button->setEnabled(true);
     if (m_preview_recover_usm_key_button != nullptr) m_preview_recover_usm_key_button->setEnabled(true);
     if (m_preview_recover_adx_key_button != nullptr) m_preview_recover_adx_key_button->setEnabled(true);
@@ -167,7 +149,7 @@ void MainWindow::consume_aac_key_recovery_result() {
             : target.recovered.candidates.front().score;
         for (const auto& recovered : target.recovered.candidates) {
             if (!show_key_recovery_candidate(recovered.score, best_score)) continue;
-            const auto key = key_text(recovered.key);
+            const auto key = recovery_key_text(recovered.key, 13);
             const auto score = QString::number(recovered.score, 'f', 6);
             candidates.push_back(KeyRecoveryCandidate{
                 .identity = recovered.key,

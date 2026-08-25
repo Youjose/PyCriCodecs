@@ -1,5 +1,6 @@
 #include "modules/adx/adx_edit_ui.hpp"
 
+#include "editor/editor_widgets.hpp"
 #include "modules/adx/adx_common.hpp"
 
 #include <QCoreApplication>
@@ -18,16 +19,6 @@
 #include <utility>
 
 namespace cristudio::modules::adx {
-namespace {
-
-QLabel* dim_label(QString text, QWidget* parent) {
-    auto* label = new QLabel(std::move(text), parent);
-    label->setObjectName(QStringLiteral("DimLabel"));
-    return label;
-}
-
-} // namespace
-
 std::vector<TransformDetailRow> detail_rows(const cricodecs::adx::Adx& adx) {
     std::vector<TransformDetailRow> rows;
     const auto& header = adx.header();
@@ -138,11 +129,9 @@ std::expected<std::optional<cricodecs::adx::AdxEncodeConfig>, QString> choose_re
     note->setWordWrap(true);
     layout->addWidget(note);
 
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    buttons->button(QDialogButtonBox::Ok)->setText(QCoreApplication::translate("Adx.AdxEditUi", "Rebuild Session"));
+    auto* buttons = dialog_buttons(
+        dialog, QCoreApplication::translate("Adx.AdxEditUi", "Rebuild Session"));
     layout->addWidget(buttons);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     if (dialog.exec() != QDialog::Accepted) {
         return std::optional<cricodecs::adx::AdxEncodeConfig>{};
     }

@@ -30,6 +30,7 @@
 #include <QFormLayout>
 #include <QFontDatabase>
 #include <QFrame>
+#include <QFutureWatcher>
 #include <QGraphicsOpacityEffect>
 #include <QGridLayout>
 #include <QGuiApplication>
@@ -68,7 +69,6 @@
 #include <QShowEvent>
 #include <QSize>
 #include <QSizePolicy>
-#include <QSignalBlocker>
 #include <QSlider>
 #include <QSortFilterProxyModel>
 #include <QSplitter>
@@ -297,15 +297,32 @@ void MainWindow::open_scratch_utf_editor() {
 }
 
 bool MainWindow::has_background_work() const {
-    return m_load_running ||
-        m_preview_running ||
-        m_extract_running ||
-        m_hca_key_recovery_running ||
-        m_usm_key_recovery_running ||
-        m_adx_key_recovery_running ||
-        m_aac_key_recovery_running ||
-        m_materialize_running ||
+    return load_running() || preview_running() || extraction_running() ||
+        key_recovery_running() || materialization_running() ||
         (m_editor_workspace != nullptr && m_editor_workspace->has_background_work());
+}
+
+bool MainWindow::load_running() const {
+    return m_load_watcher != nullptr && m_load_watcher->isRunning();
+}
+
+bool MainWindow::extraction_running() const {
+    return m_extract_watcher != nullptr && m_extract_watcher->isRunning();
+}
+
+bool MainWindow::materialization_running() const {
+    return m_materialize_watcher != nullptr && m_materialize_watcher->isRunning();
+}
+
+bool MainWindow::preview_running() const {
+    return m_preview_watcher != nullptr && m_preview_watcher->isRunning();
+}
+
+bool MainWindow::key_recovery_running() const {
+    return (m_hca_key_recovery_watcher != nullptr && m_hca_key_recovery_watcher->isRunning()) ||
+        (m_usm_key_recovery_watcher != nullptr && m_usm_key_recovery_watcher->isRunning()) ||
+        (m_adx_key_recovery_watcher != nullptr && m_adx_key_recovery_watcher->isRunning()) ||
+        (m_aac_key_recovery_watcher != nullptr && m_aac_key_recovery_watcher->isRunning());
 }
 
 bool MainWindow::reload_current_document_with_keys() {
@@ -381,32 +398,26 @@ bool MainWindow::ensure_media_backend() {
 
     m_audio_player = new QMediaPlayer(this);
     m_audio_output = new QAudioOutput(this);
-    const auto volume = m_audio_volume_slider == nullptr ? 80 : std::clamp(m_audio_volume_slider->value(), 0, 100);
+    const auto volume = std::clamp(m_media.volume_slider->value(), 0, 100);
     m_audio_output->setVolume(static_cast<float>(volume) / 100.0f);
     m_audio_player->setAudioOutput(m_audio_output);
 
     connect(m_audio_player, &QMediaPlayer::tracksChanged, this, [this] {
-        if (
-            m_audio_player == nullptr ||
-            m_mux_subtitle_row == nullptr ||
-            m_mux_subtitle_combo == nullptr ||
-            !m_mux_subtitle_row->isVisible() ||
-            m_mux_subtitle_combo->currentIndex() < 0
-        ) {
+        if (!m_media.subtitle_row->isVisible() || m_media.subtitle_combo->currentIndex() < 0) {
             return;
         }
-        m_audio_player->setActiveSubtitleTrack(m_mux_subtitle_combo->currentData().toInt());
+        m_audio_player->setActiveSubtitleTrack(m_media.subtitle_combo->currentData().toInt());
     });
     connect(m_audio_player, &QMediaPlayer::durationChanged, this, [this](qint64 duration) {
         const auto effective_duration = m_preview_duration_ms > 0 ? m_preview_duration_ms : duration;
         const auto safe_duration = std::clamp<qint64>(effective_duration, 0, std::numeric_limits<int>::max());
-        m_audio_progress->setRange(0, static_cast<int>(safe_duration));
+        m_media.seek_slider->setRange(0, static_cast<int>(safe_duration));
         update_audio_time_label();
     });
     connect(m_audio_player, &QMediaPlayer::positionChanged, this, [this](qint64 position) {
         if (!m_audio_slider_dragging) {
-            QSignalBlocker blocker(m_audio_progress);
-            m_audio_progress->setValue(static_cast<int>(std::clamp<qint64>(position, 0, std::numeric_limits<int>::max())));
+            QSignalBlocker blocker(m_media.seek_slider);
+            m_media.seek_slider->setValue(static_cast<int>(std::clamp<qint64>(position, 0, std::numeric_limits<int>::max())));
         }
         handle_loop_position(position);
         update_audio_time_label();
@@ -421,23 +432,22 @@ bool MainWindow::ensure_media_backend() {
     });
     connect(m_audio_player, &QMediaPlayer::playbackStateChanged, this, [this](QMediaPlayer::PlaybackState state) {
         const auto playing = state == QMediaPlayer::PlayingState;
-        m_audio_play_button->setIcon(style()->standardIcon(playing ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));
-        m_audio_play_button->setText(playing ? QCoreApplication::translate("MainWindow.MainWindow", "Pause") : QCoreApplication::translate("MainWindow.MainWindow", "Play"));
+        m_media.play_button->setIcon(style()->standardIcon(playing ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));
+        m_media.play_button->setText(playing ? QCoreApplication::translate("MainWindow.MainWindow", "Pause") : QCoreApplication::translate("MainWindow.MainWindow", "Play"));
     });
     connect(m_audio_player, &QMediaPlayer::errorOccurred, this, [this](QMediaPlayer::Error, const QString& error) {
-        if (m_audio_status_label != nullptr && !error.isEmpty()) {
-            m_audio_status_label->setText(QCoreApplication::translate("MainWindow.MainWindow", "Playback error: ") + error);
+        if (!error.isEmpty()) {
+            m_media.status_label->setText(QCoreApplication::translate("MainWindow.MainWindow", "Playback error: ") + error);
         }
     });
     return true;
 }
 
 QString MainWindow::ffmpeg_executable_path() {
-    if (!m_ffmpeg_path_checked) {
+    if (!m_ffmpeg_executable) {
         m_ffmpeg_executable = find_ffmpeg_executable();
-        m_ffmpeg_path_checked = true;
     }
-    return m_ffmpeg_executable;
+    return *m_ffmpeg_executable;
 }
 
 bool MainWindow::has_ffmpeg() {

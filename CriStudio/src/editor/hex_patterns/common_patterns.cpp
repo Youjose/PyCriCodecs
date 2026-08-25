@@ -74,15 +74,6 @@ void add_repeat(
         std::equal(text.begin(), text.end(), bytes.begin() + static_cast<std::ptrdiff_t>(offset));
 }
 
-[[nodiscard]] std::string lower_ascii(std::string_view text) {
-    std::string out;
-    out.reserve(text.size());
-    for (const auto ch : text) {
-        out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
-    }
-    return out;
-}
-
 [[nodiscard]] std::optional<uint64_t> decimal_prefix(std::string_view text) {
     while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front()))) {
         text.remove_prefix(1);

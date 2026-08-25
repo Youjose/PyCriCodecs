@@ -2,7 +2,6 @@
 #include <QCoreApplication>
 #include "modules/aix/aix_edit.hpp"
 
-#include "io_reader.hpp"
 #include "modules/adx/adx_common.hpp"
 #include "path_text.hpp"
 
@@ -17,14 +16,6 @@ void push_log(const BuildLogCallback& log, QString message) {
     if (log) {
         log(std::move(message));
     }
-}
-
-std::expected<std::vector<uint8_t>, QString> read_adx_source(const std::filesystem::path& path) {
-    auto bytes = cricodecs::io::read_file_bytes(path, cristudio::i18n::translate_utf8("Aix.AixEdit", "AIX build failed"));
-    if (!bytes) {
-        return std::unexpected(utf8_to_qstring(bytes.error()));
-    }
-    return std::move(*bytes);
 }
 
 } // namespace
@@ -67,7 +58,9 @@ std::expected<void, QString> build_from_adx_segments(BuildConfig config, BuildLo
                 .arg(segment_index)
                 .arg(layer_index)
                 .arg(path_to_qstring(path)));
-            auto bytes = read_adx_source(path);
+            auto bytes = ::cristudio::modules::adx::read_adx_source(
+                path,
+                cristudio::i18n::translate_utf8("Aix.AixEdit", "AIX build failed"));
             if (!bytes) {
                 return std::unexpected(bytes.error());
             }

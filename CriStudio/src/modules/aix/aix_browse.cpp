@@ -7,23 +7,6 @@
 #include <utility>
 
 namespace cristudio::modules::aix {
-namespace {
-
-EntrySummary sourced_entry(
-    EntrySummary entry,
-    const std::filesystem::path& source_path,
-    std::string source_format,
-    uint32_t source_index
-) {
-    entry.source_path = source_path;
-    entry.source_format = std::move(source_format);
-    entry.source_index = source_index;
-    entry.has_source = true;
-    return entry;
-}
-
-} // namespace
-
 LoadedDocument summarize(const std::filesystem::path& path, const cricodecs::aix::Aix& aix) {
     auto doc = base_document(path, cristudio::i18n::translate_utf8("Aix.AixBrowse", "AIX audio container"));
     doc.info.push_back(translated_info_row("Aix.AixBrowse", "Segments", number(aix.segments().size())));
@@ -40,7 +23,7 @@ LoadedDocument summarize(const std::filesystem::path& path, const cricodecs::aix
                 : "samples " + number(segment.sample_count) + ", " +
                     number(aix.layers().front().sample_rate == 0 ? static_cast<uint32_t>(segment.sample_rate) : aix.layers().front().sample_rate) +
                     " Hz, " + number(aix.layers().front().channel_count) + " ch";
-            doc.entries.push_back(sourced_entry({
+            doc.entries.push_back(source_entry({
                 "segment " + number(segment_index),
                 "ADX",
                 byte_count(segment.size),
@@ -52,7 +35,7 @@ LoadedDocument summarize(const std::filesystem::path& path, const cricodecs::aix
 
         for (size_t layer_index = 0; layer_index < aix.layers().size(); ++layer_index) {
             const auto& layer = aix.layers()[layer_index];
-            doc.entries.push_back(sourced_entry({
+            doc.entries.push_back(source_entry({
                 "segment " + number(segment_index) + "/layer " + number(layer_index),
                 "ADX",
                 byte_count(segment.size),

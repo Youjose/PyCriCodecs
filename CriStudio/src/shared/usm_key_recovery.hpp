@@ -1,6 +1,6 @@
 #pragma once
 
-#include "document/document_types.hpp"
+#include "shared/key_recovery_source.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -12,19 +12,7 @@
 
 namespace cristudio {
 
-struct UsmRecoverySource {
-    enum class Kind : uint8_t {
-        Document,
-        Entry,
-    };
-
-    Kind kind = Kind::Document;
-    std::filesystem::path path;
-    std::string name;
-    std::string format;
-    std::string loader_tag;
-    EntrySummary entry;
-};
+using UsmRecoverySource = KeyRecoverySource;
 
 struct UsmKeyRecoveryResult {
     std::string source;

@@ -1,5 +1,7 @@
 #include "modules/audio/audio_encode_ui.hpp"
 
+#include "editor/editor_helpers.hpp"
+#include "editor/editor_widgets.hpp"
 #include "modules/hca/hca_edit_ui.hpp"
 #include "path_text.hpp"
 
@@ -24,24 +26,6 @@
 namespace cristudio::modules::audio {
 namespace {
 
-QString safe_output_name(QString name, QString fallback_suffix) {
-    name = name.trimmed();
-    if (name.isEmpty()) {
-        name = QStringLiteral("editor-output");
-    }
-    for (auto& ch : name) {
-        if (ch == QLatin1Char('/') || ch == QLatin1Char('\\') || ch == QLatin1Char(':') ||
-            ch == QLatin1Char('*') || ch == QLatin1Char('?') || ch == QLatin1Char('"') ||
-            ch == QLatin1Char('<') || ch == QLatin1Char('>') || ch == QLatin1Char('|')) {
-            ch = QLatin1Char('_');
-        }
-    }
-    if (!fallback_suffix.isEmpty() && !name.endsWith(fallback_suffix, Qt::CaseInsensitive)) {
-        name += fallback_suffix;
-    }
-    return name;
-}
-
 QString ensure_output_suffix(QString text, QString suffix) {
     text = text.trimmed();
     if (text.isEmpty()) {
@@ -53,29 +37,6 @@ QString ensure_output_suffix(QString text, QString suffix) {
         text.truncate(dot);
     }
     return text + suffix;
-}
-
-QWidget* path_picker_row(QDialog& dialog, QLineEdit& edit, const QString& title, bool save_path, const QString& filter) {
-    edit.setClearButtonEnabled(true);
-    auto* row = new QWidget(&dialog);
-    auto* layout = new QHBoxLayout(row);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(6);
-    layout->addWidget(&edit, 1);
-    auto* browse = new QPushButton(QCoreApplication::translate("Audio.AudioEncodeUi", "Browse"), row);
-    layout->addWidget(browse, 0);
-    QObject::connect(browse, &QPushButton::clicked, &dialog, [&dialog, &edit, title, save_path, filter] {
-        QString selected;
-        if (save_path) {
-            selected = QFileDialog::getSaveFileName(&dialog, title, edit.text(), filter);
-        } else {
-            selected = QFileDialog::getOpenFileName(&dialog, title, edit.text(), filter);
-        }
-        if (!selected.isEmpty()) {
-            edit.setText(selected);
-        }
-    });
-    return row;
 }
 
 } // namespace
@@ -103,11 +64,17 @@ std::expected<std::optional<EncodeConfig>, QString> choose_encode_config(
     form->addRow(QCoreApplication::translate("Audio.AudioEncodeUi", "Target"), target_combo);
 
     auto* input_edit = new QLineEdit(&dialog);
-    form->addRow(QCoreApplication::translate("Audio.AudioEncodeUi", "Input WAV"), path_picker_row(dialog, *input_edit, QCoreApplication::translate("Audio.AudioEncodeUi", "Choose WAV input"), false, QCoreApplication::translate("Audio.AudioEncodeUi", "WAV audio (*.wav);;All files (*)")));
+    form->addRow(QCoreApplication::translate("Audio.AudioEncodeUi", "Input WAV"), path_picker_row(
+        dialog, *input_edit, QCoreApplication::translate("Audio.AudioEncodeUi", "Browse"),
+        QCoreApplication::translate("Audio.AudioEncodeUi", "Choose WAV input"), PathPickerMode::OpenFile,
+        QCoreApplication::translate("Audio.AudioEncodeUi", "WAV audio (*.wav);;All files (*)")));
 
     auto* output_edit = new QLineEdit(&dialog);
     output_edit->setText(safe_output_name(std::move(title) + QStringLiteral("_encoded"), preferred_target == EncodeTarget::Hca ? QStringLiteral(".hca") : QStringLiteral(".adx")));
-    form->addRow(QCoreApplication::translate("Audio.AudioEncodeUi", "Output"), path_picker_row(dialog, *output_edit, QCoreApplication::translate("Audio.AudioEncodeUi", "Choose encoded output"), true, QCoreApplication::translate("Audio.AudioEncodeUi", "CRI audio (*.adx *.ahx *.hca);;All files (*)")));
+    form->addRow(QCoreApplication::translate("Audio.AudioEncodeUi", "Output"), path_picker_row(
+        dialog, *output_edit, QCoreApplication::translate("Audio.AudioEncodeUi", "Browse"),
+        QCoreApplication::translate("Audio.AudioEncodeUi", "Choose encoded output"), PathPickerMode::SaveFile,
+        QCoreApplication::translate("Audio.AudioEncodeUi", "CRI audio (*.adx *.ahx *.hca);;All files (*)")));
 
     auto* adx_group = new QGroupBox(QCoreApplication::translate("Audio.AudioEncodeUi", "ADX/AHX Options"), &dialog);
     auto* adx_form = new QFormLayout(adx_group);
@@ -171,11 +138,9 @@ std::expected<std::optional<EncodeConfig>, QString> choose_encode_config(
 
     update_fields();
 
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    buttons->button(QDialogButtonBox::Ok)->setText(QCoreApplication::translate("Audio.AudioEncodeUi", "Encode"));
+    auto* buttons = dialog_buttons(
+        dialog, QCoreApplication::translate("Audio.AudioEncodeUi", "Encode"));
     layout->addWidget(buttons);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
 
     if (dialog.exec() != QDialog::Accepted) {
         return std::optional<EncodeConfig>{};

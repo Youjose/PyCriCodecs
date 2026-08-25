@@ -36,8 +36,6 @@
 namespace cristudio {
 namespace {
 
-constexpr size_t pattern_prefix_limit = 4096;
-
 QChar text_char(uint8_t value) {
     if (value >= 0x20 && value <= 0x7E) {
         return QLatin1Char(static_cast<char>(value));
@@ -186,60 +184,70 @@ HexPreviewWidget::HexPreviewWidget(QWidget* parent)
     setMouseTracking(true);
 }
 
-void HexPreviewWidget::set_storage(std::span<const uint8_t> bytes, uint64_t total_size) {
+void HexPreviewWidget::set_storage(std::span<const uint8_t> bytes) {
     m_reader = nullptr;
     m_bytes.assign(bytes.begin(), bytes.end());
-    m_total_size = total_size == 0 ? static_cast<uint64_t>(m_bytes.size()) : total_size;
+}
+
+void HexPreviewWidget::set_storage(std::vector<uint8_t> bytes) {
+    m_reader = nullptr;
+    m_bytes = std::move(bytes);
 }
 
 void HexPreviewWidget::set_storage(const cricodecs::io::reader& reader) {
     m_reader = &reader;
     m_bytes.clear();
-    m_total_size = static_cast<uint64_t>(reader.size());
-}
-
-std::vector<uint8_t> HexPreviewWidget::read_pattern_prefix() const {
-    std::vector<uint8_t> prefix(std::min(pattern_prefix_limit, source_size()));
-    prefix.resize(read_source(0, prefix));
-    return prefix;
 }
 
 void HexPreviewWidget::set_source(
     std::span<const uint8_t> bytes,
-    uint64_t total_size,
     std::string_view format) {
-    set_storage(bytes, total_size);
-    const auto prefix = read_pattern_prefix();
-    configure_source(format, infer_hex_patterns(format, m_total_size, prefix));
+    set_storage(bytes);
+    configure_source(format, infer_hex_patterns(format, source_size(), initial_pattern_bytes(format)));
+}
+
+void HexPreviewWidget::set_source(
+    std::vector<uint8_t> bytes,
+    std::string_view format) {
+    set_storage(std::move(bytes));
+    configure_source(format, infer_hex_patterns(format, source_size(), initial_pattern_bytes(format)));
 }
 
 void HexPreviewWidget::set_source(
     std::span<const uint8_t> bytes,
-    uint64_t total_size,
     const EntrySummary& entry) {
-    set_storage(bytes, total_size);
-    const auto prefix = read_pattern_prefix();
+    set_storage(bytes);
+    const auto format = entry_hex_format(entry);
     configure_source(
-        entry_hex_format(entry),
-        infer_entry_hex_patterns(entry, m_total_size, prefix));
+        format,
+        infer_entry_hex_patterns(entry, source_size(), initial_pattern_bytes(format)));
+}
+
+void HexPreviewWidget::set_source(
+    std::vector<uint8_t> bytes,
+    const EntrySummary& entry) {
+    set_storage(std::move(bytes));
+    const auto format = entry_hex_format(entry);
+    configure_source(
+        format,
+        infer_entry_hex_patterns(entry, source_size(), initial_pattern_bytes(format)));
 }
 
 void HexPreviewWidget::set_source(
     const cricodecs::io::reader& reader,
     std::string_view format) {
     set_storage(reader);
-    const auto prefix = read_pattern_prefix();
-    configure_source(format, infer_hex_patterns(format, m_total_size, prefix));
+    configure_source(format, infer_hex_patterns(format, source_size(), initial_pattern_bytes(format)));
 }
 
 void HexPreviewWidget::set_source(
     const cricodecs::io::reader& reader,
     const LoadedDocument& document) {
     set_storage(reader);
-    const auto prefix = read_pattern_prefix();
+    const auto format = document_format_id(document);
     configure_source(
-        document_format_id(document),
-        infer_document_hex_patterns(document, prefix));
+        format,
+        infer_document_hex_patterns(document, initial_pattern_bytes(format)));
 }
 
 void HexPreviewWidget::reset_lazy_state() {
@@ -304,7 +312,6 @@ void HexPreviewWidget::set_patterns_enabled(bool enabled) {
 void HexPreviewWidget::clear_bytes() {
     m_reader = nullptr;
     m_bytes.clear();
-    m_total_size = 0;
     configure_source({}, {});
 }
 
@@ -322,21 +329,51 @@ void HexPreviewWidget::update_scrollbar() {
 }
 
 size_t HexPreviewWidget::source_size() const {
-    if (m_reader != nullptr) {
-        return m_reader->size();
+    return source_bytes().size();
+}
+
+std::span<const uint8_t> HexPreviewWidget::source_bytes() const {
+    return m_reader != nullptr ? m_reader->data() : std::span<const uint8_t>(m_bytes);
+}
+
+std::span<const uint8_t> HexPreviewWidget::initial_pattern_bytes(std::string_view format) const {
+    const auto source = source_bytes();
+    const auto first = [source](uint64_t size) {
+        return source.first(static_cast<size_t>(std::min<uint64_t>(size, source.size())));
+    };
+
+    if (is_lazy_usm_format(format) || is_usm_chunk_magic(source)) {
+        return first(0x20);
     }
-    return m_bytes.size();
+    if (is_lazy_sbt_format(format)) {
+        return {};
+    }
+    if (is_lazy_riff_format(format) || (has_magic(source, "RIFF") && source.size() >= 12)) {
+        if (source.size() < 20) {
+            return source;
+        }
+        const auto payload_size = cricodecs::io::read_le<uint32_t>(source.data() + 16);
+        return first(20ull + payload_size + (payload_size & 1u));
+    }
+    if (is_lazy_aix_format(format) || has_magic(source, "AIXF")) {
+        if (source.size() < 8) {
+            return source;
+        }
+        return first(static_cast<uint64_t>(cricodecs::io::read_be<uint32_t>(source.data() + 4)) + 8u);
+    }
+    if (is_lazy_cvm_format(format) || has_magic(source, "CVMH")) {
+        return first(0x1000);
+    }
+    return source;
 }
 
 size_t HexPreviewWidget::read_source(size_t offset, std::span<uint8_t> output) const {
-    if (m_reader != nullptr) {
-        return m_reader->read_at(offset, output);
-    }
-    if (output.empty() || offset >= m_bytes.size()) {
+    const auto source = source_bytes();
+    if (output.empty() || offset >= source.size()) {
         return 0;
     }
-    const auto count = std::min(output.size(), m_bytes.size() - offset);
-    std::copy_n(m_bytes.data() + offset, count, output.data());
+    const auto count = std::min(output.size(), source.size() - offset);
+    std::copy_n(source.data() + offset, count, output.data());
     return count;
 }
 
@@ -349,7 +386,7 @@ HexPreviewWidget::Layout HexPreviewWidget::layout() const {
     out.hex_x = out.margin + out.offset_w + out.char_w * 3;
     out.text_x = out.hex_x + out.char_w * (m_bytes_per_row * 3 + 3);
     out.header_h = out.line_h;
-    out.footer_h = (m_total_size > source_size() || !m_pattern_status.isEmpty()) ? out.line_h : 0;
+    out.footer_h = m_pattern_status.isEmpty() ? 0 : out.line_h;
     return out;
 }
 
@@ -507,7 +544,7 @@ std::optional<HexPreviewWidget::ActivePattern> HexPreviewWidget::pattern_at(size
 }
 
 void HexPreviewWidget::ensure_lazy_usm_chunks_until(uint64_t target_end) const {
-    if (m_reader == nullptr || !is_lazy_usm_format(m_lazy_format) || source_size() < 0x20) {
+    if (!is_lazy_usm_format(m_lazy_format) || source_size() < 0x20) {
         return;
     }
     if (!m_lazy_usm_valid && !m_lazy_usm_chunks.empty()) {
@@ -1404,12 +1441,7 @@ void HexPreviewWidget::paintEvent(QPaintEvent*) {
         const auto footer_y = viewport()->height() - line_h;
         painter.fillRect(QRect(0, footer_y, viewport()->width(), line_h), soft);
         painter.setPen(muted);
-        const auto footer_text = !m_pattern_status.isEmpty()
-            ? m_pattern_status
-            : QCoreApplication::translate("Editor.HexPreviewWidget", "showing %1 of %2 bytes")
-                .arg(static_cast<qulonglong>(bytes_size))
-                .arg(static_cast<qulonglong>(m_total_size));
-        painter.drawText(margin, footer_y + metrics.ascent() + 2, footer_text);
+        painter.drawText(margin, footer_y + metrics.ascent() + 2, m_pattern_status);
     }
 }
 

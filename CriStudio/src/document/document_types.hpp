@@ -177,7 +177,6 @@ struct EmbeddedPreview {
     std::optional<VideoPreview> video;
     std::string message;
     std::vector<uint8_t> raw_preview_bytes;
-    uint64_t raw_total_size = 0;
     std::vector<uint8_t> preview_bytes;
 };
 

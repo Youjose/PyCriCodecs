@@ -896,13 +896,8 @@ EmbeddedPreview load_embedded_entry_preview(const EntrySummary& entry, const Dec
         return preview;
     }
 
-    constexpr size_t max_hex_preview_bytes = 256u * 1024u;
-    preview.raw_total_size = bytes->size();
-    const auto retain_bounded_raw_preview = [&] {
-        preview.raw_preview_bytes.assign(
-            bytes->begin(),
-            bytes->begin() + static_cast<std::ptrdiff_t>(std::min(bytes->size(), max_hex_preview_bytes))
-        );
+    const auto retain_raw_preview = [&] {
+        preview.raw_preview_bytes = std::move(*bytes);
     };
 
     std::string reason;
@@ -916,39 +911,35 @@ EmbeddedPreview load_embedded_entry_preview(const EntrySummary& entry, const Dec
                 preview.message = audio.error();
             }
         }
-        if (doc->format.find("SBT") != std::string::npos && doc->format.find("subtitle") != std::string::npos) {
-            preview.raw_preview_bytes = std::move(*bytes);
-        } else {
-            retain_bounded_raw_preview();
-        }
+        retain_raw_preview();
         preview.document = std::move(*doc);
         return preview;
     }
     if (cricodecs::awb::probe_entry_codec(*bytes) != cricodecs::awb::EntryCodec::Unknown) {
-        retain_bounded_raw_preview();
         if (auto audio = audio_preview_from_entry_bytes(entry, *bytes, keys)) {
             preview.audio = std::move(*audio);
         } else {
             preview.message = audio.error();
         }
+        retain_raw_preview();
         return preview;
     }
     if (auto video = video_preview_from_bytes(entry, *bytes)) {
-        retain_bounded_raw_preview();
         preview.video = std::move(*video);
+        retain_raw_preview();
         return preview;
     }
 
     constexpr size_t max_image_preview_bytes = 32u * 1024u * 1024u;
     if (bytes->size() <= max_image_preview_bytes && is_supported_image_payload(*bytes)) {
         preview.preview_bytes = *bytes;
-        retain_bounded_raw_preview();
+        retain_raw_preview();
         return preview;
     }
 
     if (auto media = probe_ffmpeg_media_bytes(*bytes)) {
-        retain_bounded_raw_preview();
         if (media->has_video) {
+            preview.raw_preview_bytes = *bytes;
             VideoPreview video;
             video.video_bytes = std::move(*bytes);
             video.file_suffix = ".bin";
@@ -961,6 +952,9 @@ EmbeddedPreview load_embedded_entry_preview(const EntrySummary& entry, const Dec
             } else {
                 preview.message = audio.error();
             }
+            retain_raw_preview();
+        } else {
+            retain_raw_preview();
         }
         return preview;
     }
@@ -986,7 +980,7 @@ EmbeddedPreview load_embedded_entry_preview(const EntrySummary& entry, const Dec
     if (preview.message.empty()) {
         preview.message = reason.empty() ? cristudio::i18n::translate_utf8("DocumentLoader", "unknown preview format; showing hex") : reason;
     }
-    retain_bounded_raw_preview();
+    retain_raw_preview();
     return preview;
 }
 

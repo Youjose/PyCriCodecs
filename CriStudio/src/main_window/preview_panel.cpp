@@ -118,11 +118,7 @@ void MainWindow::start_entry_preview_now(EntrySummary entry) {
                 }
                 result.message = QString::fromStdString(preview.message);
                 if (!preview.raw_preview_bytes.empty()) {
-                    result.raw_bytes = QByteArray(
-                        reinterpret_cast<const char*>(preview.raw_preview_bytes.data()),
-                        static_cast<qsizetype>(preview.raw_preview_bytes.size())
-                    );
-                    result.raw_total_size = preview.raw_total_size;
+                    result.raw_bytes = std::move(preview.raw_preview_bytes);
                 }
                 if (!preview.preview_bytes.empty()) {
                     result.preview_bytes = QByteArray(
@@ -305,9 +301,10 @@ void MainWindow::consume_preview_result() {
         return;
     }
 
+    const auto has_raw_preview = !result.raw_bytes.empty();
     const auto preview_succeeded = result.audio.has_value() || result.video.has_value() ||
         (result.mux.has_value() && !result.mux->playable_path.empty()) ||
-        result.document.has_value() || !result.raw_bytes.isEmpty();
+        result.document.has_value() || has_raw_preview;
     if (!result.message.isEmpty() && !is_low_signal_loader_message(result.message)) {
         append_log(QCoreApplication::translate("MainWindow.PreviewPanel", "Preview result [%1]: %2").arg(result.request_id).arg(result.message));
     } else if (preview_succeeded) {
@@ -315,22 +312,18 @@ void MainWindow::consume_preview_result() {
     }
 
     if (m_raw_hex != nullptr) {
-        if (!result.raw_bytes.isEmpty()) {
-            std::span<const uint8_t> bytes(
-                reinterpret_cast<const uint8_t*>(result.raw_bytes.constData()),
-                static_cast<size_t>(result.raw_bytes.size())
-            );
+        if (has_raw_preview) {
             if (m_current_preview_entry.has_value()) {
-                m_raw_hex->set_source(bytes, result.raw_total_size, *m_current_preview_entry);
+                m_raw_hex->set_source(std::move(result.raw_bytes), *m_current_preview_entry);
             } else {
-                m_raw_hex->set_source(bytes, result.raw_total_size);
+                m_raw_hex->set_source(std::move(result.raw_bytes));
             }
         } else if (m_current_preview_entry.has_value()) {
             m_raw_hex->clear_bytes();
         }
     }
     if (m_preview_tabs != nullptr) {
-        if (!result.raw_bytes.isEmpty()) {
+        if (has_raw_preview) {
             m_preview_tabs->setTabEnabled(1, true);
         } else if (m_current_preview_entry.has_value()) {
             m_preview_tabs->setTabEnabled(1, false);
@@ -387,7 +380,7 @@ void MainWindow::consume_preview_result() {
         }
         m_nested_image_scroll->hide();
         configure_audio_preview(*result.audio);
-    } else if (!result.raw_bytes.isEmpty()) {
+    } else if (has_raw_preview) {
         reset_audio_preview();
         if (!result.preview_bytes.isEmpty()) {
             QImage image;

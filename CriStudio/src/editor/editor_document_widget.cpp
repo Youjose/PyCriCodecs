@@ -498,16 +498,14 @@ private:
         return !m_ui.hex_preview->isHidden();
     }
 
-    void set_raw_preview(std::span<const uint8_t> bytes, uint64_t total_size, std::string_view format = {}) {
+    void set_raw_preview(std::span<const uint8_t> bytes, std::string_view format = {}) {
         if (bytes.empty()) {
             m_ui.hex_preview->clear_bytes();
             m_ui.hex_preview->hide();
             return;
         }
-        const auto full_size = total_size == 0 ? bytes.size() : total_size;
-        const auto prefix = bytes.first(std::min(bytes.size(), HexPreviewWidget::buffered_byte_limit));
         const auto effective_format = format.empty() && m_document ? std::string_view(m_document->format) : format;
-        m_ui.hex_preview->set_source(prefix, full_size, effective_format);
+        m_ui.hex_preview->set_source(bytes, effective_format);
         m_ui.hex_preview->show();
     }
 
@@ -517,14 +515,12 @@ private:
         m_ui.hex_preview->hide();
     }
 
-    void set_raw_preview(const EntrySummary& summary, std::span<const uint8_t> bytes, uint64_t total_size) {
+    void set_raw_preview(const EntrySummary& summary, std::span<const uint8_t> bytes) {
         if (bytes.empty()) {
-            set_raw_preview({}, 0);
+            set_raw_preview({});
             return;
         }
-        const auto full_size = total_size == 0 ? bytes.size() : total_size;
-        const auto prefix = bytes.first(std::min(bytes.size(), HexPreviewWidget::buffered_byte_limit));
-        m_ui.hex_preview->set_source(prefix, full_size, summary);
+        m_ui.hex_preview->set_source(bytes, summary);
         m_ui.hex_preview->show();
     }
 
@@ -575,7 +571,7 @@ private:
         std::span<const uint8_t> bytes
     ) {
         dismiss_editor_media_preview();
-        set_raw_preview(bytes, bytes.size(), std::string(document_format_id(document)));
+        set_raw_preview(bytes, std::string(document_format_id(document)));
         constexpr size_t max_rows = 1024;
         m_ui.payload_table->clear();
         if (!document.entries.empty()) {
@@ -688,20 +684,20 @@ private:
             break;
         }
         }
-        show_hex_preview(*bytes, bytes->size(), "USM");
+        show_hex_preview(*bytes, "USM");
     }
 
-    void show_hex_preview(std::span<const uint8_t> bytes, uint64_t total_size = 0, std::string_view format = {}) {
+    void show_hex_preview(std::span<const uint8_t> bytes, std::string_view format = {}) {
         dismiss_editor_media_preview();
         m_ui.payload_table->hide();
-        set_raw_preview(bytes, total_size, format);
+        set_raw_preview(bytes, format);
         set_preview_tabs(false, raw_preview_available(), 1);
     }
 
-    void show_hex_preview(const EntrySummary& summary, std::span<const uint8_t> bytes, uint64_t total_size = 0) {
+    void show_hex_preview(const EntrySummary& summary, std::span<const uint8_t> bytes) {
         dismiss_editor_media_preview();
         m_ui.payload_table->hide();
-        set_raw_preview(summary, bytes, total_size);
+        set_raw_preview(summary, bytes);
         set_preview_tabs(false, raw_preview_available(), 1);
     }
 
@@ -1581,7 +1577,7 @@ private:
                     (*data)[3] == static_cast<uint8_t>('F')) {
                     if (auto nested = cricodecs::utf::UtfTable::load(*data)) {
                         dismiss_editor_media_preview();
-                        set_raw_preview(*data, data->size(), "UTF");
+                        set_raw_preview(*data, "UTF");
                         modules::utf::populate_utf_tables(*nested, {
                             .grid = m_ui.payload_table,
                             .transpose_single_row = true,
@@ -1592,7 +1588,7 @@ private:
                         return;
                     }
                 }
-                show_hex_preview(*data, 0, "UTF");
+                show_hex_preview(*data, "UTF");
             } else {
                 show_detail_preview(QCoreApplication::translate("Editor.EditorDocumentWidget", "Error: %1").arg(utf8_to_qstring(data.error())));
             }
@@ -1648,7 +1644,7 @@ private:
             (*bytes)[3] == static_cast<uint8_t>('F')) {
             if (auto table = cricodecs::utf::UtfTable::load(*bytes)) {
                 dismiss_editor_media_preview();
-                set_raw_preview(*bytes, bytes->size(), "UTF");
+                set_raw_preview(*bytes, "UTF");
                 modules::utf::populate_utf_tables(*table, {
                     .grid = m_ui.payload_table,
                     .transpose_single_row = true,
@@ -3127,7 +3123,7 @@ private:
 
     void start_video_preview(VideoPreview video) {
         dismiss_editor_media_preview();
-        set_raw_preview(video.video_bytes, video.video_bytes.size(), video.format);
+        set_raw_preview(video.video_bytes, video.format);
         m_ui.payload_table->hide();
         m_ui.mux_preview_panel->show();
         set_editor_video_visible(false);
@@ -3182,7 +3178,7 @@ private:
         m_ui.media.status_label->setText(QCoreApplication::translate("Editor.EditorDocumentWidget", "Preparing audio preview..."));
         m_ui.media.play_button->setEnabled(false);
         m_ui.payload_table->hide();
-        set_raw_preview(bytes, bytes.size(), std::string(document_format_id(document)));
+        set_raw_preview(bytes, std::string(document_format_id(document)));
         set_preview_tabs(true, raw_preview_available(), 0);
 
         if (m_audio_preview_watcher == nullptr) {
@@ -3280,7 +3276,7 @@ private:
                 return;
             }
             auto mux = std::move(*result.preview);
-            set_raw_preview(mux.video_bytes, mux.video_bytes.size(), mux.format);
+            set_raw_preview(mux.video_bytes, mux.format);
             if (mux.playable_path.empty()) {
                 m_ui.media.status_label->setText(utf8_to_qstring(
                     mux.note.empty() ? cristudio::i18n::translate_utf8("Editor.EditorDocumentWidget", "Preview preparation failed") : mux.note));

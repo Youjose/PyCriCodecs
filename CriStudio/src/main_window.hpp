@@ -314,8 +314,7 @@ private:
         std::optional<VideoPreview> video = std::nullopt;
         std::optional<MuxPreview> mux = std::nullopt;
         QString message;
-        QByteArray raw_bytes;
-        uint64_t raw_total_size = 0;
+        std::vector<uint8_t> raw_bytes;
         QByteArray preview_bytes;
         bool acb_cue_preview = false;
         uint64_t request_id = 0;

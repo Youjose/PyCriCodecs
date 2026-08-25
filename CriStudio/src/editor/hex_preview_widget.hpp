@@ -22,17 +22,19 @@ namespace cristudio {
 
 class HexPreviewWidget final : public QAbstractScrollArea {
 public:
-    static constexpr size_t buffered_byte_limit = 256u * 1024u;
-
     explicit HexPreviewWidget(QWidget* parent = nullptr);
 
     void set_source(
         std::span<const uint8_t> bytes,
-        uint64_t total_size,
+        std::string_view format = {});
+    void set_source(
+        std::vector<uint8_t> bytes,
         std::string_view format = {});
     void set_source(
         std::span<const uint8_t> bytes,
-        uint64_t total_size,
+        const EntrySummary& entry);
+    void set_source(
+        std::vector<uint8_t> bytes,
         const EntrySummary& entry);
     void set_source(
         const cricodecs::io::reader& reader,
@@ -76,9 +78,11 @@ private:
     [[nodiscard]] QRect pattern_toggle_rect() const;
     [[nodiscard]] bool has_pattern_source() const;
     [[nodiscard]] size_t source_size() const;
+    [[nodiscard]] std::span<const uint8_t> source_bytes() const;
+    [[nodiscard]] std::span<const uint8_t> initial_pattern_bytes(std::string_view format) const;
     [[nodiscard]] size_t read_source(size_t offset, std::span<uint8_t> output) const;
-    [[nodiscard]] std::vector<uint8_t> read_pattern_prefix() const;
-    void set_storage(std::span<const uint8_t> bytes, uint64_t total_size);
+    void set_storage(std::span<const uint8_t> bytes);
+    void set_storage(std::vector<uint8_t> bytes);
     void set_storage(const cricodecs::io::reader& reader);
     [[nodiscard]] std::optional<size_t> byte_at(const QPoint& pos, Lane* lane = nullptr) const;
     [[nodiscard]] bool selected(size_t index) const;
@@ -143,7 +147,6 @@ private:
     HexPatternSet m_patterns;
     std::vector<uint64_t> m_pattern_prefix_max_end;
     const cricodecs::io::reader* m_reader = nullptr;
-    uint64_t m_total_size = 0;
     std::string m_lazy_format;
     mutable std::vector<LazyUsmChunk> m_lazy_usm_chunks;
     mutable uint64_t m_lazy_usm_scanned_until = 0;

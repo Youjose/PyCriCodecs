@@ -8,7 +8,6 @@
 #include <bit>
 #include <cmath>
 #include <numbers>
-#include <utility>
 
 namespace cricodecs::hca::transform {
 
@@ -53,60 +52,67 @@ consteval DctTables generate_dct_tables() {
 
 inline constexpr auto DCT_TABLES = generate_dct_tables();
 
+using DctBlock = std::array<float, HCA_SAMPLES_PER_SUBFRAME>;
+
+template <int Half>
+inline void butterfly_stage(DctBlock& source, DctBlock& destination) {
+    constexpr int group_count = HCA_SAMPLES_PER_SUBFRAME / (Half * 2);
+    for (int group = 0; group < group_count; ++group) {
+        const int base = group * Half * 2;
+        for (int i = 0; i < Half; ++i) {
+            const float a = source[static_cast<size_t>(base + i * 2)];
+            const float b = source[static_cast<size_t>(base + i * 2 + 1)];
+            destination[static_cast<size_t>(base + i)] = a + b;
+            destination[static_cast<size_t>(base + Half + i)] = a - b;
+        }
+    }
+
+    if constexpr (Half > 1) {
+        butterfly_stage<Half / 2>(destination, source);
+    }
+}
+
+template <int Stage>
+inline void twiddle_stage(DctBlock& source, DctBlock& destination) {
+    constexpr int width = 1 << (Stage + 1);
+    constexpr int half = width / 2;
+    constexpr int group_count = HCA_SAMPLES_PER_SUBFRAME / width;
+    constexpr size_t stage_offset = static_cast<size_t>(Stage * COEFFICIENTS_PER_STAGE);
+
+    for (int group = 0; group < group_count; ++group) {
+        const int base = group * width;
+        for (int i = 0; i < half; ++i) {
+            const size_t table_index = stage_offset + static_cast<size_t>(group * half + i);
+            const float sine = DCT_TABLES.sine[table_index];
+            const float cosine = DCT_TABLES.cosine[table_index];
+            const float low = source[static_cast<size_t>(base + i)];
+            const float high = source[static_cast<size_t>(base + half + i)];
+            const float low_cosine = low * cosine;
+            const float high_sine = high * sine;
+            const float low_sine = low * sine;
+            const float high_cosine = high * cosine;
+
+            destination[static_cast<size_t>(base + i)] = low_cosine - high_sine;
+            destination[static_cast<size_t>(base + width - 1 - i)] = low_sine + high_cosine;
+        }
+    }
+
+    if constexpr (Stage + 1 < DCT_STAGES) {
+        twiddle_stage<Stage + 1>(destination, source);
+    }
+}
+
 } // namespace
 
-#if defined(__GNUC__) && !defined(__clang__)
-__attribute__((optimize("fp-contract=off")))
-#endif
+[[gnu::optimize("fp-contract=off")]]
 std::array<float, HCA_SAMPLES_PER_SUBFRAME> dct4(
     const std::array<float, HCA_SAMPLES_PER_SUBFRAME>& input
 ) {
-    auto source_storage = input;
-    std::array<float, HCA_SAMPLES_PER_SUBFRAME> destination_storage{};
-    auto* source = &source_storage;
-    auto* destination = &destination_storage;
-
-    for (int half = HCA_SAMPLES_PER_SUBFRAME / 2, group_count = 1;
-         half != 0;
-         half >>= 1, group_count <<= 1) {
-        for (int group = 0; group < group_count; ++group) {
-            const int base = group * half * 2;
-            for (int i = 0; i < half; ++i) {
-                const float a = (*source)[static_cast<size_t>(base + i * 2)];
-                const float b = (*source)[static_cast<size_t>(base + i * 2 + 1)];
-                (*destination)[static_cast<size_t>(base + i)] = a + b;
-                (*destination)[static_cast<size_t>(base + half + i)] = a - b;
-            }
-        }
-        std::swap(source, destination);
-    }
-
-    for (int stage = 0, width = 2; stage < DCT_STAGES; ++stage, width <<= 1) {
-        const int half = width / 2;
-        const int group_count = HCA_SAMPLES_PER_SUBFRAME / width;
-        const size_t stage_offset = static_cast<size_t>(stage * COEFFICIENTS_PER_STAGE);
-
-        for (int group = 0; group < group_count; ++group) {
-            const int base = group * width;
-            for (int i = 0; i < half; ++i) {
-                const size_t table_index = stage_offset + static_cast<size_t>(group * half + i);
-                const float sine = DCT_TABLES.sine[table_index];
-                const float cosine = DCT_TABLES.cosine[table_index];
-                const float low = (*source)[static_cast<size_t>(base + i)];
-                const float high = (*source)[static_cast<size_t>(base + half + i)];
-                const float low_cosine = low * cosine;
-                const float high_sine = high * sine;
-                const float low_sine = low * sine;
-                const float high_cosine = high * cosine;
-
-                (*destination)[static_cast<size_t>(base + i)] = low_cosine - high_sine;
-                (*destination)[static_cast<size_t>(base + width - 1 - i)] = low_sine + high_cosine;
-            }
-        }
-        std::swap(source, destination);
-    }
-
-    return *source;
+    auto first = input;
+    DctBlock second{};
+    butterfly_stage<HCA_SAMPLES_PER_SUBFRAME / 2>(first, second);
+    twiddle_stage<0>(second, first);
+    return first;
 }
 
 } // namespace cricodecs::hca::transform

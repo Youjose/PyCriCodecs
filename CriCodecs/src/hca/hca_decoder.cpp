@@ -280,9 +280,7 @@ void apply_ms_stereo(DecodeChannel* ch_pair, bool ms_stereo, int base_band, int 
     }
 }
 
-#if defined(__GNUC__) && !defined(__clang__)
-__attribute__((optimize("fp-contract=off")))
-#endif
+[[gnu::optimize("fp-contract=off")]]
 void imdct_transform(DecodeChannel& ch, int subframe) {
     const auto& window = tables::IMDCT_WINDOW;
     const auto dct_out = transform::dct4(ch.spectra[subframe]);

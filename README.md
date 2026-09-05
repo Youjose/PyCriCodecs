@@ -14,7 +14,7 @@
 </p>
 
 ### Notice
-**AI assistance has been used throughout the project implementation, only some core parts have been fully manually reviewed.** 
+**AI assistance has been used throughout the project implementation, only some core parts have been fully manually reviewed. A [human-only archived branch](https://github.com/Youjose/CriCodecs/tree/archive) is available but it is outdated and does not support all formats.** 
 
 ## Download CriStudio GUI
 

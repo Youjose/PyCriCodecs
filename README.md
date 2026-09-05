@@ -13,6 +13,9 @@
   <a href="https://pypi.org/project/cricodecs/"><img src="https://img.shields.io/badge/pip_install-cricodecs-3775A9?style=for-the-badge&logo=pypi&logoColor=white" alt="pip install cricodecs"></a>
 </p>
 
+### Notice
+**AI assistance has been used throughout the project implementation, only some core parts have been fully manually reviewed.** 
+
 ## Download CriStudio GUI
 
 [**Download the latest CriStudio release for Windows, Linux, or macOS →**](https://github.com/Youjose/CriCodecs/releases/latest)
